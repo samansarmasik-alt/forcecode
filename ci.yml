@@ -1,0 +1,14 @@
+## Summary
+
+Describe the problem and the focused change that solves it.
+
+## Verification
+
+- [ ] `python -m py_compile forgecode.py`
+- [ ] `python -m unittest discover -s tests -v`
+- [ ] No API keys, private endpoints, personal paths, or local logs are included
+- [ ] Documentation or CHANGELOG was updated when behavior changed
+
+## Safety and compatibility
+
+Describe any effect on file boundaries, command approval, provider requests, AppData settings, or the Windows `Force` launcher. Write “none” if there is no effect.

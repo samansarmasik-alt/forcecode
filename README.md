@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forgecode-cli"
+version = "6.5.0"
+description = "A lightweight, dependency-free terminal coding agent for Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+keywords = ["ai", "coding-agent", "cli", "terminal", "windows"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development",
+]
+
+[project.scripts]
+forgecode = "forgecode:main"
+
+[tool.setuptools]
+py-modules = ["forgecode"]
+
+[tool.unittest]
+start-directory = "tests"

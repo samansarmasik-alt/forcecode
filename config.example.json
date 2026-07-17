@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
+
+## [6.5.0] - 2026-07-17
+
+### Fixed
+
+- Reject empty, root, and directory targets in file tools.
+- Write large files in verified UTF-8 chunks and atomically replace targets.
+- Preserve existing targets when a write is interrupted.
+- Safely adapt spaced paths and Bash-style command chains for Windows PowerShell.
+- Treat non-zero command exits as tool failures so the model can correct them.
+- Store Windows user configuration under `%LOCALAPPDATA%\ForgeCode` and copy legacy settings without deleting them.
+- Make the global launcher independent of the source checkout location.
+
+## [6.4.0] - 2026-07-14
+
+### Fixed
+
+- Execute strict read-only `type`, `cat`, and `Get-Content` file views through the internal UTF-8 reader.
+- Prevent repeated shell-read and safety-classification loops.
+- Reset transient streaming drafts between tool rounds.
+
+## [6.3.1]
+
+### Fixed
+
+- Prevent Windows code-page decoder-thread crashes and secondary `NoneType` output failures.
+
+## [6.3.0]
+
+### Added
+
+- Persistent redacted diagnostics and allowlisted AI-managed performance settings.
+
+## [6.2.0]
+
+### Added
+
+- Smart Autopilot with AI risk assessment and a deterministic local safety floor.
