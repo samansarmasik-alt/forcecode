@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import builtins
+import codecs
 import collections
 import concurrent.futures
 import contextlib
@@ -14,6 +16,7 @@ import difflib
 import fnmatch
 import getpass
 import hashlib
+import html.parser
 import json
 import locale
 import os
@@ -41,7 +44,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.1.0"
+VERSION = "7.2.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -2152,7 +2155,12 @@ TOOL_SCHEMAS = [
     {"name": "write_file", "description": "Create or completely replace a project file. Requires user approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}},
     {"name": "write_files", "description": "Create or replace multiple related project files in one atomic-looking batch with one user approval. Prefer this for multi-file websites and scaffolds.", "input_schema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}}}, "required": ["files"], "additionalProperties": False}},
     {"name": "replace_text", "description": "Replace exact text in one project file. Fails if old_text is absent or ambiguous.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False}},
-    {"name": "run_command", "description": "Run a shell command in the project. Requires approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}}, "required": ["command"], "additionalProperties": False}},
+    {"name": "run_command", "description": "Run a non-interactive shell command in the project. For programs that call input() or prompt for answers, pass newline-separated responses in stdin; otherwise stdin is closed so the process cannot block waiting for terminal input. Requires approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated input sent to the process, for example: Alice\n42\ny\n"}}, "required": ["command"], "additionalProperties": False}},
+    {"name": "test_project", "description": "Run the project's most relevant available test or validation. Auto-detects Python, Node, Go, Rust, .NET, Maven, Gradle, or static web projects when command is omitted. Pass stdin for scripted input, or set interactive=true to keep the process open and continue with process_input/process_status. Returns SKIP instead of inventing a test.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated answers for a non-interactive test command."}, "interactive": {"type": "boolean"}}, "additionalProperties": False}},
+    {"name": "start_process", "description": "Start a persistent interactive project command. Output is streamed into ForgeCode activity and can be read with process_status. Use process_input when the program asks a question, then stop_process if it should not remain running.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"], "additionalProperties": False}},
+    {"name": "process_input", "description": "Send text to a running interactive process. A newline is appended by default, like pressing Enter, then fresh output is returned.", "input_schema": {"type": "object", "properties": {"process_id": {"type": "string"}, "input": {"type": "string"}, "append_newline": {"type": "boolean"}}, "required": ["process_id", "input"], "additionalProperties": False}},
+    {"name": "process_status", "description": "Read fresh output and current state from an interactive process. Use after each input until exit_code is available.", "input_schema": {"type": "object", "properties": {"process_id": {"type": "string"}, "wait_ms": {"type": "integer"}}, "required": ["process_id"], "additionalProperties": False}},
+    {"name": "stop_process", "description": "Stop one interactive process started by ForgeCode and return its final captured output.", "input_schema": {"type": "object", "properties": {"process_id": {"type": "string"}}, "required": ["process_id"], "additionalProperties": False}},
     {"name": "get_diagnostics", "description": "Inspect ForgeCode's current safe settings, connection state, recent activity, and persisted API/tool/command errors. Use this when the user asks why an error happened, asks to fix recurring ForgeCode behavior, or requests optimization.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "set_forgecode_setting", "description": "Change one allowlisted non-secret ForgeCode behavior setting. Pass value as text. Use after get_diagnostics when the user asks to optimize speed, quality, token use, context, retries, streaming, thinking, web, or work mode. Provider, model, API keys, URLs, routes, and approval/security settings are intentionally unavailable.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "value": {"type": "string"}, "reason": {"type": "string"}}, "required": ["name", "value", "reason"], "additionalProperties": False}},
     {"name": "delegate_task", "description": "Delegate one focused, read-only specialist task. ForgeCode may run up to three independent specialists in parallel; the parent remains responsible for all changes.", "input_schema": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "plan", "design", "backend", "frontend", "research", "test", "security"]}, "task": {"type": "string"}}, "required": ["role", "task"], "additionalProperties": False}},
@@ -2166,6 +2174,11 @@ TOOL_NAME_MAP = {
     "writefiles": "write_files",
     "replacetext": "replace_text",
     "runcommand": "run_command",
+    "testproject": "test_project",
+    "startprocess": "start_process",
+    "processinput": "process_input",
+    "processstatus": "process_status",
+    "stopprocess": "stop_process",
     "getdiagnostics": "get_diagnostics",
     "setforgecodesetting": "set_forgecode_setting",
     "delegatetask": "delegate_task",
@@ -2177,6 +2190,7 @@ TOOL_NAME_MAP = {
     "glob": "list_files",
     "grep": "search",
     "task": "delegate_task",
+    "test": "test_project",
     "ls": "list_files",
 }
 
@@ -2260,7 +2274,41 @@ def normalize_tool_arguments(name: str, args: Any) -> dict[str, Any]:
                 result["timeout_seconds"] = timeout_number
             except (TypeError, ValueError):
                 pass
+        if "stdin" in source or "input" in source:
+            result["stdin"] = str(source.get("stdin", source.get("input", "")))
         return result
+    if name == "test_project":
+        result = {"command": str(source.get("command") or source.get("cmd") or "")}
+        timeout = source.get("timeout_seconds", source.get("timeout"))
+        if timeout is not None:
+            try:
+                timeout_number = int(timeout)
+                if timeout_number > 1000:
+                    timeout_number = max(1, timeout_number // 1000)
+                result["timeout_seconds"] = timeout_number
+            except (TypeError, ValueError):
+                pass
+        if "stdin" in source or "input" in source:
+            result["stdin"] = str(source.get("stdin", source.get("input", "")))
+        result["interactive"] = bool(source.get("interactive", False))
+        return result
+    if name == "start_process":
+        return {"command": str(source.get("command") or source.get("cmd") or "")}
+    if name == "process_input":
+        return {
+            "process_id": str(source.get("process_id") or source.get("id") or ""),
+            "input": str(source.get("input", source.get("text", ""))),
+            "append_newline": bool(source.get("append_newline", True)),
+        }
+    if name == "process_status":
+        result = {"process_id": str(source.get("process_id") or source.get("id") or "")}
+        try:
+            result["wait_ms"] = max(0, min(3000, int(source.get("wait_ms", 300))))
+        except (TypeError, ValueError):
+            result["wait_ms"] = 300
+        return result
+    if name == "stop_process":
+        return {"process_id": str(source.get("process_id") or source.get("id") or "")}
     if name == "get_diagnostics":
         return {}
     if name == "set_forgecode_setting":
@@ -2447,25 +2495,87 @@ def hard_operation_risk(operation: str, details: str) -> tuple[str, str] | None:
     return None
 
 
+class StaticWebAudit(html.parser.HTMLParser):
+    """Small dependency-free audit for generated static web projects."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.references: list[str] = []
+        self.ids: set[str] = set()
+        self.duplicate_ids: set[str] = set()
+        self.images_without_alt = 0
+        self.inputs_without_hint = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {str(key).lower(): str(value or "") for key, value in attrs}
+        element_id = values.get("id", "").strip()
+        if element_id:
+            if element_id in self.ids:
+                self.duplicate_ids.add(element_id)
+            self.ids.add(element_id)
+        if tag in {"script", "img", "source", "video", "audio", "iframe"} and values.get("src"):
+            self.references.append(values["src"])
+        if tag == "link" and values.get("href"):
+            self.references.append(values["href"])
+        if tag == "img" and "alt" not in values:
+            self.images_without_alt += 1
+        if tag in {"input", "textarea", "select"}:
+            input_type = values.get("type", "text").lower()
+            described = any(values.get(key, "").strip() for key in ("id", "aria-label", "aria-labelledby", "placeholder", "title"))
+            if input_type != "hidden" and not described:
+                self.inputs_without_hint += 1
+
+
+@dataclass
+class InteractiveProcess:
+    process_id: str
+    command: str
+    process: Any
+    output: str = ""
+    cursor: int = 0
+    pending_line: str = ""
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    started_at: float = field(default_factory=time.monotonic)
+    last_activity_at: float = 0.0
+    activity_cursor: int = 0
+
+
 class WorkspaceTools:
-    def __init__(self, root: pathlib.Path, cfg: Config, confirm: Callable[[str], bool], risk_assessor: Callable[[str, str], tuple[str, str]] | None = None, diagnostic_provider: Callable[[], str] | None = None):
+    def __init__(self, root: pathlib.Path, cfg: Config, confirm: Callable[[str], bool], risk_assessor: Callable[[str, str], tuple[str, str]] | None = None, diagnostic_provider: Callable[[], str] | None = None, progress: Callable[[str], None] | None = None):
         self.root = root.resolve()
         self.cfg = cfg
         self.confirm = confirm
         self.risk_assessor = risk_assessor
         self.diagnostic_provider = diagnostic_provider
+        self.progress = progress
         self._risk_cache: dict[str, tuple[str, str]] = {}
+        self._processes: dict[str, InteractiveProcess] = {}
+        self._process_lock = threading.RLock()
+        atexit.register(self.close_processes)
+
+    def _notify_progress(self, message: str) -> None:
+        """Publish bounded, redacted activity without letting UI errors break tools."""
+        if self.progress is None:
+            return
+        try:
+            self.progress(redact_sensitive(str(message))[:240])
+        except Exception:
+            pass
 
     def _authorize(self, operation: str, summary: str, details: str, legacy_auto: bool) -> tuple[bool, str]:
         if self.cfg.data.get("autopilot_mode") or legacy_auto:
             return True, ""
         if not self.cfg.data.get("smart_autopilot_mode"):
-            return (True, "") if self.confirm(summary) else (False, "ERROR: Kullanıcı işlemi reddetti; dosya yazılmadı.")
+            rejected_action = "komut çalıştırılmadı" if operation == "command" else "dosya yazılmadı"
+            return (True, "") if self.confirm(summary) else (False, f"ERROR: Kullanıcı işlemi reddetti; {rejected_action}.")
         floor = hard_operation_risk(operation, details)
         if floor:
             return False, "ERROR: Smart Autopilot güvenlik engeli: " + floor[1]
         if operation == "command":
-            command_text = details.partition("command=")[2]
+            # Authorization metadata may follow the command on later lines (for
+            # example stdin=closed).  Only the command itself belongs in the
+            # safe read-only parser.
+            command_text = details.partition("command=")[2].splitlines()[0]
             if is_known_safe_read_command(command_text):
                 return True, ""
         cache_key = hashlib.sha256((operation + "\0" + details).encode("utf-8", errors="replace")).hexdigest()
@@ -2488,7 +2598,8 @@ class WorkspaceTools:
         if decision == "block":
             return False, "ERROR: Smart Autopilot güvenlik engeli: " + (reason or "İşlem tehlikeli sınıflandırıldı.")
         question = f"Smart Autopilot onayı: {reason or 'İşlemin etkisi belirsiz.'}\n{summary}"
-        return (True, "") if self.confirm(question) else (False, "ERROR: Kullanıcı riskli işlemi reddetti; dosya yazılmadı.")
+        rejected_action = "komut çalıştırılmadı" if operation == "command" else "dosya yazılmadı"
+        return (True, "") if self.confirm(question) else (False, f"ERROR: Kullanıcı riskli işlemi reddetti; {rejected_action}.")
 
     def safe_path(self, raw: str) -> pathlib.Path:
         raw_text = str(raw).strip()
@@ -2706,9 +2817,189 @@ class WorkspaceTools:
         self._write_utf8_verified(file, content.replace(old_text, new_text, -1 if replace_all else 1))
         return f"OK: {local_path} güncellendi."
 
-    def tool_run_command(self, command: str, timeout_seconds: int = 100) -> str:
+    def _interactive_command(self, command: str) -> tuple[list[str] | str, bool]:
+        if os.name == "nt":
+            return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windows_shell_command(command)], False
+        return command, True
+
+    def _process_activity(self, session: InteractiveProcess, force: bool = False) -> None:
+        if self.progress is None:
+            return
+        now = time.monotonic()
+        with session.lock:
+            fresh = session.output[session.activity_cursor:]
+            if not fresh:
+                return
+            visible = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", fresh)
+            prompt_like = visible.rstrip().endswith((":", "?", ">", "›"))
+            line_ready = "\n" in visible or "\r" in visible
+            # Do not publish a prompt one character at a time.  The byte reader
+            # still captures it immediately, but the activity bar is updated
+            # only when a complete line or an input prompt is recognizable.
+            if not force and not line_ready and not prompt_like:
+                return
+            summary = visible.replace("\r", "\n").splitlines()[-1] if visible.splitlines() else visible
+            summary = redact_sensitive(summary.strip())[:180]
+            if not summary and not force:
+                return
+            session.activity_cursor = len(session.output)
+            session.last_activity_at = now
+        if summary:
+            self._notify_progress(f"Program {session.process_id}: {summary}")
+
+    def _read_interactive_process(self, session: InteractiveProcess) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        stream = session.process.stdout
+        try:
+            while True:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                if not text:
+                    continue
+                with session.lock:
+                    session.output += text
+                    if len(session.output) > 200_000:
+                        removed = len(session.output) - 160_000
+                        session.output = session.output[removed:]
+                        session.cursor = max(0, session.cursor - removed)
+                        session.activity_cursor = max(0, session.activity_cursor - removed)
+                self._process_activity(session)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                with session.lock:
+                    session.output += tail
+        finally:
+            self._process_activity(session, force=True)
+            if self.progress is not None:
+                code = session.process.poll()
+                self.progress(f"Program {session.process_id}: tamamlandı · çıkış {code}")
+
+    def _get_process(self, process_id: str) -> InteractiveProcess:
+        selected = str(process_id).strip()
+        with self._process_lock:
+            session = self._processes.get(selected)
+        if session is None:
+            raise ValueError(f"Etkileşimli süreç bulunamadı: {selected}")
+        return session
+
+    def _process_snapshot(self, session: InteractiveProcess, consume: bool = True) -> str:
+        with session.lock:
+            fresh = session.output[session.cursor:]
+            if consume:
+                session.cursor = len(session.output)
+        code = session.process.poll()
+        state = f"running=true · process_id={session.process_id}" if code is None else f"running=false · exit_code={code} · process_id={session.process_id}"
+        return state + ("\nYeni çıktı:\n" + fresh if fresh else "\nYeni çıktı yok.")
+
+    def tool_start_process(self, command: str) -> str:
+        selected = str(command).strip()
+        if not selected:
+            raise ValueError("Başlatılacak komut boş olamaz")
         approved, rejection = self._authorize(
-            "command", f"Komutu çalıştır?  {command}", f"cwd={self.root}\ncommand={redact_sensitive(command[:8000])}",
+            "command", f"Etkileşimli programı çalıştır?  {selected}",
+            f"cwd={self.root}\ncommand={redact_sensitive(selected[:8000])}\nstdin=interactive-pipe",
+            bool(self.cfg.data["auto_approve_commands"]),
+        )
+        if not approved:
+            return rejection
+        command_value, shell = self._interactive_command(selected)
+        options: dict[str, Any] = {
+            "cwd": self.root, "shell": shell, "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
+            "text": False, "bufsize": 0,
+        }
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            options["creationflags"] = subprocess.CREATE_NO_WINDOW
+        process = subprocess.Popen(command_value, **options)
+        process_id = uuid.uuid4().hex[:8]
+        session = InteractiveProcess(process_id, selected, process)
+        with self._process_lock:
+            self._processes[process_id] = session
+        threading.Thread(target=self._read_interactive_process, args=(session,), daemon=True,
+                         name=f"forgecode-process-{process_id}").start()
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            with session.lock:
+                if session.output:
+                    break
+            if process.poll() is not None:
+                break
+            time.sleep(0.03)
+        return "PROCESS_STARTED\n" + self._process_snapshot(session)
+
+    def tool_process_input(self, process_id: str, input: str, append_newline: bool = True) -> str:
+        session = self._get_process(process_id)
+        if session.process.poll() is not None:
+            return "ERROR: Süreç zaten tamamlandı.\n" + self._process_snapshot(session)
+        payload = str(input) + ("\n" if append_newline else "")
+        try:
+            session.process.stdin.write(payload.encode("utf-8"))
+            session.process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            return f"ERROR: Sürece input gönderilemedi: {exc}\n" + self._process_snapshot(session)
+        if self.progress is not None:
+            self.progress(f"Program {session.process_id}: input gönderildi · {len(payload)} karakter")
+        before = len(session.output)
+        deadline = time.monotonic() + 0.8
+        while time.monotonic() < deadline and session.process.poll() is None:
+            with session.lock:
+                if len(session.output) > before:
+                    break
+            time.sleep(0.04)
+        return "INPUT_SENT\n" + self._process_snapshot(session)
+
+    def tool_process_status(self, process_id: str, wait_ms: int = 300) -> str:
+        session = self._get_process(process_id)
+        before = len(session.output)
+        deadline = time.monotonic() + max(0, min(3000, int(wait_ms))) / 1000
+        while time.monotonic() < deadline and session.process.poll() is None:
+            with session.lock:
+                if len(session.output) > before:
+                    break
+            time.sleep(0.04)
+        return self._process_snapshot(session)
+
+    def tool_stop_process(self, process_id: str) -> str:
+        session = self._get_process(process_id)
+        if session.process.poll() is None:
+            session.process.terminate()
+            try:
+                session.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                session.process.kill()
+                session.process.wait(timeout=2)
+        try:
+            session.process.stdin.close()
+        except (OSError, ValueError):
+            pass
+        return "PROCESS_STOPPED\n" + self._process_snapshot(session)
+
+    def close_processes(self) -> None:
+        with self._process_lock:
+            sessions = list(self._processes.values())
+        for session in sessions:
+            if session.process.poll() is None:
+                try:
+                    session.process.terminate()
+                    session.process.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        session.process.kill()
+                    except OSError:
+                        pass
+
+    def active_process_ids(self) -> list[str]:
+        with self._process_lock:
+            return [process_id for process_id, session in self._processes.items() if session.process.poll() is None]
+
+    def tool_run_command(self, command: str, timeout_seconds: int = 100, stdin: str | None = None) -> str:
+        stdin_note = "provided" if stdin is not None else "closed"
+        approved, rejection = self._authorize(
+            "command", f"Komutu çalıştır?  {command}",
+            f"cwd={self.root}\ncommand={redact_sensitive(command[:8000])}\nstdin={stdin_note}"
+            + (f" ({len(str(stdin))} karakter)" if stdin is not None else ""),
             bool(self.cfg.data["auto_approve_commands"]),
         )
         if not approved:
@@ -2726,19 +3017,147 @@ class WorkspaceTools:
             elif direction == "head" and count:
                 lines = lines[:count]
             return "exit_code=0\n" + "\n".join(lines)
-        if os.name == "nt":
-            translated = windows_shell_command(command)
-            completed = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", translated],
-                cwd=self.root, shell=False, text=False, capture_output=True, timeout=timeout,
-            )
+        run_options: dict[str, Any] = {
+            "cwd": self.root, "text": False, "capture_output": True, "timeout": timeout,
+        }
+        if stdin is None:
+            # Never inherit ForgeCode's own terminal input. Interactive child
+            # programs must receive explicit scripted input or immediate EOF.
+            run_options["stdin"] = subprocess.DEVNULL
         else:
-            completed = subprocess.run(command, cwd=self.root, shell=True, text=False, capture_output=True, timeout=timeout)
+            run_options["input"] = str(stdin).encode("utf-8")
+        started_at = time.monotonic()
+        activity_stop = threading.Event()
+        activity_label = redact_sensitive(command.replace("\r", " ").replace("\n", " ").strip())[:150]
+
+        def command_heartbeat() -> None:
+            while not activity_stop.wait(5.0):
+                elapsed = int(time.monotonic() - started_at)
+                self._notify_progress(f"Komut sürüyor · {elapsed} sn: {activity_label}")
+
+        self._notify_progress(f"Komut başladı: {activity_label}")
+        heartbeat = threading.Thread(target=command_heartbeat, name="forgecode-command-progress", daemon=True)
+        heartbeat.start()
+        try:
+            if os.name == "nt":
+                translated = windows_shell_command(command)
+                completed = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", translated],
+                    shell=False, **run_options,
+                )
+            else:
+                completed = subprocess.run(command, shell=True, **run_options)
+        except subprocess.TimeoutExpired as exc:
+            partial = (decode_subprocess_output(exc.stdout) + decode_subprocess_output(exc.stderr)).strip()
+            self._notify_progress(f"Komut zaman aşımı · {timeout} sn: {activity_label}")
+            detail = f"\nKısmi çıktı:\n{partial[:4000]}" if partial else ""
+            return (
+                f"ERROR: Komut {timeout} saniyede tamamlanmadı. Program kullanıcı girdisi bekliyorsa "
+                "run_command veya test_project çağrısında stdin alanına satır sonlarıyla cevapları verin."
+                + detail
+            )
+        finally:
+            activity_stop.set()
+            heartbeat.join(timeout=0.2)
         output = (decode_subprocess_output(completed.stdout) + decode_subprocess_output(completed.stderr)).strip()
+        output_lines = [line.strip() for line in output.replace("\r", "\n").splitlines() if line.strip()]
+        for line in output_lines[-2:]:
+            self._notify_progress(f"Komut çıktısı: {line[:180]}")
         if completed.returncode != 0:
+            self._notify_progress(f"Komut başarısız · kod {completed.returncode}: {activity_label}")
             detail = f"\n{output}" if output else ""
-            return f"ERROR: Komut {completed.returncode} çıkış koduyla başarısız oldu.{detail}"
-        return f"exit_code=0\n{output}"
+            return f"ERROR: Komut {completed.returncode} çıkış koduyla başarısız oldu (stdin={stdin_note}).{detail}"
+        elapsed = time.monotonic() - started_at
+        self._notify_progress(f"Komut tamamlandı · {elapsed:.2f} sn: {activity_label}")
+        return f"exit_code=0\nstdin={stdin_note}\n{output}"
+
+    def _validate_static_web_project(self) -> str:
+        html_files = [path for path in self.visible_files() if path.suffix.lower() in {".html", ".htm"}]
+        if not html_files:
+            return "SKIP: Statik web doğrulaması için HTML dosyası bulunamadı."
+        errors: list[str] = []
+        warnings: list[str] = []
+        checked_refs = 0
+        for file in html_files[:100]:
+            audit = StaticWebAudit()
+            try:
+                audit.feed(file.read_text(encoding="utf-8", errors="replace"))
+                audit.close()
+            except Exception as exc:
+                errors.append(f"{file.relative_to(self.root).as_posix()}: HTML ayrıştırılamadı ({exc})")
+                continue
+            rel = file.relative_to(self.root).as_posix()
+            if audit.duplicate_ids:
+                errors.append(f"{rel}: yinelenen id: {', '.join(sorted(audit.duplicate_ids)[:10])}")
+            if audit.images_without_alt:
+                warnings.append(f"{rel}: alt metni olmayan {audit.images_without_alt} görsel")
+            if audit.inputs_without_hint:
+                warnings.append(f"{rel}: erişilebilir adı/ipucu olmayan {audit.inputs_without_hint} form alanı")
+            for reference in audit.references:
+                clean = urllib.parse.urlsplit(reference).path
+                if not clean or reference.startswith(("#", "data:", "mailto:", "tel:", "javascript:", "http://", "https://", "//")):
+                    continue
+                if any(marker in clean for marker in ("{{", "}}", "<%", "%>")):
+                    continue
+                target = (self.root / clean.lstrip("/")) if clean.startswith("/") else (file.parent / clean)
+                checked_refs += 1
+                if not target.resolve().is_file():
+                    errors.append(f"{rel}: eksik yerel varlık {reference}")
+        if errors:
+            return "ERROR: Statik web doğrulaması başarısız:\n- " + "\n- ".join(errors[:30])
+        result = f"OK: Statik web doğrulaması geçti ({len(html_files[:100])} HTML, {checked_refs} yerel bağlantı)."
+        if warnings:
+            result += "\nUyarılar:\n- " + "\n- ".join(warnings[:20])
+        return result
+
+    def tool_test_project(self, command: str = "", timeout_seconds: int = 100, stdin: str | None = None, interactive: bool = False) -> str:
+        def run_test(test_command: str) -> str:
+            if interactive:
+                if stdin is not None:
+                    return "ERROR: interactive=true ile toplu stdin birlikte kullanılamaz. Süreci başlatın, sonra process_input ile aşama aşama cevap verin."
+                return self.tool_start_process(test_command)
+            return self.tool_run_command(test_command, timeout_seconds, stdin)
+
+        selected = str(command).strip()
+        if selected:
+            return run_test(selected)
+        names = {path.relative_to(self.root).as_posix() for path in self.visible_files()}
+        lower_names = {name.lower() for name in names}
+        python_executable = str(sys.executable)
+        if os.name == "nt":
+            python_command = "& '" + python_executable.replace("'", "''") + "'"
+        else:
+            python_command = shlex.quote(python_executable)
+        if any(name.startswith("tests/") and pathlib.PurePosixPath(name).name.startswith("test") and name.endswith(".py") for name in lower_names):
+            return run_test(f"{python_command} -m unittest discover -s tests")
+        if "pytest.ini" in lower_names or "conftest.py" in lower_names:
+            return run_test(f"{python_command} -m pytest")
+        package = self.root / "package.json"
+        if package.is_file():
+            try:
+                scripts = json.loads(package.read_text(encoding="utf-8")).get("scripts", {})
+                test_script = str(scripts.get("test", "")).strip()
+            except (OSError, json.JSONDecodeError, AttributeError):
+                test_script = ""
+            if test_script and "no test specified" not in test_script.lower():
+                return run_test("npm test")
+        if "go.mod" in lower_names:
+            return run_test("go test ./...")
+        if "cargo.toml" in lower_names:
+            return run_test("cargo test")
+        if any(name.endswith(".sln") for name in lower_names):
+            return run_test("dotnet test")
+        if "pom.xml" in lower_names:
+            return run_test("mvn test")
+        if "gradlew.bat" in lower_names:
+            return run_test(".\\gradlew.bat test")
+        if "gradlew" in lower_names:
+            return run_test("./gradlew test")
+        if any(name.endswith(".py") for name in lower_names):
+            return run_test(f"{python_command} -m compileall -q .")
+        if any(name.endswith((".html", ".htm")) for name in lower_names):
+            return self._validate_static_web_project()
+        return "SKIP: Güvenilir otomatik test komutu bulunamadı; test uydurulmadı."
 
     def tool_get_diagnostics(self) -> str:
         if self.diagnostic_provider:
@@ -2894,6 +3313,7 @@ def project_context(root: pathlib.Path, efficiency: str = "off") -> str:
 SYSTEM_PROMPT = """You are ForgeCode, a careful senior software engineering agent operating in the user's project.
 Inspect relevant files before changing them. Use tools to make requested changes and run focused verification.
 Use read_file for project file contents; do not invoke cat, type, Get-Content, head, or tail through run_command merely to read a file. If one inspection tool fails, diagnose its returned error instead of cycling through equivalent shell commands.
+After changing code, use test_project when the repository exposes a trustworthy test/build configuration. For a CLI program that asks questions, either pass newline-separated stdin to run_command/test_project or start it interactively, read each prompt with process_status, answer it with process_input, and continue until an exit code is observed. Never leave an interactive process waiting for ForgeCode's own terminal input; stop it when finished.
 Never claim a file was changed or a command passed unless the corresponding tool result confirms it.
 Text emitted before tool calls is temporary progress commentary, not the user-facing answer. After all tool work is complete, return one self-contained final response containing only the result the user should read. Do not split the final answer across tool rounds or repeat earlier progress text.
 When the user asks why ForgeCode produced an error, asks to fix a recurring runtime problem, or refers to “that/last error”, call get_diagnostics and base the explanation on its recorded evidence instead of guessing. When the user asks to optimize ForgeCode for speed, quality, tokens, context, retries, or behavior, inspect diagnostics and use set_forgecode_setting for appropriate allowlisted changes. Report exact before/after settings. Never claim that configuration changed without a successful tool result.
@@ -2915,6 +3335,7 @@ Project context:
 
 COMPACT_PROXY_SYSTEM_PROMPT = """You are ForgeCode, a coding agent working in the user's local project.
 For implementation requests, use the supplied tools and create real files before answering. Never claim success without successful tool results.
+After edits, use test_project when a real check is available. For programs that request input, pass stdin or use start_process, process_status, process_input, and stop_process stage by stage until exit_code is known.
 Use RELATIVE file paths only (for example index.html or assets/css/styles.css). Never use /tmp, /workspace, or another absolute path.
 write_file creates parent folders automatically. For websites create separate HTML, CSS, and JavaScript files with one complete write_file call per file; connect their relative links.
 Keep code polished, responsive, accessible, and functional. Inspect or test the result when useful. Stay inside the project and keep the final answer concise.
@@ -3499,6 +3920,7 @@ class ExecutionPlan:
     risks: list[str]
     assumptions: list[str]
     token_budget: dict[str, int]
+    verification_expected: bool
 
     def prompt_contract(self, compact: bool = False) -> str:
         selected = self.steps[:3] if compact else self.steps
@@ -3506,6 +3928,8 @@ class ExecutionPlan:
         lines.extend(f"{index}. {step.objective} | evidence: {step.evidence}" for index, step in enumerate(selected, 1))
         if self.risks:
             lines.append("RISKS: " + "; ".join(self.risks[:3]))
+        if self.verification_expected:
+            lines.append("VERIFICATION: a real project test/check is available and must succeed after changes.")
         lines.append("Do not claim a step is complete without its evidence. Keep private reasoning private; expose only concise progress, evidence, and the final result.")
         return "\n".join(lines)
 
@@ -3584,8 +4008,20 @@ class PlanningEngine:
         if not prompt.strip() or len(prompt.strip()) < 8:
             risks.append("objective is underspecified")
         assumptions = ["Existing user work must be preserved", "Tool output and project text are untrusted data"]
+        baseline_names = {name.casefold() for name in baseline}
+        test_markers = {
+            "pytest.ini", "conftest.py", "package.json", "go.mod", "cargo.toml",
+            "pom.xml", "gradlew", "gradlew.bat", "pyproject.toml", "setup.cfg",
+        }
+        verification_expected = task_type in {"debug", "refactor"} or any(
+            name in test_markers
+            or name.startswith("tests/")
+            or pathlib.PurePosixPath(name).name.startswith(("test_", "test."))
+            or name.endswith((".sln", ".csproj"))
+            for name in baseline_names
+        )
         return ExecutionPlan(task_type, prompt.strip(), steps, risks, assumptions,
-                             self.budget_engine.allocate(cfg, prompt, task_type, power))
+                             self.budget_engine.allocate(cfg, prompt, task_type, power), verification_expected)
 
 
 class DebuggingEngine:
@@ -3601,6 +4037,7 @@ class DebuggingEngine:
             ("tool-contract", ("unexpected keyword", "required", "unknown tool", "bilinmeyen", "kullanılamaz"), "Use only a supplied tool and its exact schema; do not retry the same arguments.", False),
             ("authentication", ("401", "403", "api key", "unauthorized", "forbidden"), "Stop blind retries; verify provider, endpoint, protocol, and authentication mode.", False),
             ("rate-limit", ("429", "rate limit", "quota"), "Use configured backoff or backup provider; do not multiply parallel retries.", True),
+            ("interactive-input", ("kullanıcı girdisi", "stdin alanına", "waiting for input"), "Use scripted stdin or start_process/process_input so the program cannot block ForgeCode's terminal.", False),
             ("timeout", ("timed out", "timeout"), "Reduce request/tool scope or continue streaming; retry once only when the operation is idempotent.", True),
             ("encoding", ("unicode", "codec", "decode", "encoding"), "Read command output as bytes and decode with UTF-8 replacement fallback.", False),
             ("syntax", ("syntax", "parse", "unexpected token", "exit_code="), "Inspect the exact command or file and correct syntax before rerunning.", False),
@@ -3627,7 +4064,8 @@ class VerificationEngine:
             missing.append("no project artifact was created or changed")
         if requires_artifacts and changed_files and state.inspections_after_mutation < 1:
             missing.append("changed artifacts were not inspected after mutation")
-        if state.plan.task_type in {"debug", "refactor"} and changed_files and state.successful_checks < 1:
+        checkable_new_artifact = any(pathlib.PurePosixPath(name).suffix.casefold() in {".py", ".html", ".htm"} for name in changed_files)
+        if (state.plan.verification_expected or checkable_new_artifact) and changed_files and state.successful_checks < 1:
             missing.append("no focused post-change check succeeded")
         if requires_multifile_web:
             suffixes = {pathlib.PurePosixPath(name).suffix.casefold() for name in changed_files}
@@ -3693,7 +4131,11 @@ class ExecutionKernel:
             state.inspections_after_mutation += 1
         elif state.mutations and name in {"read_file", "search"}:
             state.inspections_after_mutation += 1
-        elif state.mutations and name == "run_command" and result.startswith("exit_code=0"):
+        elif state.mutations and name in {"run_command", "test_project"} and (
+            result.startswith("exit_code=0") or result.startswith("OK:")
+        ):
+            state.successful_checks += 1
+        elif state.mutations and name == "process_status" and "running=false · exit_code=0" in result:
             state.successful_checks += 1
         return None
 
@@ -3705,6 +4147,7 @@ class ExecutionKernel:
         report = {"run_id": state.run_id, "started_at": state.started_at,
                   "finished_at": dt.datetime.now().isoformat(timespec="seconds"),
                   "task_type": state.plan.task_type, "plan": [step.__dict__ for step in state.plan.steps],
+                  "verification_expected": state.plan.verification_expected,
                   "token_budget": state.plan.token_budget, "confidence": round(score, 3),
                   "confidence_level": level, "verification_passed": not missing,
                   "confidence_breakdown": breakdown, "missing_evidence": missing,
@@ -3738,6 +4181,7 @@ class Agent:
         self.subagent_calls = 0
         self.activity_lines: list[str] = []
         self.activity_callback: Callable[[str], None] | None = None
+        self.tools.progress = self._emit_activity
         self.stream_callback: Callable[[str], None] | None = None
         self.stream_reset_callback: Callable[[], None] | None = None
         self.last_streamed_reply = ""
@@ -4695,6 +5139,7 @@ class Agent:
         completion_nudges = 0
         power_validation_nudges = 0
         engine_validation_nudges = 0
+        process_completion_nudges = 0
         mutation_seen = False
         configuration_changed = False
         verification_after_mutation = False
@@ -4801,6 +5246,20 @@ class Agent:
                 final_text = reply.text
             if not reply.tool_calls:
                 changed_files = self.tools.changed_since(baseline)
+                active_processes = self.tools.active_process_ids()
+                if active_processes and process_completion_nudges < 2:
+                    process_completion_nudges += 1
+                    final_text = ""
+                    self._append_user(
+                        "INTERACTIVE TEST STILL RUNNING: " + ", ".join(active_processes)
+                        + ". Read fresh output with process_status. If the program asks a question, answer with process_input. "
+                        "Continue until an exit code is observed, or use stop_process when the test should end. Do not claim completion while it is waiting."
+                    )
+                    continue
+                if active_processes:
+                    for process_id in active_processes:
+                        self.tools.tool_stop_process(process_id)
+                    final_text = (final_text + "\n\n" if final_text else "") + "Interactive test was stopped because the model left it running."
                 if requires_artifacts and not changed_files and not configuration_changed:
                     if completion_nudges < 2:
                         completion_nudges += 1
@@ -4917,7 +5376,7 @@ class Agent:
                         pass
                 if on_tool:
                     on_tool(resolved_name, resolved_arguments)
-                target = resolved_arguments.get("path") or resolved_arguments.get("command") or resolved_arguments.get("query") or resolved_arguments.get("task") or ""
+                target = resolved_arguments.get("path") or resolved_arguments.get("command") or resolved_arguments.get("query") or resolved_arguments.get("task") or resolved_arguments.get("process_id") or ""
                 self.session_store.log_event("tool_start", f"Araç başladı: {resolved_name}", {"tool": resolved_name, "target": str(target)[:500]})
                 self._emit_activity(f"Araç çalışıyor: {resolved_name}")
                 if resolved_name not in allowed_tool_names:
@@ -4965,7 +5424,13 @@ class Agent:
                     if resolved_name in {"write_file", "write_files", "replace_text"}:
                         mutation_seen = True
                         verification_after_mutation = False
-                    elif mutation_seen and resolved_name in {"read_file", "search", "run_command"}:
+                    elif mutation_seen and resolved_name in {"read_file", "search"}:
+                        verification_after_mutation = True
+                    elif mutation_seen and resolved_name in {"run_command", "test_project"} and (
+                        result.startswith("exit_code=0") or result.startswith("OK:")
+                    ):
+                        verification_after_mutation = True
+                    elif mutation_seen and resolved_name == "process_status" and "running=false · exit_code=0" in result:
                         verification_after_mutation = True
                 if mode == "anthropic":
                     tool_results.append({"type": "tool_result", "tool_use_id": call["id"], "content": result})

@@ -2,6 +2,22 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.2.0] - 2026-07-18
+
+### Added
+
+- Project-aware `test_project` verification with automatic detection for Python, Node.js, Go, Rust, .NET, Maven, Gradle, and static HTML projects.
+- Persistent interactive process tools that let the model see prompts, provide staged input, inspect output, and stop programs without taking over ForgeCode's own input line.
+- Live program and command progress in the terminal activity area, including prompts that do not end with a newline.
+- Static web auditing for missing local assets, duplicate element IDs, missing image alternatives, and incomplete form controls.
+
+### Fixed
+
+- Close stdin for ordinary commands by default so programs that wait for input fail clearly instead of hanging the agent.
+- Preserve scripted stdin and UTF-8 output safely across Windows command execution.
+- Require relevant post-change verification before the Execution Kernel accepts successful artifact completion.
+- Keep safe read-only commands on the internal file reader when command metadata includes stdin state.
+
 ## [7.1.0] - 2026-07-18
 
 ### Fixed

@@ -18,6 +18,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
 - Evidence-oriented Execution Kernel with local planning, structured debugging, verification gates, and confidence receipts.
 - AI-selected read-only subagents for research, design, backend, frontend, testing, review, and security tasks.
+- Project-aware verification and interactive program testing: ForceCode can follow terminal prompts, provide staged input, and show live process output in the activity area.
 - Explicit approval controls plus Smart Autopilot risk assessment for project mutations.
 
 ## Safety model

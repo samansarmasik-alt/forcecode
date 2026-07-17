@@ -4,6 +4,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -229,6 +230,74 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("src/a.txt:1", self.tools.tool_search("WORLD"))
         self.assertIn("OK", self.tools.tool_replace_text("src/a.txt", "world", "agent"))
         self.assertEqual((self.root / "src/a.txt").read_text(), "hello agent\nsecond")
+
+    def test_run_command_accepts_scripted_stdin_and_never_inherits_terminal(self):
+        (self.root / "prompt_app.py").write_text(
+            "name=input('Name: ')\nage=input('Age: ')\nprint(f'Hello {name}, age {age}')\n", encoding="utf-8"
+        )
+        executable = str(sys.executable).replace("'", "''")
+        command = f"& '{executable}' prompt_app.py" if os.name == "nt" else f"{forgecode.shlex.quote(str(sys.executable))} prompt_app.py"
+        result = self.tools.tool_run_command(command, 10, "Ada\n31\n")
+        self.assertTrue(result.startswith("exit_code=0"))
+        self.assertIn("stdin=provided", result)
+        self.assertIn("Hello Ada, age 31", result)
+
+    def test_run_command_publishes_progress_and_last_output_lines(self):
+        self.cfg.data["auto_approve_commands"] = True
+        activity = []
+        tools = forgecode.WorkspaceTools(self.root, self.cfg, lambda _: False, progress=activity.append)
+        completed = mock.Mock(returncode=0, stdout=b"first\nsecond\nthird\n", stderr=b"")
+        with mock.patch.object(forgecode.subprocess, "run", return_value=completed):
+            result = tools.tool_run_command("demo-command")
+        self.assertTrue(result.startswith("exit_code=0"))
+        self.assertTrue(any("Komut başladı" in line for line in activity))
+        self.assertTrue(any("Komut çıktısı: second" in line for line in activity))
+        self.assertTrue(any("Komut çıktısı: third" in line for line in activity))
+        self.assertTrue(any("Komut tamamlandı" in line for line in activity))
+
+    def test_run_command_closes_stdin_instead_of_hanging(self):
+        (self.root / "eof_app.py").write_text(
+            "try:\n input('Value: ')\nexcept EOFError:\n print('EOF received')\n", encoding="utf-8"
+        )
+        executable = str(sys.executable).replace("'", "''")
+        command = f"& '{executable}' eof_app.py" if os.name == "nt" else f"{forgecode.shlex.quote(str(sys.executable))} eof_app.py"
+        result = self.tools.tool_run_command(command, 10)
+        self.assertTrue(result.startswith("exit_code=0"))
+        self.assertIn("stdin=closed", result)
+        self.assertIn("EOF received", result)
+
+    def test_interactive_process_receives_staged_input_and_streams_progress(self):
+        (self.root / "interactive_app.py").write_text(
+            "name=input('Name: ')\nprint('Hello '+name, flush=True)\nage=input('Age: ')\nprint('Done '+age, flush=True)\n",
+            encoding="utf-8",
+        )
+        progress = []
+        self.tools.progress = progress.append
+        executable = str(sys.executable).replace("'", "''")
+        command = f"& '{executable}' interactive_app.py" if os.name == "nt" else f"{forgecode.shlex.quote(str(sys.executable))} interactive_app.py"
+        started = self.tools.tool_start_process(command)
+        match = re.search(r"process_id=([0-9a-f]+)", started)
+        self.assertIsNotNone(match)
+        process_id = match.group(1)
+        self.assertIn("Name:", started)
+        first = self.tools.tool_process_input(process_id, "Ada")
+        second = self.tools.tool_process_status(process_id, 1000)
+        self.assertIn("Hello Ada", first + second)
+        self.assertIn("Age:", first + second)
+        third = self.tools.tool_process_input(process_id, "31")
+        final = self.tools.tool_process_status(process_id, 1000)
+        self.assertIn("Done 31", third + final)
+        self.assertIn("running=false · exit_code=0", third + final)
+        self.assertTrue(any("Program " in line for line in progress))
+
+    def test_static_web_project_test_reports_missing_assets(self):
+        (self.root / "index.html").write_text(
+            '<link rel="stylesheet" href="missing.css"><input><img src="photo.png">', encoding="utf-8"
+        )
+        result = self.tools.tool_test_project()
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("missing.css", result)
+        self.assertIn("photo.png", result)
 
     def test_rejects_ambiguous_replace(self):
         (self.root / "x.txt").write_text("a a")
@@ -1606,6 +1675,7 @@ class OutcomeGuardTests(unittest.TestCase):
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
             replies = [
                 forgecode.ModelReply("", [{"id": "t1", "name": "write_file", "arguments": {"path": "site/index.html", "content": "<h1>Restaurant</h1>"}}], forgecode.Usage(), [{"type": "tool_use", "id": "t1", "name": "write_file", "input": {"path": "site/index.html", "content": "<h1>Restaurant</h1>"}}]),
+                forgecode.ModelReply("", [{"id": "test", "name": "test_project", "arguments": {}}], forgecode.Usage(), [{"type": "tool_use", "id": "test", "name": "test_project", "input": {}}]),
                 forgecode.ModelReply("Site hazır.", [], forgecode.Usage(), [{"type": "text", "text": "Site hazır."}]),
             ]
             provider = mock.MagicMock()
@@ -1690,6 +1760,7 @@ class OutcomeGuardTests(unittest.TestCase):
                 ]}}], forgecode.Usage(), [{"type": "tool_use", "id": "b", "name": "write_files", "input": {}}]),
                 forgecode.ModelReply("Çoklu site hazır", [], forgecode.Usage(), [{"type": "text", "text": "Çoklu site hazır"}]),
                 forgecode.ModelReply("", [{"id": "c", "name": "read_file", "arguments": {"path": "site/index.html"}}], forgecode.Usage(), [{"type": "tool_use", "id": "c", "name": "read_file", "input": {"path": "site/index.html"}}]),
+                forgecode.ModelReply("", [{"id": "test", "name": "test_project", "arguments": {}}], forgecode.Usage(), [{"type": "tool_use", "id": "test", "name": "test_project", "input": {}}]),
                 forgecode.ModelReply("Çoklu site hazır", [], forgecode.Usage(), [{"type": "text", "text": "Çoklu site hazır"}]),
             ]
             provider = mock.MagicMock()
@@ -1699,7 +1770,7 @@ class OutcomeGuardTests(unittest.TestCase):
             self.assertIn("Çoklu site hazır", answer)
             self.assertTrue((root / "site/assets/css/styles.css").is_file())
             self.assertTrue((root / "site/assets/js/main.js").is_file())
-            self.assertEqual(provider.request.call_count, 6)
+            self.assertEqual(provider.request.call_count, 7)
 
     def test_complex_task_uses_ai_chosen_parallel_assignments(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1836,9 +1907,13 @@ class OutcomeGuardTests(unittest.TestCase):
                 "content": [{"type": "tool_use", "id": "verify", "name": "read_file", "input": {"path": "index.html"}}],
                 "usage": {"input_tokens": 8, "output_tokens": 3},
             }
+            test_reply = {
+                "content": [{"type": "tool_use", "id": "test", "name": "test_project", "input": {}}],
+                "usage": {"input_tokens": 8, "output_tokens": 3},
+            }
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
             seen_tools = []
-            with mock.patch.object(agent, "plan_delegations", return_value=[]), mock.patch.object(forgecode, "post_json", side_effect=[tool_reply, final_reply, verify_reply, final_reply]) as post:
+            with mock.patch.object(agent, "plan_delegations", return_value=[]), mock.patch.object(forgecode, "post_json", side_effect=[tool_reply, final_reply, verify_reply, test_reply, final_reply]) as post:
                 answer = agent.ask("Gelişmiş restoran web sitesi oluştur", on_tool=lambda name, args: seen_tools.append((name, dict(args))))
             self.assertIn("Site tamamlandı", answer)
             self.assertTrue((root / "index.html").is_file())
@@ -1847,7 +1922,7 @@ class OutcomeGuardTests(unittest.TestCase):
             sent_tool_names = {tool["name"] for tool in post.call_args_list[0].args[2]["tools"]}
             self.assertIn("write_file", sent_tool_names)
             self.assertNotIn("write_files", sent_tool_names)
-            self.assertEqual(post.call_count, 4)
+            self.assertEqual(post.call_count, 5)
             self.assertTrue(all(call.args[3] == 30 for call in post.call_args_list))
             first_payload = post.call_args_list[0].args[2]
             self.assertEqual(first_payload["max_tokens"], 8192)
@@ -1877,6 +1952,10 @@ class OutcomeGuardTests(unittest.TestCase):
                     "", [{"id": "read-1", "name": "read_file", "arguments": {"path": "index.html"}}],
                     forgecode.Usage(), [{"type": "tool_use", "id": "read-1", "name": "read_file", "input": {"path": "index.html"}}],
                 ),
+                forgecode.ModelReply(
+                    "", [{"id": "test-1", "name": "test_project", "arguments": {}}],
+                    forgecode.Usage(), [{"type": "tool_use", "id": "test-1", "name": "test_project", "input": {}}],
+                ),
                 forgecode.ModelReply("Tasarım hazır.", [], forgecode.Usage(), [{"type": "text", "text": "Tasarım hazır."}]),
             ]
             agent.provider = provider
@@ -1886,7 +1965,7 @@ class OutcomeGuardTests(unittest.TestCase):
             self.assertIn("run_command", sent_names)
             self.assertTrue((root / "index.html").is_file())
             self.assertIn("index.html", answer)
-            self.assertEqual(provider.request.call_count, 4)
+            self.assertEqual(provider.request.call_count, 5)
             self.assertEqual(provider.request.call_args_list[0].args[3], 8192)
             self.assertIn("POWER MODE", provider.request.call_args_list[0].args[0])
 
