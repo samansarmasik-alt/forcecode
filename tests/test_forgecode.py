@@ -742,6 +742,7 @@ class ProviderTests(unittest.TestCase):
                 "custom_endpoint_path": "exact",
                 "api_mode": "chat",
                 "auto_subagents": False,
+                "streaming_enabled": False,
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
             success = {"content": [{"type": "text", "text": "Merhaba"}], "usage": {}}
@@ -799,6 +800,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "3.5", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "auto_subagents": False, "retry_attempts": 1,
+                "streaming_enabled": False,
                 "model_cache": {"custom": {"models": ["3.5", "sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -818,6 +820,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "chat-only", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "auto_subagents": False,
+                "streaming_enabled": False,
                 "model_cache": {"custom": {"models": ["chat-only"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1627,6 +1630,51 @@ class OutcomeGuardTests(unittest.TestCase):
             self.assertIn("Toplu yazma tamamlandı", result)
             self.assertTrue((root / "site/assets/js/main.js").is_file())
 
+    def test_rejected_write_is_reported_as_error_not_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            tools = forgecode.WorkspaceTools(root, cfg, lambda _: False)
+            result = tools.tool_write_file("blocked.txt", "must not exist")
+            self.assertTrue(result.startswith("ERROR:"))
+            self.assertFalse((root / "blocked.txt").exists())
+
+    def test_truncated_write_call_recovers_with_full_budget_and_creates_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("openrouter")
+            cfg.data.update({
+                "auto_subagents": False,
+                "auto_approve_writes": True,
+                "efficiency_mode": "max",
+                "max_tokens": 8192,
+                "timeout_seconds": 30,
+                "streaming_enabled": True,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+            provider = mock.MagicMock()
+            provider.request.side_effect = [
+                forgecode.ModelReply(
+                    "", [{"id": "cut", "name": "write_file", "arguments": {}, "parse_error": "tool arguments were cut off"}],
+                    forgecode.Usage(), {"role": "assistant", "content": None, "tool_calls": [{"id": "cut", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]}, "length",
+                ),
+                forgecode.ModelReply(
+                    "", [{"id": "write", "name": "write_file", "arguments": {"path": "created.txt", "content": "complete"}}],
+                    forgecode.Usage(), {"role": "assistant", "content": None, "tool_calls": [{"id": "write", "type": "function", "function": {"name": "write_file", "arguments": "{\"path\":\"created.txt\",\"content\":\"complete\"}"}}]},
+                ),
+                forgecode.ModelReply("Created and verified.", [], forgecode.Usage(), {"role": "assistant", "content": "Created and verified."}),
+            ]
+            agent.provider = provider
+            answer = agent.ask("Create created.txt with complete content")
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "complete")
+            self.assertIn("created.txt", answer)
+            self.assertEqual(provider.request.call_args_list[0].args[3], 4096)
+            self.assertEqual(provider.request.call_args_list[1].args[3], 8192)
+            self.assertTrue(callable(provider.request.call_args_list[0].args[5]))
+            recovery_messages = json.dumps(provider.request.call_args_list[1].args[1], ensure_ascii=False)
+            self.assertIn("Eksik/kesilmiş write_file", recovery_messages)
+
     def test_high_thinking_rejects_single_html_and_completes_multifile(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -1761,6 +1809,7 @@ class OutcomeGuardTests(unittest.TestCase):
                 "thinking_mode": "high",
                 "efficiency_mode": "max",
                 "timeout_seconds": 30,
+                "streaming_enabled": False,
             })
             tool_reply = {
                 "content": [
@@ -2194,6 +2243,22 @@ class StreamingAndModelMenuTests(unittest.TestCase):
         self.assertEqual(json.loads(message["tool_calls"][0]["function"]["arguments"]), {"path": "a.txt"})
         self.assertEqual(data["usage"]["completion_tokens"], 4)
 
+    def test_chat_provider_marks_and_sanitizes_truncated_tool_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("openrouter")
+            fake = {"choices": [{"finish_reason": "length", "message": {
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": "cut", "type": "function", "function": {
+                    "name": "write_file", "arguments": "{\"path\":\"index.html\",\"content\":\"cut"
+                }}],
+            }}], "usage": {}}
+            with mock.patch.object(forgecode, "post_json", return_value=fake):
+                reply = forgecode.OpenAIChatProvider(cfg).request("s", [], forgecode.TOOL_SCHEMAS)
+            self.assertIn("cut off", reply.tool_calls[0]["parse_error"])
+            self.assertEqual(reply.native_output["tool_calls"][0]["function"]["arguments"], "{}")
+            self.assertEqual(reply.finish_reason, "length")
+
     def test_anthropic_stream_rebuilds_tool_input(self):
         chunks = []
         events = [
@@ -2209,6 +2274,36 @@ class StreamingAndModelMenuTests(unittest.TestCase):
         self.assertEqual(chunks, ["Tamam"])
         self.assertEqual(data["content"][1]["input"], {"path": "x"})
         self.assertEqual(data["usage"], {"input_tokens": 5, "output_tokens": 2})
+
+    def test_anthropic_stream_marks_truncated_tool_json(self):
+        events = [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "t1", "name": "write_file", "input": {}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"cut"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}},
+        ]
+        data = forgecode.consume_anthropic_stream(iter(events), lambda _: None)
+        self.assertIn("_forgecode_parse_error", data["content"][0])
+        self.assertEqual(data["stop_reason"], "max_tokens")
+
+    def test_streaming_transport_is_used_without_ui_renderer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+            seen = {}
+
+            class Provider:
+                def request(self, *args):
+                    seen["on_text"] = args[5]
+                    args[5]("progress")
+                    return forgecode.ModelReply("done", [], forgecode.Usage(), [])
+
+            agent.provider = Provider()
+            reply = agent._request_with_heartbeat([], 128, False)
+            self.assertEqual(reply.text, "done")
+            self.assertTrue(callable(seen["on_text"]))
+            self.assertEqual(agent.last_streamed_reply, "progress")
 
     def test_responses_stream_uses_completed_response(self):
         chunks = []

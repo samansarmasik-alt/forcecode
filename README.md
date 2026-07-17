@@ -77,6 +77,8 @@ you › inspect this project, fix the failing tests, and explain the changes
 
 ForgeCode asks before file or command operations unless an autopilot mode is enabled. While a model is working, a normal message followed by Enter steers the active request. `/queue <message>` adds work without interrupting it, and Ctrl+C stops the current request while retaining a short progress summary for the next prompt.
 
+Streaming is enabled by default for every model and tool-follow-up round, including subagents and one-shot use. If a provider truncates a file-tool JSON payload, ForgeCode rejects the incomplete call, preserves a valid provider transcript, raises the next retry to the configured output budget, and verifies that successful write receipts correspond to real project files.
+
 One-shot mode is also available after initial setup:
 
 ```powershell

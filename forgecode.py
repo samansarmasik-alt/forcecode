@@ -41,7 +41,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.0.1"
+VERSION = "7.1.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -1164,6 +1164,7 @@ def consume_anthropic_stream(events, on_text: Callable[[str], None]) -> dict[str
     partial_inputs: dict[int, str] = {}
     usage: dict[str, Any] = {}
     plain_response: dict[str, Any] | None = None
+    stop_reason = ""
     for event in events:
         event_type = str(event.get("type", ""))
         if not event_type and isinstance(event.get("content"), list):
@@ -1195,20 +1196,23 @@ def consume_anthropic_stream(events, on_text: Callable[[str], None]) -> dict[str
                     blocks.setdefault(index, {})["input"] = json.loads(partial_inputs[index] or "{}")
                 except json.JSONDecodeError:
                     blocks.setdefault(index, {})["input"] = {}
+                    blocks.setdefault(index, {})["_forgecode_parse_error"] = "stream ended with incomplete tool arguments"
         elif event_type == "message_delta":
             usage.update(event.get("usage") or {})
+            stop_reason = str((event.get("delta") or {}).get("stop_reason") or event.get("stop_reason") or stop_reason)
     if plain_response is not None:
         for block in plain_response.get("content", []):
             if block.get("type") == "text" and block.get("text"):
                 on_text(str(block["text"]))
         return plain_response
-    return {"content": [blocks[index] for index in sorted(blocks)], "usage": usage}
+    return {"content": [blocks[index] for index in sorted(blocks)], "usage": usage, "stop_reason": stop_reason}
 
 
 def consume_chat_stream(events, on_text: Callable[[str], None]) -> dict[str, Any]:
     content_parts: list[str] = []
     tool_parts: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
+    finish_reason = ""
     for event in events:
         if isinstance(event.get("choices"), list) and event.get("choices") and event["choices"][0].get("message"):
             message = event["choices"][0]["message"]
@@ -1220,6 +1224,7 @@ def consume_chat_stream(events, on_text: Callable[[str], None]) -> dict[str, Any
             raise ApiError("Streaming API hatası: " + api_error_message(json.dumps(event["error"])))
         usage.update(event.get("usage") or {})
         for choice in event.get("choices", []) or []:
+            finish_reason = str(choice.get("finish_reason") or finish_reason)
             delta = choice.get("delta") or {}
             content = delta.get("content")
             if isinstance(content, str) and content:
@@ -1242,7 +1247,7 @@ def consume_chat_stream(events, on_text: Callable[[str], None]) -> dict[str, Any
     message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
     if tool_parts:
         message["tool_calls"] = [tool_parts[index] for index in sorted(tool_parts)]
-    return {"choices": [{"message": message}], "usage": usage}
+    return {"choices": [{"message": message, "finish_reason": finish_reason}], "usage": usage}
 
 
 def consume_responses_stream(events, on_text: Callable[[str], None]) -> dict[str, Any]:
@@ -1275,7 +1280,7 @@ def consume_responses_stream(events, on_text: Callable[[str], None]) -> dict[str
             item["arguments"] = str(item.get("arguments", "")) + str(event.get("delta", ""))
         elif event_type == "response.output_item.done":
             items[int(event.get("output_index", len(items)))] = dict(event.get("item") or {})
-        elif event_type == "response.completed":
+        elif event_type in {"response.completed", "response.incomplete"}:
             final_response = event.get("response") or {}
             usage.update(final_response.get("usage") or {})
     if final_response is not None:
@@ -1692,6 +1697,7 @@ class ModelReply:
     tool_calls: list[dict[str, Any]]
     usage: Usage
     native_output: Any
+    finish_reason: str = ""
 
 
 def portable_message_text(value: Any) -> str:
@@ -1756,23 +1762,57 @@ class Provider:
         raise NotImplementedError
 
 
-def compatible_tool_arguments(block: dict[str, Any]) -> dict[str, Any]:
-    """Read tool arguments from native and common proxy response shapes."""
+def compatible_tool_arguments_with_error(block: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Read proxy tool arguments and preserve evidence of truncated JSON."""
     candidates: list[Any] = [block.get("input"), block.get("arguments"), block.get("parameters")]
     function = block.get("function")
     if isinstance(function, dict):
         candidates.extend([function.get("arguments"), function.get("parameters")])
+    invalid_json = False
     for candidate in candidates:
-        if isinstance(candidate, dict) and candidate:
-            return candidate
+        if isinstance(candidate, dict):
+            return candidate, ""
         if isinstance(candidate, str) and candidate.strip():
             try:
                 parsed = json.loads(candidate)
             except json.JSONDecodeError:
+                invalid_json = True
                 continue
             if isinstance(parsed, dict):
-                return parsed
-    return {}
+                return parsed, ""
+    embedded = str(block.get("_forgecode_parse_error") or "").strip()
+    if embedded:
+        return {}, embedded
+    if invalid_json:
+        return {}, "tool arguments were cut off or are not valid JSON"
+    return {}, ""
+
+
+def compatible_tool_arguments(block: dict[str, Any]) -> dict[str, Any]:
+    """Backward-compatible argument-only view used by existing callers."""
+    return compatible_tool_arguments_with_error(block)[0]
+
+
+def tool_call_validation_error(name: str, raw_arguments: Any, parse_error: str = "") -> str:
+    """Reject incomplete calls before a workspace tool can report false success."""
+    if parse_error:
+        return f"Tool arguments are incomplete: {parse_error}."
+    args = raw_arguments if isinstance(raw_arguments, dict) else {}
+    if name == "write_file":
+        has_path = any(key in args for key in ("path", "file_path"))
+        has_content = any(key in args for key in ("content", "text"))
+        if not has_path or not str(args.get("path") or args.get("file_path") or "").strip():
+            return "write_file requires a non-empty project-relative path."
+        if not has_content:
+            return "write_file requires the complete content field; the model response may have been truncated."
+    elif name == "write_files":
+        files = args.get("files")
+        if not isinstance(files, list) or not files:
+            return "write_files requires a non-empty files array; the model response may have been truncated."
+        for index, item in enumerate(files, 1):
+            if not isinstance(item, dict) or not str(item.get("path", "")).strip() or "content" not in item:
+                return f"write_files item {index} is incomplete; resend complete path/content fields."
+    return ""
 
 
 class AnthropicProvider(Provider):
@@ -1856,19 +1896,34 @@ class AnthropicProvider(Provider):
         content = data.get("content", [])
         text = "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
         calls = []
-        for block in content:
+        native_content = copy.deepcopy(content)
+        for index, block in enumerate(content):
             if block.get("type") != "tool_use":
                 continue
             function = block.get("function") if isinstance(block.get("function"), dict) else {}
             name = block.get("name") or function.get("name") or ""
+            arguments, parse_error = compatible_tool_arguments_with_error(block)
             calls.append({
                 "id": block.get("id") or block.get("call_id") or uuid.uuid4().hex,
                 "name": name,
-                "arguments": compatible_tool_arguments(block),
+                "arguments": arguments,
+                "parse_error": parse_error,
             })
+            # Messages API history requires canonical `input` objects. Several
+            # Claude-compatible proxies return `arguments`/`parameters`
+            # instead, sometimes as truncated JSON. Normalize the history so
+            # the following tool_result round is always accepted.
+            native_block = native_content[index]
+            native_block["id"] = calls[-1]["id"]
+            native_block["name"] = name
+            native_block["input"] = arguments
+            native_block.pop("arguments", None)
+            native_block.pop("parameters", None)
+            native_block.pop("function", None)
+            native_block.pop("_forgecode_parse_error", None)
         u = data.get("usage", {})
         usage = Usage(int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)), int(u.get("cache_read_input_tokens", 0)), 1)
-        return ModelReply(text, calls, usage, content)
+        return ModelReply(text, calls, usage, native_content, str(data.get("stop_reason") or ""))
 
 
 class OpenAIProvider(Provider):
@@ -1905,14 +1960,19 @@ class OpenAIProvider(Provider):
             if item.get("type") == "message":
                 texts.extend(part.get("text", "") for part in item.get("content", []) if part.get("type") == "output_text")
             elif item.get("type") == "function_call":
+                raw_arguments = item.get("arguments", "{}")
+                parse_error = ""
                 try:
-                    args = json.loads(item.get("arguments", "{}"))
-                except json.JSONDecodeError:
+                    args = raw_arguments if isinstance(raw_arguments, dict) else json.loads(raw_arguments)
+                except (json.JSONDecodeError, TypeError):
                     args = {}
-                calls.append({"id": item["call_id"], "name": item["name"], "arguments": args})
+                    parse_error = "tool arguments were cut off or are not valid JSON"
+                calls.append({"id": item["call_id"], "name": item["name"], "arguments": args, "parse_error": parse_error})
         u = data.get("usage", {})
         usage = Usage(int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)), int(u.get("input_tokens_details", {}).get("cached_tokens", 0)), 1)
-        return ModelReply("\n".join(texts), calls, usage, output)
+        incomplete = data.get("incomplete_details") or {}
+        finish_reason = str(incomplete.get("reason") or data.get("status") or "")
+        return ModelReply("\n".join(texts), calls, usage, output, finish_reason)
 
 
 class OpenAIChatProvider(Provider):
@@ -1992,11 +2052,14 @@ class OpenAIChatProvider(Provider):
         calls: list[dict[str, Any]] = []
         for item in message.get("tool_calls", []) or []:
             function = item.get("function", {})
+            raw_arguments = function.get("arguments", "{}")
+            parse_error = ""
             try:
-                args = json.loads(function.get("arguments", "{}"))
+                args = raw_arguments if isinstance(raw_arguments, dict) else json.loads(raw_arguments)
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            calls.append({"id": item.get("id", uuid.uuid4().hex), "name": function.get("name", ""), "arguments": args})
+                parse_error = "tool arguments were cut off or are not valid JSON"
+            calls.append({"id": item.get("id", uuid.uuid4().hex), "name": function.get("name", ""), "arguments": args, "parse_error": parse_error})
         u = data.get("usage", {}) or {}
         usage = Usage(
             int(u.get("prompt_tokens", 0)),
@@ -2006,8 +2069,13 @@ class OpenAIChatProvider(Provider):
         )
         native = {"role": "assistant", "content": message.get("content")}
         if message.get("tool_calls"):
-            native["tool_calls"] = message["tool_calls"]
-        return ModelReply(str(content), calls, usage, native)
+            native_calls = copy.deepcopy(message["tool_calls"])
+            for index, call in enumerate(calls):
+                if call.get("parse_error") and index < len(native_calls):
+                    native_calls[index].setdefault("function", {})["arguments"] = "{}"
+            native["tool_calls"] = native_calls
+        finish_reason = str(choices[0].get("finish_reason") or "")
+        return ModelReply(str(content), calls, usage, native, finish_reason)
 
 
 def make_provider(cfg: Config) -> Provider:
@@ -2392,10 +2460,10 @@ class WorkspaceTools:
         if self.cfg.data.get("autopilot_mode") or legacy_auto:
             return True, ""
         if not self.cfg.data.get("smart_autopilot_mode"):
-            return (True, "") if self.confirm(summary) else (False, "Kullanıcı işlemi reddetti.")
+            return (True, "") if self.confirm(summary) else (False, "ERROR: Kullanıcı işlemi reddetti; dosya yazılmadı.")
         floor = hard_operation_risk(operation, details)
         if floor:
-            return False, "Smart Autopilot güvenlik engeli: " + floor[1]
+            return False, "ERROR: Smart Autopilot güvenlik engeli: " + floor[1]
         if operation == "command":
             command_text = details.partition("command=")[2]
             if is_known_safe_read_command(command_text):
@@ -2418,9 +2486,9 @@ class WorkspaceTools:
         if decision == "safe":
             return True, ""
         if decision == "block":
-            return False, "Smart Autopilot güvenlik engeli: " + (reason or "İşlem tehlikeli sınıflandırıldı.")
+            return False, "ERROR: Smart Autopilot güvenlik engeli: " + (reason or "İşlem tehlikeli sınıflandırıldı.")
         question = f"Smart Autopilot onayı: {reason or 'İşlemin etkisi belirsiz.'}\n{summary}"
-        return (True, "") if self.confirm(question) else (False, "Kullanıcı riskli işlemi reddetti.")
+        return (True, "") if self.confirm(question) else (False, "ERROR: Kullanıcı riskli işlemi reddetti; dosya yazılmadı.")
 
     def safe_path(self, raw: str) -> pathlib.Path:
         raw_text = str(raw).strip()
@@ -3472,7 +3540,15 @@ class TokenBudgetEngine:
     def allocate(self, cfg: Config, prompt: str, task_type: str, power: bool) -> dict[str, int]:
         efficiency = str(cfg.data.get("efficiency_mode", "balanced"))
         maximum = max(512, int(cfg.data.get("max_tokens", 4096)))
-        output = maximum if power or efficiency == "off" else min(maximum, 2048 if efficiency == "max" else 4096)
+        artifact_task = task_type in {"build", "debug", "refactor"}
+        if power or efficiency == "off":
+            output = maximum
+        elif artifact_task:
+            # Tool arguments contain the actual file body. A small generic
+            # answer cap can cut JSON midway and make write_file appear broken.
+            output = min(maximum, 4096 if efficiency == "max" else 6144)
+        else:
+            output = min(maximum, 2048 if efficiency == "max" else 4096)
         context = 900 if efficiency == "max" else 2200 if efficiency == "balanced" else 5000
         planning = 160 if efficiency == "max" else 320
         debugging = 240 if task_type == "debug" else 120
@@ -3762,7 +3838,13 @@ class Agent:
             if self.stream_callback:
                 self.stream_callback(delta)
 
-        stream_sink = emit_text if self.stream_callback and self.cfg.data.get("streaming_enabled", True) else None
+        # Streaming is a transport/reliability setting, not merely a UI
+        # feature. Keep it enabled for subagents, one-shot calls, and tool
+        # follow-up rounds even when no terminal renderer consumes the text.
+        # emit_text safely buffers progress and only paints when a callback is
+        # present. This also gives every streamed generation the unlimited
+        # socket-read behavior implemented by stream_or_json.
+        stream_sink = emit_text if self.cfg.data.get("streaming_enabled", True) else None
         future = self._daemon_future(self.provider.request, self.system(), self.messages, tools, output_limit, web_search, stream_sink)
         try:
             while True:
@@ -4593,15 +4675,14 @@ class Agent:
         # available only for callers embedding a deliberately short task.
         step_limit = max(1, int(step_cap)) if step_cap is not None else None
         output_limit = int(self.cfg.data["max_tokens"])
-        if efficiency == "balanced" and not self._power_active:
-            output_limit = min(output_limit, 4096)
-        elif efficiency == "max" and not self._power_active:
-            output_limit = min(output_limit, 2048)
         if output_cap is not None:
             output_limit = min(output_limit, output_cap)
+        # Execution Kernel owns phase budgets. Keeping the legacy efficiency
+        # cap here applied the limit twice (for example 4096 -> 2048) and could
+        # truncate file contents inside a write_file JSON argument.
         output_limit = min(output_limit, execution_state.plan.token_budget["output"])
         if self.cfg.data.get("provider") == "custom" and self.cfg.mode() == "anthropic" and not self._power_active:
-            proxy_limit = 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+            proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
             output_limit = min(output_limit, proxy_limit)
         active_tools = self._effective_tools(prompt)
         if not self.read_only:
@@ -4662,7 +4743,7 @@ class Agent:
                     mode = self.cfg.mode()
                     active_tools = self._effective_tools(prompt)
                     if mode == "anthropic" and not self._power_active:
-                        proxy_limit = 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+                        proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
                         output_limit = min(output_limit, proxy_limit)
                     if self._connection_switched:
                         turn_start = 0
@@ -4678,7 +4759,7 @@ class Agent:
                     mode = self.cfg.mode()
                     active_tools = self._effective_tools(prompt)
                     if mode == "anthropic" and not self._power_active:
-                        proxy_limit = 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+                        proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
                         output_limit = min(output_limit, proxy_limit)
                     try:
                         reply = self._request_with_heartbeat(active_tools, output_limit, web_search)
@@ -4724,10 +4805,17 @@ class Agent:
                     if completion_nudges < 2:
                         completion_nudges += 1
                         final_text = ""
+                        truncated = str(reply.finish_reason).casefold() in {
+                            "length", "max_tokens", "max_output_tokens", "incomplete"
+                        }
+                        if truncated:
+                            output_limit = int(self.cfg.data.get("max_tokens", output_limit))
+                            self._emit_activity(f"Model çıktısı kesildi: sonraki tur {output_limit} token")
                         self._append_user(
-                            "The requested implementation is NOT complete: no project file was created or modified. "
+                            ("The previous response hit its output limit and created no file. " if truncated else "")
+                            + "The requested implementation is NOT complete: no project file was created or modified. "
                             "Do not answer with a completion claim. Use write_file/replace_text (parent directories are automatic), "
-                            "then inspect or test the actual artifacts."
+                            "send complete tool arguments, then inspect or test the actual artifacts."
                         )
                         continue
                     answer = "Görev tamamlanmadı: model iki düzeltme turuna rağmen hiçbir proje dosyası oluşturmadı veya değiştirmedi. Farklı bir araç-destekli model seçip tekrar deneyin."
@@ -4812,10 +4900,15 @@ class Agent:
                 return answer
             tool_results = []
             round_findings: list[DebugFinding] = []
+            incomplete_write_call = False
             allowed_tool_names = {tool["name"] for tool in active_tools}
             for call in reply.tool_calls:
-                resolved_name = normalize_tool_name(call["name"])
-                resolved_arguments = normalize_tool_arguments(resolved_name, call["arguments"])
+                resolved_name = normalize_tool_name(call.get("name", ""))
+                raw_arguments = call.get("arguments", {})
+                resolved_arguments = normalize_tool_arguments(resolved_name, raw_arguments)
+                validation_error = tool_call_validation_error(
+                    resolved_name, raw_arguments, str(call.get("parse_error") or "")
+                )
                 if resolved_name in {"read_file", "write_file", "replace_text"} and resolved_arguments.get("path"):
                     try:
                         local_target = self.tools.safe_path(str(resolved_arguments["path"]))
@@ -4829,10 +4922,31 @@ class Agent:
                 self._emit_activity(f"Araç çalışıyor: {resolved_name}")
                 if resolved_name not in allowed_tool_names:
                     result = f"ERROR: Bu modda araç kullanılamaz: {resolved_name}. Sunulan araçlardan birini kullan."
+                elif validation_error:
+                    result = (
+                        f"ERROR: Eksik/kesilmiş {resolved_name} çağrısı: {validation_error} "
+                        "Dosya oluşturulmadı. Çağrıyı tüm zorunlu alanlarla yeniden gönder."
+                    )
+                    incomplete_write_call = incomplete_write_call or resolved_name in {"write_file", "write_files"}
                 elif resolved_name == "delegate_task":
                     result = self.delegate(str(resolved_arguments.get("role", "explore")), str(resolved_arguments.get("task", "")))
                 else:
                     result = self.tools.execute(resolved_name, resolved_arguments)
+                if not result.startswith("ERROR:") and resolved_name in {"write_file", "write_files"}:
+                    expected_paths = (
+                        [str(resolved_arguments.get("path", ""))]
+                        if resolved_name == "write_file"
+                        else [str(item.get("path", "")) for item in resolved_arguments.get("files", []) if isinstance(item, dict)]
+                    )
+                    missing_targets = []
+                    for expected_path in expected_paths:
+                        try:
+                            if not self.tools.safe_file_path(expected_path).is_file():
+                                missing_targets.append(expected_path)
+                        except (OSError, ValueError):
+                            missing_targets.append(expected_path)
+                    if missing_targets:
+                        result = "ERROR: Yazma aracı başarı bildirdi ancak dosya doğrulaması başarısız: " + ", ".join(missing_targets[:10])
                 finding = self.execution_kernel.observe_tool(execution_state, resolved_name, result)
                 if finding:
                     round_findings.append(finding)
@@ -4863,6 +4977,17 @@ class Agent:
                 self.messages.append({"role": "user", "content": tool_results})
             else:
                 self.messages.extend(tool_results)
+            if incomplete_write_call:
+                configured_limit = int(self.cfg.data.get("max_tokens", output_limit))
+                if output_limit < configured_limit:
+                    output_limit = configured_limit
+                    self._emit_activity(f"Kesilmiş yazma çağrısı: çıktı bütçesi {output_limit} tokene yükseltildi")
+                self._append_user(
+                    "WRITE TOOL RECOVERY: The previous write call was incomplete and created no file. "
+                    "Retry now with complete JSON. Keep each write_file call to one complete file. "
+                    "If a write_files batch is large, split it into separate write_file calls. "
+                    "After each successful result, inspect the created artifact before finishing."
+                )
             recoverable_findings = [item for item in round_findings if item.occurrences <= 2]
             if recoverable_findings:
                 recovery_lines = [f"- {item.category} [{item.signature}]: {item.recovery}" for item in recoverable_findings]

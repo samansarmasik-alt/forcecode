@@ -2,6 +2,21 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.1.0] - 2026-07-18
+
+### Fixed
+
+- Keep streaming transport active for subagents, one-shot requests, and tool follow-up rounds even when no live terminal renderer is attached, preventing the configured 30-second socket timeout from silently returning.
+- Detect truncated or invalid tool-call JSON before executing `write_file` or `write_files`, return a precise tool error, normalize provider history, and retry with the full configured output budget.
+- Remove the duplicate legacy efficiency cap that could reduce the Execution Kernel's file-generation budget from 4,096 to 2,048 tokens.
+- Mark rejected or Smart Autopilot-blocked writes as errors instead of successful mutations.
+- Verify that every successful write result corresponds to a real file before accepting mutation evidence.
+
+### Changed
+
+- Artifact-producing build, debug, and refactor tasks now receive up to 6,144 tokens in balanced mode and 4,096 in maximum-efficiency mode, bounded by the user's `max_tokens` setting.
+- Streaming remains the recommended default; unsupported SSE transports safely fall back to unlimited interactive JSON reads while Ctrl+C cancellation remains available.
+
 ## [7.0.1] - 2026-07-17
 
 ### Fixed
