@@ -41,7 +41,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.0.0"
+VERSION = "7.0.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -1035,7 +1035,7 @@ def write_crash_log(cfg: Config | None, exc: BaseException) -> pathlib.Path:
     return path
 
 
-def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | None) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -1082,7 +1082,7 @@ def is_transient_api_error(exc: ApiError) -> bool:
     ))
 
 
-def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | None) -> dict[str, Any]:
     attempts = max(1, min(5, int(cfg.data.get("retry_attempts", 2))))
     backoff = max(0.0, min(10.0, float(cfg.data.get("retry_backoff_seconds", 0.5))))
     last_error: ApiError | None = None
@@ -1318,7 +1318,14 @@ def stream_or_json(
             raise
         fallback_payload = dict(payload)
         fallback_payload.pop("stream", None)
-        return post_json_with_retry(cfg, endpoint, headers, fallback_payload, timeout)
+        # Some compatible APIs accept `stream: true` but reject SSE, or send a
+        # normal JSON response only after a long tool/reasoning pass. This
+        # fallback is still part of an interactive generation running in the
+        # Agent's detachable daemon thread, so a socket read deadline adds no
+        # safety: Ctrl+C can already detach it. Keep the configured timeout for
+        # explicit non-streaming mode and health checks, but never cut off a
+        # streaming generation merely because its transport fell back to JSON.
+        return post_json_with_retry(cfg, endpoint, headers, fallback_payload, None)
 
 
 def get_json(url: str, headers: dict[str, str], timeout: int) -> Any:

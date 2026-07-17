@@ -2,6 +2,13 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.0.1] - 2026-07-17
+
+### Fixed
+
+- Prevent long-running streamed generations from failing with `The read operation timed out` when a provider silently falls back from SSE streaming to a normal JSON response.
+- Keep explicit non-streaming requests and health checks bounded by the configured timeout while preserving Ctrl+C cancellation for unlimited interactive generations.
+
 ## [7.0.0] - 2026-07-17
 
 ### Changed

@@ -2338,7 +2338,7 @@ class StreamingAndModelMenuTests(unittest.TestCase):
             forgecode.time.sleep(0.05)
             self.assertEqual(chunks, [])
 
-    def test_unsupported_streaming_falls_back_before_emitting_text(self):
+    def test_unsupported_streaming_falls_back_without_read_timeout_before_emitting_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
             consumer = mock.Mock(side_effect=forgecode.ApiError("API 400: stream unsupported"))
@@ -2348,7 +2348,7 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 result = forgecode.stream_or_json(cfg, "https://x.test", {}, {"stream": True}, 10, consumer, lambda _: None)
             self.assertEqual(result, {"ok": True})
             self.assertNotIn("stream", fallback.call_args.args[3])
-            self.assertEqual(fallback.call_args.args[4], 10)
+            self.assertIsNone(fallback.call_args.args[4])
 
     def test_sse_stream_uses_no_socket_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
