@@ -1,70 +1,31 @@
-{
-  "config_version": 18,
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-5",
-  "api_mode": "anthropic",
-  "base_url": "https://api.anthropic.com",
-  "base_url_origin": "preset",
-  "setup_complete": false,
-  "anthropic_base_url": "https://api.anthropic.com",
-  "openai_base_url": "https://api.openai.com/v1",
-  "max_tokens": 8192,
-  "temperature": 1.0,
-  "timeout_seconds": 100,
-  "streaming_enabled": true,
-  "max_agent_steps": 0,
-  "goal_max_rounds": 3,
-  "retry_attempts": 2,
-  "retry_backoff_seconds": 0.5,
-  "max_tool_output_chars": 30000,
-  "auto_approve_writes": false,
-  "auto_approve_commands": false,
-  "input_price_per_million": 0.0,
-  "output_price_per_million": 0.0,
-  "system_prompt_extra": "",
-  "model_cache": {},
-  "latency_stats": {},
-  "web_search_mode": "auto",
-  "web_max_results": 3,
-  "thinking_mode": "off",
-  "thinking_budget_tokens": 2048,
-  "efficiency_mode": "balanced",
-  "power_mode": "auto",
-  "subagent_max_per_turn": 3,
-  "subagent_timeout_seconds": 30,
-  "custom_auth_mode": "auto",
-  "web_project_mode": "auto",
-  "work_mode": "auto",
-  "autopilot_mode": false,
-  "smart_autopilot_mode": false,
-  "custom_model_hints": [],
-  "custom_rejected_models": [],
-  "custom_no_tool_models": [],
-  "custom_protocol": "auto",
-  "custom_endpoint_path": "auto",
-  "last_model_endpoint": "",
-  "connection_profiles": {},
-  "auto_subagents": true,
-  "startup_prompt": "",
-  "persistent_memory_enabled": true,
-  "memory_max_items": 40,
-  "history_context_turns": 6,
-  "history_context_chars": 7000,
-  "event_log_enabled": true,
-  "event_log_max_lines": 2000,
-  "session_name": "main",
-  "team_parallel": true,
-  "team_max_workers": 3,
-  "team_roles": [
-    "design",
-    "backend",
-    "review"
-  ],
-  "agent_profiles": {},
-  "backup_enabled": false,
-  "backup_connection": {},
-  "backup_active": false,
-  "backup_primary_state": {},
-  "backup_last_reason": "",
-  "backup_last_switch": ""
-}
+# Contributing to ForgeCode
+
+Thank you for helping improve ForgeCode. Keep changes focused, behavior-preserving, and easy to review.
+
+## Before you start
+
+1. Search existing issues before opening a new one.
+2. For a substantial behavioral change, open an issue and describe the motivation first.
+3. Never include real API keys, private endpoints, user logs, or `.forgecode` state in an issue, test, commit, or pull request.
+
+## Development setup
+
+ForgeCode requires Python 3.10 or later and has no third-party runtime dependencies.
+
+```powershell
+python forgecode.py --version
+python -m unittest discover -s tests -v
+```
+
+The existing `forgecode.py`, `forgecode.bat`, and global `Force` installation flow are compatibility surfaces. Avoid moving or renaming them without a migration plan and corresponding Windows tests.
+
+## Pull requests
+
+- Keep each pull request limited to one concern.
+- Preserve default confirmation and workspace-boundary behavior.
+- Add tests for fixes and user-visible behavior changes.
+- Update README or CHANGELOG when commands, configuration, or compatibility changes.
+- Use UTF-8 without a byte-order mark for text files.
+- Run syntax checks and the full test suite before submitting.
+
+By contributing, you agree that your contribution is licensed under the MIT License.
