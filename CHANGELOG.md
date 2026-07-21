@@ -2,6 +2,14 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.4] - 2026-07-22
+
+### Fixed
+
+- Custom API health checks now treat generic API 305/unavailable and 429/rate-limit responses as service-wide terminal probe results instead of testing every discovered model.
+- `/connect` preserves the entered key, selected model, route, and first protocol when a service is temporarily unavailable, and skips the second protocol to avoid doubling rate-limit pressure.
+- Genuine model errors that explicitly advertise supported models still receive bounded recovery, now capped at three alternatives per health check.
+
 ## [7.4.3] - 2026-07-22
 
 ### Changed
