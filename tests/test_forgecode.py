@@ -882,7 +882,7 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(cfg.data["model"], "sonnet-5")
             self.assertEqual(post.call_count, 3)
 
-    def test_simple_chat_falls_back_when_custom_tools_are_rejected(self):
+    def test_simple_chat_sends_no_tools_to_custom_chat_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cfg = forgecode.Config(root / "home")
@@ -894,16 +894,12 @@ class ProviderTests(unittest.TestCase):
                 "model_cache": {"custom": {"models": ["chat-only"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
-            health = {"choices": [{"message": {"role": "assistant", "content": "OK"}}], "usage": {}}
             answer = {"choices": [{"message": {"role": "assistant", "content": "selam"}}], "usage": {}}
-            with mock.patch.object(forgecode, "post_json", side_effect=[
-                forgecode.ApiError("API 305: unavailable"), health,
-                forgecode.ApiError("API 305: unavailable"), answer,
-            ]) as post:
+            with mock.patch.object(forgecode, "post_json", return_value=answer) as post:
                 result = agent.ask("selam")
             self.assertEqual(result, "selam")
-            self.assertIn("chat-only", cfg.data["custom_no_tool_models"])
-            self.assertEqual(post.call_count, 4)
+            self.assertEqual(post.call_count, 1)
+            self.assertNotIn("tools", post.call_args.args[2])
 
     def test_api_305_is_reported_as_proxy_upstream_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1262,8 +1258,7 @@ class CommandAssistTests(unittest.TestCase):
             self.assertIn("run_command", names)
             self.assertNotIn("write_files", names)
             neutral_names = {tool["name"] for tool in agent._effective_tools("selam")}
-            self.assertIn("write_file", neutral_names)
-            self.assertIn("run_command", neutral_names)
+            self.assertEqual(neutral_names, set())
 
     def test_max_efficiency_uses_same_build_intent_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2737,7 +2732,7 @@ class ForceGraphIntegrationTests(unittest.TestCase):
                 bridge.review("main; Remove-Item -Recurse .")
             run.assert_not_called()
 
-    def test_ready_accepts_receipt_and_common_database_extensions(self):
+    def test_ready_rejects_empty_database_and_accepts_verified_graph(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             bridge = forgecode.ForceGraphBridge(root)
@@ -2745,12 +2740,24 @@ class ForceGraphIntegrationTests(unittest.TestCase):
             graph.mkdir()
             self.assertFalse(bridge.ready())
             (graph / "graph.sqlite3").write_bytes(b"graph")
-            self.assertTrue(bridge.ready())
+            self.assertFalse(bridge.ready())
+            with mock.patch.object(bridge, "status", return_value='{"nodes":2,"edges":1,"files":1}'):
+                self.assertTrue(bridge.ready(verify_graph=True))
             (graph / "graph.sqlite3").unlink()
             (graph / "quickstart-receipt.json").write_text(
                 json.dumps({"status": "ready", "graph": {"built": True}}), encoding="utf-8"
             )
             self.assertTrue(bridge.ready())
+
+    def test_status_summary_filters_migration_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = forgecode.ForceGraphBridge(pathlib.Path(tmp))
+            raw = '{"nodes":3,"edges":2,"files":1,"languages":["Python"]}\nINFO: Running migration v9'
+            with mock.patch.object(bridge, "status", return_value=raw):
+                summary = bridge.status_summary()
+            self.assertIn("1 dosya", summary)
+            self.assertIn("3 düğüm", summary)
+            self.assertNotIn("migration", summary)
 
     def test_model_tool_routes_read_only_graph_actions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2781,6 +2788,18 @@ class ForceGraphIntegrationTests(unittest.TestCase):
             self.assertTrue(forgecode.handle_command("/impact main", agent, mock.Mock(), mock.Mock()))
         agent.force_graph.impact.assert_called_once_with("main")
         self.assertIn("impact evidence", output.getvalue())
+
+    def test_graph_on_is_a_direct_alias_for_auto_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            output = io.StringIO()
+            cfg.data["forcegraph_auto_enabled"] = False
+            with mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command("/graph on", agent, cfg, agent.goals))
+            self.assertTrue(cfg.data["forcegraph_auto_enabled"])
+            self.assertIn("açıldı", output.getvalue())
 
     def test_automatic_first_run_builds_and_persists_ready_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2958,6 +2977,25 @@ class ExecutionKernelTests(unittest.TestCase):
             self.assertEqual(state.plan.task_type, "debug")
             self.assertEqual([step.id for step in state.plan.steps], ["inspect", "reproduce", "change", "verify", "report"])
             self.assertIn("evidence:", state.plan.prompt_contract())
+
+    def test_greeting_uses_chat_plan_without_workspace_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = self.make_cfg(root)
+            engine = forgecode.ExecutionKernel(root, cfg)
+            state = engine.begin("selam", False, False, False, {})
+            self.assertEqual(state.plan.task_type, "chat")
+            self.assertEqual([step.id for step in state.plan.steps], ["respond"])
+            self.assertNotIn("Evidence", state.plan.prompt_contract())
+
+    def test_turkish_language_request_has_no_tools_and_strong_language_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = self.make_cfg(root)
+            cfg.data["ui_language"] = "tr"
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            self.assertEqual(agent._effective_tools("Türkçe konuş"), [])
+            self.assertIn("Respond entirely in Turkish", agent.system())
 
     def test_token_budget_engine_reduces_max_efficiency(self):
         with tempfile.TemporaryDirectory() as tmp:
