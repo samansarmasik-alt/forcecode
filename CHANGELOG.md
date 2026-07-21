@@ -2,6 +2,13 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.5] - 2026-07-22
+
+### Added
+
+- Added `/route off` for custom providers. It sends chat or Anthropic requests directly to the configured base URL without appending `/chat/completions`, `/v1/messages`, or another standard route.
+- Root-only custom connections now select the clearer `off` route automatically; the existing `exact` value remains fully backward compatible.
+
 ## [7.4.4] - 2026-07-22
 
 ### Fixed
