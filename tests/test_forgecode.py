@@ -1,4 +1,5 @@
 import importlib.util
+import collections
 import copy
 import io
 import json
@@ -1017,7 +1018,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 18)
+            self.assertEqual(cfg.data["config_version"], 19)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1357,7 +1358,7 @@ class CommandAssistTests(unittest.TestCase):
             cfg.set_value("work_mode", "plan")
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
             names = {tool["name"] for tool in agent._effective_tools("site oluştur")}
-            self.assertEqual(names, {"list_files", "read_file", "search", "get_diagnostics", "set_forgecode_setting", "delegate_task"})
+            self.assertEqual(names, {"list_files", "read_file", "search", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"})
 
     def test_status_footer_shows_modes_and_fixed_session_cost(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1427,7 +1428,7 @@ class CommandAssistTests(unittest.TestCase):
             cfg = forgecode.Config(root / "home")
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False, read_only=True, role="review")
             names = {tool["name"] for tool in agent._effective_tools("fix everything")}
-            self.assertEqual(names, {"list_files", "read_file", "search"})
+            self.assertEqual(names, {"list_files", "read_file", "search", "graph_context"})
 
     def test_proxy_cannot_force_bash_into_read_only_subagent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2165,6 +2166,28 @@ class BackupApiTests(unittest.TestCase):
 
 
 class CancellationQueueTests(unittest.TestCase):
+    def test_multiline_console_paste_is_collected_as_one_burst(self):
+        pending = collections.deque("ikinci satır\r\nüçüncü satır")
+        burst = forgecode.collect_console_input_burst(
+            "\r", lambda: bool(pending), pending.popleft, settle_seconds=0,
+        )
+        self.assertEqual(burst, "\nikinci satır\nüçüncü satır")
+
+    def test_multiline_paste_becomes_one_queued_prompt(self):
+        queue = forgecode.QueuedPromptInput(render=False)
+        queued = queue.feed_paste("ilk satır\r\nikinci satır\r\nüçüncü satır")
+        self.assertEqual(queued, "ilk satır\nikinci satır\nüçüncü satır")
+        self.assertEqual(len(queue.items), 1)
+        self.assertEqual(queue.pop(), queued)
+
+    def test_multiline_live_paste_becomes_one_steering_message(self):
+        queue = forgecode.QueuedPromptInput(render=False)
+        queue.live_mode = True
+        with self.assertRaises(forgecode.SteeringInterrupt) as caught:
+            queue.feed_paste("sorunu incele\r\nönce logları oku\r\nsonra düzelt")
+        self.assertEqual(caught.exception.prompt, "sorunu incele\nönce logları oku\nsonra düzelt")
+        self.assertFalse(queue)
+
     def test_queued_prompt_editor_collects_lines_and_backspace(self):
         queue = forgecode.QueuedPromptInput(render=False)
         for char in "sonraki prompx":
@@ -2685,6 +2708,143 @@ class UnlimitedAgentAndDelegationPolicyTests(unittest.TestCase):
             self.assertEqual(provider.request.call_count, 3)
 
 
+class ForceGraphIntegrationTests(unittest.TestCase):
+    def make_auto_bridge(self, root):
+        cfg = forgecode.Config(root / "home")
+        bridge = forgecode.ForceGraphBridge(root, cfg)
+        bridge.runtime_auto = True
+        return bridge
+
+    def test_bridge_runs_argument_array_in_project_without_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = forgecode.ForceGraphBridge(root)
+            completed = mock.Mock(returncode=0, stdout=b'{"status":"ready"}', stderr=b"")
+            with mock.patch.object(bridge, "command", return_value=["forcegraph.exe"]), mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ) as run:
+                result = bridge.impact("main")
+            self.assertIn("ready", result)
+            args, kwargs = run.call_args
+            self.assertEqual(args[0], ["forcegraph.exe", "detect-changes", "--base", "main", "--brief"])
+            self.assertEqual(kwargs["cwd"], str(root.resolve()))
+            self.assertFalse(kwargs["shell"])
+
+    def test_bridge_rejects_unsafe_git_base_without_starting_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = forgecode.ForceGraphBridge(pathlib.Path(tmp))
+            with mock.patch.object(forgecode.subprocess, "run") as run, self.assertRaises(ValueError):
+                bridge.review("main; Remove-Item -Recurse .")
+            run.assert_not_called()
+
+    def test_ready_accepts_receipt_and_common_database_extensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = forgecode.ForceGraphBridge(root)
+            graph = root / ".code-review-graph"
+            graph.mkdir()
+            self.assertFalse(bridge.ready())
+            (graph / "graph.sqlite3").write_bytes(b"graph")
+            self.assertTrue(bridge.ready())
+            (graph / "graph.sqlite3").unlink()
+            (graph / "quickstart-receipt.json").write_text(
+                json.dumps({"status": "ready", "graph": {"built": True}}), encoding="utf-8"
+            )
+            self.assertTrue(bridge.ready())
+
+    def test_model_tool_routes_read_only_graph_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            tools = forgecode.WorkspaceTools(root, cfg, lambda _: False)
+            tools.force_graph = mock.MagicMock()
+            tools.force_graph.impact.return_value = "blast radius"
+            result = tools.tool_graph_context("impact", "HEAD~2")
+            self.assertEqual(result, "blast radius")
+            tools.force_graph.impact.assert_called_once_with("HEAD~2")
+
+    def test_graph_tool_is_available_in_plan_and_read_only_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["work_mode"] = "plan"
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            self.assertIn("graph_context", {tool["name"] for tool in agent._effective_tools("plan review")})
+            readonly = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False, read_only=True)
+            self.assertIn("graph_context", {tool["name"] for tool in readonly._effective_tools("review")})
+
+    def test_slash_commands_route_to_bridge(self):
+        agent = mock.MagicMock()
+        agent.force_graph.impact.return_value = "impact evidence"
+        output = io.StringIO()
+        with mock.patch.object(sys, "stdout", output):
+            self.assertTrue(forgecode.handle_command("/impact main", agent, mock.Mock(), mock.Mock()))
+        agent.force_graph.impact.assert_called_once_with("main")
+        self.assertIn("impact evidence", output.getvalue())
+
+    def test_automatic_first_run_builds_and_persists_ready_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = self.make_auto_bridge(root)
+            snapshot = {"src/app.py": (12, 100)}
+            with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
+                bridge, "version", return_value="2.4.0"
+            ), mock.patch.object(bridge, "ready", side_effect=[False, True]), mock.patch.object(
+                bridge, "build", return_value="build complete"
+            ) as build:
+                state = bridge.ensure_automatic(snapshot)
+            build.assert_called_once_with(fast=False)
+            self.assertEqual(state["status"], "ready")
+            self.assertEqual(state["last_action"], "build")
+            self.assertEqual(state["source_files"], 1)
+            self.assertTrue(bridge.state_path().exists())
+
+    def test_automatic_sync_updates_only_when_source_signature_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = self.make_auto_bridge(root)
+            old = {"app.py": (10, 1)}
+            bridge._save_auto_state(
+                status="ready", version="2.4.0", error_time=0,
+                source_signature=bridge._snapshot_signature(old), last_action="build",
+            )
+            with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
+                bridge, "version", return_value="2.4.0"
+            ), mock.patch.object(bridge, "ready", return_value=True), mock.patch.object(
+                bridge, "run", return_value="updated"
+            ) as run:
+                unchanged = bridge.ensure_automatic(old)
+                changed = bridge.ensure_automatic({"app.py": (11, 2)})
+            self.assertEqual(unchanged["last_action"], "build")
+            run.assert_called_once_with(["update", "--brief"], 600)
+            self.assertEqual(changed["last_action"], "update")
+
+    def test_automatic_install_failure_is_nonfatal_and_cooled_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = self.make_auto_bridge(root)
+            snapshot = {"main.ts": (10, 1)}
+            with mock.patch.object(bridge, "command", return_value=None), mock.patch.object(
+                bridge, "version", return_value=""
+            ), mock.patch.object(bridge, "install", return_value="ERROR: network unavailable") as install:
+                first = bridge.ensure_automatic(snapshot)
+                second = bridge.ensure_automatic(snapshot)
+            self.assertEqual(first["status"], "degraded")
+            self.assertEqual(second["status"], "degraded")
+            install.assert_called_once()
+
+    def test_automatic_graph_can_be_disabled_and_skips_non_code_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = self.make_auto_bridge(root)
+            bridge.cfg.data["forcegraph_auto_enabled"] = False
+            with mock.patch.object(bridge, "install") as install:
+                self.assertEqual(bridge.ensure_automatic({"app.py": (1, 1)})["status"], "disabled")
+                bridge.cfg.data["forcegraph_auto_enabled"] = True
+                self.assertEqual(bridge.ensure_automatic({"README.md": (1, 1)})["status"], "not-applicable")
+            install.assert_not_called()
+
+
 class ForceContextV2Tests(unittest.TestCase):
     def make_store(self, root):
         return forgecode.ForceContext(root, root / ".force" / "user.json")
@@ -2848,6 +3008,7 @@ class ExecutionKernelTests(unittest.TestCase):
             self.assertEqual(report["run_id"], persisted["run_id"])
             self.assertNotIn("thought", json.dumps(persisted).lower())
             self.assertIn("confidence_breakdown", persisted)
+            self.assertEqual(persisted["force_graph"], {"available": False, "consulted": False})
 
     def test_agent_injects_execution_contract_and_exposes_last_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:

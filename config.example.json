@@ -68,5 +68,6 @@
   "backup_active": false,
   "backup_primary_state": {},
   "backup_last_reason": "",
-  "backup_last_switch": ""
+  "backup_last_switch": "",
+  "forcegraph_auto_enabled": true
 }

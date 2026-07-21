@@ -2,6 +2,48 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.0] - 2026-07-21
+
+### Changed
+
+- Upgraded the native integration contract to ForceGraph 2.4.0 and its universal, always-current workflow.
+- ForceGraph now installs or upgrades itself on the first eligible coding request, builds the initial project graph, and incrementally synchronizes changed source files before later graph analysis.
+- Manual installation, build, and update commands are no longer required for normal use; they remain available for diagnostics and recovery.
+
+### Added
+
+- Local `.forgecode/forcegraph-state.json` and `.code-review-graph/forgecode-auto-receipt.json` receipts with version, source signature, action, status, and errors.
+- `/graph auto on|off` for explicit user control and `/graph repair` for forced recovery.
+- Automatic ForceGraph status in `/doctor` and `/dashboard`.
+
+### Reliability and privacy
+
+- Automatic graph failures degrade gracefully without blocking the AI request, and repeated installation failures use a one-hour retry cooldown.
+- ForceCode uses request-time native synchronization instead of modifying other AI clients' MCP settings or leaving a watcher process running.
+- ForceGraph runs only for projects containing supported source files; local graph and automation directories remain excluded from AI context and Git.
+
+## [7.3.0] - 2026-07-21
+
+### Added
+
+- Optional native integration with [ForceGraph](https://github.com/samansarmasik-alt/code-review-graph), while keeping the core ForgeCode runtime dependency-free.
+- `/graph status|install|build|update|open`, `/impact [base]`, and `/review [base]` commands.
+- A read-only `graph_context` model tool for structural impact, test-gap, and review evidence in main, plan, and subagent modes.
+- ForceGraph consultation metadata in Execution Kernel run receipts.
+
+### Security and performance
+
+- ForceGraph subprocesses use argument arrays with `shell=False`, project-scoped working directories, bounded timeouts, UTF-8-safe output, and validated Git base references.
+- `.code-review-graph` databases are excluded from ForgeCode/ForceContext scans and Git by default.
+
+## [7.2.1] - 2026-07-19
+
+### Fixed
+
+- Multi-line clipboard content pasted at `you ›` is now collected and sent as one prompt instead of treating later lines as live intervention messages.
+- Multi-line text pasted while a request is active becomes one queued prompt or one steering message, preserving its line breaks.
+- Windows `CRLF`, `CR`, and `LF` clipboard line endings are normalized consistently without flattening the request.
+
 ## [7.2.0] - 2026-07-18
 
 ### Added
