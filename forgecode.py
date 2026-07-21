@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.4"
+VERSION = "7.4.5"
 
 _UI_LANGUAGE = "tr"
 
@@ -335,7 +335,7 @@ def normalize_api_base_url(raw: str) -> str:
 
 def normalize_custom_route(raw: str) -> str:
     route = str(raw).strip()
-    if route.lower() in {"auto", "exact"}:
+    if route.lower() in {"auto", "exact", "off"}:
         return route.lower()
     if route.startswith(("http://", "https://")):
         parsed = urllib.parse.urlsplit(route)
@@ -343,7 +343,7 @@ def normalize_custom_route(raw: str) -> str:
             return route.rstrip("/")
     if route.startswith("/") and not route.startswith("//"):
         return route
-    raise ValueError("Custom route: auto, exact, /ozel/yol veya tam http(s) adresi olmali")
+    raise ValueError("Custom route: auto, off, exact, /ozel/yol veya tam http(s) adresi olmali")
 
 
 def inferred_custom_route(raw_url: str) -> str:
@@ -352,7 +352,7 @@ def inferred_custom_route(raw_url: str) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Adres http:// veya https:// ile başlayan geçerli bir URL olmalı")
-    return value if parsed.path.rstrip("/") else "exact"
+    return value if parsed.path.rstrip("/") else "off"
 
 
 def endpoint_hint_from_error(error: BaseException | str) -> tuple[str, str] | None:
@@ -1412,7 +1412,7 @@ def request_endpoint(cfg: Config, standard_path: str) -> str:
     route = normalize_custom_route(str(cfg.data.get("custom_endpoint_path", "auto")))
     if route == "auto":
         return api_endpoint(base, standard_path)
-    if route == "exact":
+    if route in {"off", "exact"}:
         return base
     if route.startswith(("http://", "https://")):
         return route
@@ -6044,7 +6044,7 @@ HELP = """Komutlar
   /agentconfig <...>     Role bağlantı profili/model ata
   /batch <a> || <b>      Birden fazla işi güvenli sırayla uygula
   /resume [id|sira]      Aktif hedefi kaldigi yerden surdur
-  /route <secim>         Custom API: auto, exact veya ozel istek yolu
+  /route <secim>         Custom API: auto, off, exact veya ozel istek yolu
   /providers             Sağlayıcıları otomatik hız ölçümleriyle listele
   /provider <ad|sıra>    Sağlayıcıyı değiştir
   /connect <base-url>     Özel OpenAI-uyumlu proxy/API bağla
@@ -6124,7 +6124,7 @@ HELP_EN = """Commands
   /provider <name|no>    Change provider
   /connect <base-url>    Connect a custom OpenAI/Anthropic-compatible API
   /protocol <mode>       Custom API protocol: auto, openai, or anthropic
-  /route <choice>        Custom API route: auto, exact, or a custom path
+  /route <choice>        Custom API route: auto, off, exact, or a custom path
   /endpoint              Show the exact planned API endpoints
   /profiles              List saved connection profiles
   /profile <action>      Save, use, or delete a connection profile
@@ -7840,7 +7840,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print("/route yalnizca custom saglayicida kullanilir.")
         elif len(parts) < 2:
             print(f"Custom route: {cfg.data.get('custom_endpoint_path', 'auto')}")
-            print("Kullanim: /route auto|exact|/ozel/yol|https://tam-adres")
+            print("Kullanim: /route auto|off|exact|/ozel/yol|https://tam-adres")
         else:
             try:
                 cfg.set_value("custom_endpoint_path", line[len(parts[0]):].strip())
@@ -8225,7 +8225,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                 print(f"{C.RED}✗ {exc}{C.RESET}")
                 try:
                     print(f"Denenen istek adresi: {endpoint_plan(cfg)['request']}")
-                    print("Route degistirmek icin: /route auto|exact|/ozel/yol")
+                    print("Route degistirmek icin: /route auto|off|exact|/ozel/yol")
                 except ValueError:
                     pass
     elif cmd == "/models":
