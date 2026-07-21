@@ -1126,7 +1126,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(forgecode.normalize_api_base_url("https://x.test/v1/chat/completions"), "https://x.test/v1")
         self.assertEqual(forgecode.normalize_api_base_url("https://x.test/v1/models"), "https://x.test/v1")
 
-    def test_custom_route_can_be_auto_exact_or_user_selected(self):
+    def test_custom_route_can_be_auto_off_exact_or_user_selected(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
         cfg.select_provider("custom")
         cfg.set_value("base_url", "http://proxy.test:40008")
@@ -1135,11 +1135,13 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(forgecode.request_endpoint(cfg, "/v1/messages"), "http://proxy.test:40008/v1/messages")
         cfg.set_value("custom_endpoint_path", "exact")
         self.assertEqual(forgecode.request_endpoint(cfg, "/v1/messages"), "http://proxy.test:40008")
+        cfg.set_value("custom_endpoint_path", "off")
+        self.assertEqual(forgecode.request_endpoint(cfg, "/v1/messages"), "http://proxy.test:40008")
         cfg.set_value("custom_endpoint_path", "/claude/messages")
         self.assertEqual(forgecode.request_endpoint(cfg, "/v1/messages"), "http://proxy.test:40008/claude/messages")
 
     def test_custom_connection_url_needs_no_separate_route_command(self):
-        self.assertEqual(forgecode.inferred_custom_route("https://proxy.test"), "exact")
+        self.assertEqual(forgecode.inferred_custom_route("https://proxy.test"), "off")
         self.assertEqual(
             forgecode.inferred_custom_route("https://proxy.test/v1/messages"),
             "https://proxy.test/v1/messages",
@@ -1149,6 +1151,22 @@ class CommandAssistTests(unittest.TestCase):
         cfg.set_value("base_url", "https://proxy.test/v1/messages")
         self.assertEqual(cfg.base_url(), "https://proxy.test/v1")
         self.assertEqual(cfg.data["custom_endpoint_path"], "https://proxy.test/v1/messages")
+
+    def test_route_off_command_sends_directly_to_base_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("custom")
+            cfg.set_value("base_url", "https://proxy.test/gateway")
+            agent = mock.MagicMock()
+            output = io.StringIO()
+            with mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command(
+                    "/route off", agent, cfg, forgecode.GoalStore(root)
+                ))
+            self.assertEqual(cfg.data["custom_endpoint_path"], "off")
+            self.assertEqual(forgecode.endpoint_plan(cfg)["request"], "https://proxy.test/gateway")
+            self.assertIn("Custom route: off", output.getvalue())
 
     def test_custom_auto_protocol_recognizes_claude_model(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
