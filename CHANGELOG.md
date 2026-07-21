@@ -2,6 +2,19 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.3] - 2026-07-22
+
+### Changed
+
+- Raised the native ForceGraph compatibility floor to 2.7.0 and updated active documentation for Task Passports, the five-tool compact MCP profile, and soft token-budget optimization.
+- Existing ForceGraph 2.6 installations now upgrade automatically before eligible graph-backed work.
+
+### Fixed
+
+- A recent installation failure recorded for an older compatibility floor no longer blocks a newly required ForceGraph upgrade for one hour.
+- Automatic upgrade and externally updated package versions now refresh the local ForceGraph receipt even when project source files did not change.
+- `/graph` now prefers the live installed package version over stale receipt data and marks versions below the required compatibility floor.
+
 ## [7.4.2] - 2026-07-21
 
 ### Changed
