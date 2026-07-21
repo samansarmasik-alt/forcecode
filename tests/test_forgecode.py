@@ -912,11 +912,30 @@ class ProviderTests(unittest.TestCase):
                 "model_cache": {"custom": {"models": ["model-a", "model-b"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
-            with mock.patch.object(forgecode, "post_json", side_effect=[
-                forgecode.ApiError("API 305: unavailable"), forgecode.ApiError("API 305: unavailable")
-            ]):
-                with self.assertRaisesRegex(forgecode.ApiError, "proxy yönlendirmesi"):
+            with mock.patch.object(
+                forgecode, "post_json", side_effect=forgecode.ApiError("API 305: unavailable")
+            ) as post:
+                with self.assertRaisesRegex(forgecode.ApiError, "otomatik denenmedi"):
                     agent.test_api()
+            self.assertEqual(post.call_count, 1)
+
+    def test_rate_limit_stops_custom_model_probe_fanout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("custom")
+            cfg.data.update({
+                "base_url": "https://proxy.test/v1", "model": "model-a", "custom_api_key": "sk-test",
+                "custom_auth_mode": "bearer",
+                "model_cache": {"custom": {"models": ["model-a", "model-b", "model-c"], "catalog": []}},
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            with mock.patch.object(
+                forgecode, "post_json", side_effect=forgecode.ApiError("API 429: Too Many Requests")
+            ) as post:
+                with self.assertRaisesRegex(forgecode.ApiError, "429"):
+                    agent.test_api()
+            self.assertEqual(post.call_count, 1)
 
     def test_305_recovery_learns_real_models_from_chinese_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -931,13 +950,31 @@ class ProviderTests(unittest.TestCase):
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
             chinese = forgecode.ApiError('API 400: 你请求的模型 "claude-opus-4.8" 暂不支持。可用模型：claude-opus-4-7 / claude-haiku-4-5-20251001 / claude-sonnet-4-6 / claude-sonnet-5')
             success = {"choices": [{"message": {"role": "assistant", "content": "OK"}}], "usage": {}}
-            with mock.patch.object(forgecode, "post_json", side_effect=[forgecode.ApiError("API 305: unavailable"), chinese, success]) as post:
+            with mock.patch.object(forgecode, "post_json", side_effect=[chinese, success]) as post:
                 text, _, _ = agent.test_api()
             self.assertEqual(text, "OK")
             self.assertEqual(cfg.data["model"], "claude-opus-4-7")
-            self.assertIn("claude-opus-4.8", cfg.data["custom_rejected_models"])
+            self.assertIn("claude-sonnet-5", cfg.data["custom_rejected_models"])
             self.assertIn("claude-sonnet-4-6", cfg.data["custom_model_hints"])
-            self.assertEqual(post.call_count, 3)
+            self.assertEqual(post.call_count, 2)
+
+    def test_connect_stops_after_terminal_service_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = mock.MagicMock()
+            agent.test_api.side_effect = forgecode.ApiError("API 429: Too Many Requests")
+            output = io.StringIO()
+            with mock.patch.object(forgecode.getpass, "getpass", return_value="sk-test"), mock.patch.object(
+                forgecode, "show_models", return_value=["claude-sonnet-5", "claude-haiku-4-5"]
+            ), mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command(
+                    "/connect https://proxy.test", agent, cfg, forgecode.GoalStore(root)
+                ))
+            self.assertEqual(agent.test_api.call_count, 1)
+            self.assertEqual(cfg.data["custom_api_key"], "sk-test")
+            self.assertEqual(cfg.data["model"], "claude-sonnet-5")
+            self.assertIn("alternatif modeller", output.getvalue())
 
 
 class CommandAssistTests(unittest.TestCase):
