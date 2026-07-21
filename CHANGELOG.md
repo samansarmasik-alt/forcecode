@@ -2,6 +2,16 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.1] - 2026-07-21
+
+### Fixed
+
+- Short greetings and language preferences now use a lightweight chat plan with no project tools, graph scan, evidence template, or unnecessary token overhead.
+- Turkish UI sessions now explicitly keep the complete model response in Turkish unless the user requests another language.
+- An empty ForceGraph database created by status migrations is no longer mistaken for a successfully built project graph.
+- `/graph` now reports empty/non-code folders clearly and filters migration log noise from status output.
+- `/graph on` and `/graph off` now work as direct aliases for `/graph auto on|off`.
+
 ## [7.4.0] - 2026-07-21
 
 ### Changed
