@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.0"
+VERSION = "7.4.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -2547,7 +2547,10 @@ class ForceGraphBridge:
         source_snapshot = self._source_snapshot(snapshot)
         signature = self._snapshot_signature(source_snapshot)
         if not source_snapshot:
-            return {"status": "not-applicable"}
+            return {
+                "status": "not-applicable", "source_files": 0,
+                "reason": "Bu klasörde desteklenen kaynak kod dosyası yok.",
+            }
         notify = progress or (lambda _message: None)
         with FORCEGRAPH_AUTO_LOCK:
             previous = self.state()
@@ -2594,7 +2597,7 @@ class ForceGraphBridge:
                     error_time=time.time(), version=installed_version,
                     source_signature=previous.get("source_signature", ""),
                 )
-            if action.startswith("build") and not self.ready():
+            if action.startswith("build") and not self.ready(verify_graph=True):
                 notify("ForceGraph grafiği doğrulanamadı · normal ForgeCode akışı devam ediyor")
                 return self._save_auto_state(
                     status="degraded", last_action="build-verify",
@@ -2608,7 +2611,7 @@ class ForceGraphBridge:
                 source_files=len(source_snapshot),
             )
 
-    def ready(self) -> bool:
+    def ready(self, verify_graph: bool = False) -> bool:
         receipt = load_json(self.data_dir() / "quickstart-receipt.json", {})
         graph_receipt = receipt.get("graph") if isinstance(receipt, dict) else None
         if (
@@ -2621,12 +2624,23 @@ class ForceGraphBridge:
         if not self.data_dir().is_dir():
             return False
         try:
-            return any(
+            database_exists = any(
                 path.is_file() and path.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
                 for path in self.data_dir().iterdir()
             )
         except OSError:
             return False
+        # `forcegraph status` can create an empty database as a migration side
+        # effect. A database file alone therefore is not evidence of a built
+        # graph. Trust our successful build receipt, or explicitly verify live
+        # graph counts immediately after a build.
+        state = self.state()
+        if database_exists and state.get("status") == "ready" and state.get("source_signature"):
+            return True
+        if verify_graph and database_exists:
+            payload = self.status_payload()
+            return bool(payload and int(payload.get("files", 0) or 0) > 0 and int(payload.get("nodes", 0) or 0) > 0)
+        return False
 
     @staticmethod
     def _safe_base(base: str) -> str:
@@ -2663,6 +2677,45 @@ class ForceGraphBridge:
 
     def status(self) -> str:
         return self.run(["status", "--json"], 45)
+
+    @staticmethod
+    def _json_payload(raw: str) -> dict[str, Any] | None:
+        """Extract ForceGraph JSON while ignoring migration/info lines."""
+        for line in reversed(str(raw).splitlines()):
+            candidate = line.strip()
+            if not candidate.startswith("{"):
+                continue
+            try:
+                value = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        return None
+
+    def status_payload(self) -> dict[str, Any] | None:
+        raw = self.status()
+        if raw.startswith("ERROR:"):
+            return None
+        return self._json_payload(raw)
+
+    def status_summary(self) -> str:
+        raw = self.status()
+        if raw.startswith("ERROR:"):
+            return raw
+        payload = self._json_payload(raw)
+        if not payload:
+            return "ForceGraph durum yanıtı okunamadı. /graph repair ile yeniden oluşturmayı deneyin."
+        files = int(payload.get("files", 0) or 0)
+        nodes = int(payload.get("nodes", 0) or 0)
+        edges = int(payload.get("edges", 0) or 0)
+        languages = payload.get("languages") or []
+        language_text = ", ".join(str(item) for item in languages[:8]) if isinstance(languages, list) else str(languages)
+        state = "hazır" if files > 0 and nodes > 0 else "boş"
+        summary = f"Grafik: {state} · {files} dosya · {nodes} düğüm · {edges} bağlantı"
+        if language_text:
+            summary += f" · diller: {language_text}"
+        return summary
 
     def install(self) -> str:
         env = os.environ.copy()
@@ -3465,7 +3518,10 @@ class WorkspaceTools:
         self._notify_progress(f"ForceGraph: {selected} analizi")
         self.force_graph.ensure_automatic(self.snapshot(), self._notify_progress)
         if selected == "status":
-            return self.force_graph.status()
+            source_count = len(self.force_graph._source_snapshot(self.snapshot()))
+            if source_count == 0:
+                return "ForceGraph otomasyonu açık, ancak bu klasörde desteklenen kaynak kod dosyası olmadığı için grafik uygulanamaz."
+            return self.force_graph.status_summary()
         if selected == "impact":
             return self.force_graph.impact(base)
         if selected == "review":
@@ -4230,6 +4286,13 @@ class ExecutionPlan:
     verification_expected: bool
 
     def prompt_contract(self, compact: bool = False) -> str:
+        if self.task_type == "chat":
+            return (
+                "TASK TYPE: chat\n"
+                f"OBJECTIVE: {self.objective[:800]}\n"
+                "Respond directly, briefly, and entirely in the user's language. "
+                "Do not inspect the project, call tools, invent evidence, or add execution-report headings."
+            )
         selected = self.steps[:3] if compact else self.steps
         lines = [f"TASK TYPE: {self.task_type}", f"OBJECTIVE: {self.objective[:800]}", "REQUIRED EXECUTION STEPS:"]
         lines.extend(f"{index}. {step.objective} | evidence: {step.evidence}" for index, step in enumerate(selected, 1))
@@ -4265,6 +4328,26 @@ class ExecutionState:
     missing_evidence: list[str] = field(default_factory=list)
 
 
+def is_simple_conversation(prompt: str) -> bool:
+    """Return True only for short chat/preferences that need no workspace evidence."""
+    normalized = re.sub(r"[^a-z0-9çğıöşü]+", " ", str(prompt).casefold()).strip()
+    if not normalized or len(normalized) > 80:
+        return False
+    exact = {
+        "selam", "merhaba", "hey", "hi", "hello", "günaydın", "iyi akşamlar",
+        "iyi geceler", "nasılsın", "naber", "teşekkürler", "teşekkür ederim",
+        "sağ ol", "sağol", "türkçe konuş", "turkce konus", "speak turkish",
+        "ingilizce konuş", "ingilizce konus", "speak english",
+    }
+    if normalized in exact:
+        return True
+    language_requests = (
+        r"^(?:lütfen\s+)?türkçe\s+(?:konuş|cevap\s+ver)$",
+        r"^(?:please\s+)?(?:speak|reply\s+in)\s+(?:turkish|english)$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in language_requests)
+
+
 class TokenBudgetEngine:
     """Allocate tokens by task phase instead of applying one global cap."""
 
@@ -4278,6 +4361,8 @@ class TokenBudgetEngine:
             # Tool arguments contain the actual file body. A small generic
             # answer cap can cut JSON midway and make write_file appear broken.
             output = min(maximum, 4096 if efficiency == "max" else 6144)
+        elif task_type == "chat":
+            output = min(maximum, 512)
         else:
             output = min(maximum, 2048 if efficiency == "max" else 4096)
         context = 900 if efficiency == "max" else 2200 if efficiency == "balanced" else 5000
@@ -4297,9 +4382,16 @@ class PlanningEngine:
     def create(self, prompt: str, cfg: Config, requires_artifacts: bool, read_only: bool,
                power: bool, baseline: dict[str, tuple[int, int]]) -> ExecutionPlan:
         lowered = prompt.casefold()
+        conversational = is_simple_conversation(prompt)
         debug = any(word in lowered for word in ("bug", "error", "hata", "traceback", "crash", "düzelt", "fix"))
         refactor = any(word in lowered for word in ("refactor", "mimari", "architecture", "yeniden tasarla", "redesign"))
-        task_type = "plan" if read_only or cfg.data.get("work_mode") == "plan" else "debug" if debug else "refactor" if refactor else "build" if requires_artifacts else "explain"
+        task_type = "chat" if conversational else "plan" if read_only or cfg.data.get("work_mode") == "plan" else "debug" if debug else "refactor" if refactor else "build" if requires_artifacts else "explain"
+        if task_type == "chat":
+            return ExecutionPlan(
+                task_type, prompt.strip(),
+                [PlanStep("respond", "Answer the conversational request directly in the user's language", "direct answer")],
+                [], [], self.budget_engine.allocate(cfg, prompt, task_type, power), False,
+            )
         steps = [PlanStep("inspect", "Inspect the smallest relevant project surface before acting", "relevant file/tool evidence")]
         if task_type == "debug":
             steps.append(PlanStep("reproduce", "Identify the failure signature and root-cause category", "diagnostic, failing check, or exact error evidence"))
@@ -4893,9 +4985,11 @@ class Agent:
             error_context = self.session_store.error_context(5)
             startup_prompt = str(self.cfg.data.get("startup_prompt", "")).strip()
             language_note = (
-                "\nThe ForgeCode interface language is English. Match the user's language; when it is ambiguous, respond in English."
+                "\nThe ForgeCode interface language is English. Respond entirely in the user's language; when it is ambiguous, use English."
                 if self.cfg.data.get("ui_language") == "en" else
-                "\nThe ForgeCode interface language is Turkish. Match the user's language; when it is ambiguous, respond in Turkish."
+                "\nThe ForgeCode interface language is Turkish. Respond entirely in Turkish unless the user explicitly asks for another language. "
+                "Do not use English report headings such as Evidence, Verified outcome, or Residual risks. "
+                "For greetings, language preferences, and brief conversational requests, answer directly and briefly without inspecting files or calling tools."
             )
             durable_note = ""
             if durable_context:
@@ -4968,6 +5062,8 @@ class Agent:
         self.completed_turns = self.completed_turns[-8:]
 
     def _effective_tools(self, prompt: str) -> list[dict[str, Any]]:
+        if is_simple_conversation(prompt):
+            return []
         if self.read_only:
             return [tool for tool in TOOL_SCHEMAS if tool["name"] in {"list_files", "read_file", "search", "graph_context"}]
         delegation_blocked = {"delegate_task"} if self._forbids_subagents(prompt) or not self.cfg.data.get("auto_subagents", True) else set()
@@ -5376,11 +5472,13 @@ class Agent:
     def ask(self, prompt: str, on_tool: Callable[[str, dict[str, Any]], None] | None = None, force_web: bool = False, output_cap: int | None = None, step_cap: int | None = None) -> str:
         original_prompt = prompt
         baseline = self.tools.snapshot()
-        graph_before = self.force_graph.ready()
-        self.force_graph.ensure_automatic(baseline, self._emit_activity)
-        if graph_before != self.force_graph.ready():
-            self._system_cache = ""
-        selected_context = self.force_context.select(original_prompt, str(self.cfg.data.get("efficiency_mode", "balanced")))
+        conversational = is_simple_conversation(original_prompt)
+        if not conversational:
+            graph_before = self.force_graph.ready()
+            self.force_graph.ensure_automatic(baseline, self._emit_activity)
+            if graph_before != self.force_graph.ready():
+                self._system_cache = ""
+        selected_context = "" if conversational else self.force_context.select(original_prompt, str(self.cfg.data.get("efficiency_mode", "balanced")))
         if selected_context != self._force_context_text:
             self._force_context_text = selected_context
             self._system_cache = ""
@@ -5451,7 +5549,7 @@ class Agent:
         if self.cfg.data.get("provider") == "custom" and self.cfg.mode() == "anthropic" and not self._power_active:
             proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
             output_limit = min(output_limit, proxy_limit)
-        active_tools = self._effective_tools(prompt)
+        active_tools = self._effective_tools(original_prompt)
         if not self.read_only:
             tool_names = {tool["name"] for tool in active_tools}
             if "write_file" in tool_names:
@@ -5509,7 +5607,7 @@ class Agent:
                 cause: ApiError | None = exc
                 if self.activate_backup(cause):
                     mode = self.cfg.mode()
-                    active_tools = self._effective_tools(prompt)
+                    active_tools = self._effective_tools(original_prompt)
                     if mode == "anthropic" and not self._power_active:
                         proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
                         output_limit = min(output_limit, proxy_limit)
@@ -5525,7 +5623,7 @@ class Agent:
                     if cause is None or not self._recover_custom_endpoint(cause):
                         break
                     mode = self.cfg.mode()
-                    active_tools = self._effective_tools(prompt)
+                    active_tools = self._effective_tools(original_prompt)
                     if mode == "anthropic" and not self._power_active:
                         proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
                         output_limit = min(output_limit, proxy_limit)
@@ -7227,11 +7325,22 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         if action in {"status", "durum"}:
             state = bridge.state()
             auto_label = "açık" if cfg.data.get("forcegraph_auto_enabled", True) else "kapalı"
-            result = (
-                f"Otomatik ForceGraph: {auto_label} · durum: {state.get('status', 'henüz çalışmadı')} · "
-                f"sürüm: {state.get('version') or bridge.version() or 'kurulu değil'}\n"
-                + bridge.status()
-            )
+            source_count = len(bridge._source_snapshot(agent.tools.snapshot()))
+            version = state.get("version") or bridge.version() or "kurulu değil"
+            if source_count == 0:
+                result = (
+                    f"Otomatik ForceGraph: {auto_label} · grafik: uygulanamaz · sürüm: {version}\n"
+                    "Bu klasörde desteklenen kaynak kod dosyası yok. Bir proje dosyası eklenince grafik ilk AI görevinden önce otomatik oluşturulur."
+                )
+            else:
+                result = (
+                    f"Otomatik ForceGraph: {auto_label} · durum: {state.get('status', 'henüz çalışmadı')} · sürüm: {version}\n"
+                    + bridge.status_summary()
+                )
+        elif action in {"on", "off", "açık", "acik", "kapalı", "kapali"}:
+            enabled = action in {"on", "açık", "acik"}
+            cfg.set_value("forcegraph_auto_enabled", "true" if enabled else "false")
+            result = f"Otomatik ForceGraph {'açıldı' if enabled else 'kapatıldı'}."
         elif action in {"auto", "otomatik"}:
             if len(arguments) > 1:
                 wanted = arguments[1].casefold()
@@ -7265,7 +7374,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         elif action in {"open", "visualize", "göster", "goster"}:
             result = bridge.visualize()
         else:
-            result = "Kullanım: /graph [status|auto on|off|repair|install|build [fast]|update [base]|open]"
+            result = "Kullanım: /graph [status|on|off|auto on|off|repair|install|build [fast]|update [base]|open]"
         print(result)
     elif cmd == "/impact":
         base = parts[1].strip() if len(parts) > 1 else "HEAD~1"
