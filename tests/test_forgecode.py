@@ -2801,13 +2801,27 @@ class ForceGraphIntegrationTests(unittest.TestCase):
             self.assertTrue(cfg.data["forcegraph_auto_enabled"])
             self.assertIn("açıldı", output.getvalue())
 
+    def test_graph_status_prefers_live_version_and_marks_old_installation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            output = io.StringIO()
+            with mock.patch.object(agent.force_graph, "state", return_value={"version": "2.7.0"}), mock.patch.object(
+                agent.force_graph, "version", return_value="2.6.1"
+            ), mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command("/graph", agent, cfg, agent.goals))
+            rendered = output.getvalue()
+            self.assertIn("2.6.1", rendered)
+            self.assertIn("güncelleme gerekli (2.7.0+)", rendered)
+
     def test_automatic_first_run_builds_and_persists_ready_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             bridge = self.make_auto_bridge(root)
             snapshot = {"src/app.py": (12, 100)}
             with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
-                bridge, "version", return_value="2.6.1"
+                bridge, "version", return_value="2.7.0"
             ), mock.patch.object(bridge, "ready", side_effect=[False, True]), mock.patch.object(
                 bridge, "build", return_value="build complete"
             ) as build:
@@ -2824,11 +2838,11 @@ class ForceGraphIntegrationTests(unittest.TestCase):
             bridge = self.make_auto_bridge(root)
             old = {"app.py": (10, 1)}
             bridge._save_auto_state(
-                status="ready", version="2.6.1", error_time=0,
+                status="ready", version="2.7.0", required_version="2.7.0", error_time=0,
                 source_signature=bridge._snapshot_signature(old), last_action="build",
             )
             with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
-                bridge, "version", return_value="2.6.1"
+                bridge, "version", return_value="2.7.0"
             ), mock.patch.object(bridge, "ready", return_value=True), mock.patch.object(
                 bridge, "run", return_value="updated"
             ) as run:
@@ -2852,20 +2866,43 @@ class ForceGraphIntegrationTests(unittest.TestCase):
             self.assertEqual(second["status"], "degraded")
             install.assert_called_once()
 
-    def test_automatic_bridge_upgrades_pre_26_installation(self):
+    def test_automatic_bridge_upgrades_pre_27_installation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             bridge = self.make_auto_bridge(root)
             snapshot = {"app.py": (8, 1)}
             with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
-                bridge, "version", side_effect=["2.4.0", "2.6.1"]
+                bridge, "version", side_effect=["2.6.1", "2.7.0"]
             ), mock.patch.object(bridge, "install", return_value="installed") as install, mock.patch.object(
                 bridge, "ready", side_effect=[False, True]
             ), mock.patch.object(bridge, "build", return_value="built"):
                 state = bridge.ensure_automatic(snapshot)
             install.assert_called_once_with()
             self.assertEqual(state["status"], "ready")
-            self.assertEqual(state["version"], "2.6.1")
+            self.assertEqual(state["version"], "2.7.0")
+            self.assertEqual(state["last_action"], "build")
+
+    def test_new_forcegraph_floor_bypasses_old_cooldown_and_refreshes_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bridge = self.make_auto_bridge(root)
+            snapshot = {"app.py": (8, 1)}
+            bridge._save_auto_state(
+                status="degraded", version="2.6.1", required_version="2.6.0",
+                error_time=forgecode.time.time(), source_signature=bridge._snapshot_signature(snapshot),
+                last_action="install",
+            )
+            with mock.patch.object(bridge, "command", return_value=["forcegraph"]), mock.patch.object(
+                bridge, "version", side_effect=["2.6.1", "2.7.0"]
+            ), mock.patch.object(bridge, "install", return_value="installed") as install, mock.patch.object(
+                bridge, "ready", return_value=True
+            ):
+                state = bridge.ensure_automatic(snapshot)
+            install.assert_called_once_with()
+            self.assertEqual(state["status"], "ready")
+            self.assertEqual(state["version"], "2.7.0")
+            self.assertEqual(state["required_version"], "2.7.0")
+            self.assertEqual(state["last_action"], "upgrade")
 
     def test_automatic_graph_can_be_disabled_and_skips_non_code_folders(self):
         with tempfile.TemporaryDirectory() as tmp:

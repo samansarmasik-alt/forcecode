@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.2"
+VERSION = "7.4.3"
 
 _UI_LANGUAGE = "tr"
 
@@ -2426,7 +2426,7 @@ def decode_subprocess_output(value: bytes | str | None) -> str:
 
 
 FORCEGRAPH_REPOSITORY = "https://github.com/samansarmasik-alt/code-review-graph.git"
-FORCEGRAPH_MIN_VERSION = (2, 6, 0)
+FORCEGRAPH_MIN_VERSION = (2, 7, 0)
 FORCEGRAPH_MIN_VERSION_TEXT = ".".join(str(part) for part in FORCEGRAPH_MIN_VERSION)
 FORCEGRAPH_AUTO_LOCK = threading.RLock()
 
@@ -2555,19 +2555,35 @@ class ForceGraphBridge:
         notify = progress or (lambda _message: None)
         with FORCEGRAPH_AUTO_LOCK:
             previous = self.state()
-            error_time = float(previous.get("error_time", 0) or 0)
-            if not force_sync and error_time and time.time() - error_time < 3600:
-                return previous
-
             installed_version = self.version()
             version_tuple = self._version_tuple(installed_version)
-            if self.command() is None or version_tuple is None or version_tuple < FORCEGRAPH_MIN_VERSION:
+            needs_upgrade = (
+                self.command() is None
+                or version_tuple is None
+                or version_tuple < FORCEGRAPH_MIN_VERSION
+            )
+            error_time = float(previous.get("error_time", 0) or 0)
+            same_failed_requirement = (
+                previous.get("required_version") == FORCEGRAPH_MIN_VERSION_TEXT
+                and str(previous.get("last_action", "")).startswith("install")
+            )
+            if (
+                not force_sync
+                and error_time
+                and time.time() - error_time < 3600
+                and (not needs_upgrade or same_failed_requirement)
+            ):
+                return previous
+
+            upgraded = False
+            if needs_upgrade:
                 notify(f"ForceGraph {FORCEGRAPH_MIN_VERSION_TEXT}+ hazırlanıyor · tek seferlik otomatik kurulum")
                 install_result = self.install()
                 if install_result.startswith("ERROR:"):
                     return self._save_auto_state(
                         status="degraded", last_action="install", error=install_result[:2000],
                         error_time=time.time(), source_signature="",
+                        required_version=FORCEGRAPH_MIN_VERSION_TEXT,
                     )
                 importlib.invalidate_caches()
                 installed_version = self.version() or f"{FORCEGRAPH_MIN_VERSION_TEXT}+"
@@ -2577,7 +2593,9 @@ class ForceGraphBridge:
                         status="degraded", last_action="install-verify",
                         error=f"ForceGraph {FORCEGRAPH_MIN_VERSION_TEXT}+ gerekli, bulunan sürüm: {installed_version}",
                         error_time=time.time(), source_signature="",
+                        required_version=FORCEGRAPH_MIN_VERSION_TEXT,
                     )
+                upgraded = True
 
             if not self.ready():
                 fast = len(source_snapshot) > 2500
@@ -2589,6 +2607,18 @@ class ForceGraphBridge:
                 result = self.run(["update", "--brief"], 600)
                 action = "update"
             else:
+                if (
+                    upgraded
+                    or previous.get("version") != installed_version
+                    or previous.get("required_version") != FORCEGRAPH_MIN_VERSION_TEXT
+                ):
+                    notify(f"ForceGraph {installed_version} hazır · entegrasyon kaydı güncellendi")
+                    return self._save_auto_state(
+                        status="ready", last_action="upgrade" if upgraded else "version-refresh",
+                        error="", error_time=0, version=installed_version,
+                        required_version=FORCEGRAPH_MIN_VERSION_TEXT,
+                        source_signature=signature, source_files=len(source_snapshot),
+                    )
                 return previous or {"status": "ready", "version": installed_version, "source_signature": signature}
 
             if result.startswith("ERROR:"):
@@ -2608,7 +2638,8 @@ class ForceGraphBridge:
             notify("ForceGraph hazır · mimari ve etki bağlamı güncel")
             return self._save_auto_state(
                 status="ready", last_action=action, error="", error_time=0,
-                version=installed_version, source_signature=signature,
+                version=installed_version, required_version=FORCEGRAPH_MIN_VERSION_TEXT,
+                source_signature=signature,
                 source_files=len(source_snapshot),
             )
 
@@ -7327,7 +7358,11 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             state = bridge.state()
             auto_label = "açık" if cfg.data.get("forcegraph_auto_enabled", True) else "kapalı"
             source_count = len(bridge._source_snapshot(agent.tools.snapshot()))
-            version = state.get("version") or bridge.version() or "kurulu değil"
+            live_version = bridge.version()
+            version = live_version or state.get("version") or "kurulu değil"
+            parsed_version = bridge._version_tuple(version)
+            if parsed_version is not None and parsed_version < FORCEGRAPH_MIN_VERSION:
+                version += f" · güncelleme gerekli ({FORCEGRAPH_MIN_VERSION_TEXT}+)"
             if source_count == 0:
                 result = (
                     f"Otomatik ForceGraph: {auto_label} · grafik: uygulanamaz · sürüm: {version}\n"

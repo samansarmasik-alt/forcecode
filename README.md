@@ -140,7 +140,7 @@ ForceContext data is local, but selected memory snippets are included in request
 
 ## Automatic ForceGraph integration
 
-[ForceGraph 2.6+](https://github.com/samansarmasik-alt/code-review-graph) is an optional local-first structural code graph, integrated as an automatic ForceCode subsystem. ForgeCode requires the 2.6 compatibility line (the upstream repository currently reports 2.6.1). There is no required setup command: on the first request in a project containing supported source files, ForgeCode installs or upgrades an older ForceGraph version, builds the graph, verifies the local database, and records an automation receipt. Later requests compare a compact source snapshot and incrementally index only changed files before graph-backed analysis.
+[ForceGraph 2.7+](https://github.com/samansarmasik-alt/code-review-graph) is an optional local-first structural code graph, integrated as an automatic ForceCode subsystem. ForgeCode requires the 2.7 compatibility line (the upstream repository currently reports 2.7.0). There is no required setup command: on the first request in a project containing supported source files, ForgeCode installs or upgrades an older ForceGraph version, builds the graph, verifies the local database, and records an automation receipt. Later requests compare a compact source snapshot and incrementally index only changed files before graph-backed analysis.
 
 The AI can call the read-only `graph_context` tool before broad file scans. This provides focused architecture, blast-radius, test-gap, and review evidence while the Execution Kernel records whether graph evidence was consulted. Failure is non-fatal: ForgeCode reports a concise activity message, applies a one-hour retry cooldown, and continues with its normal file tools.
 
@@ -155,7 +155,7 @@ Manual commands remain only for visibility and recovery:
 /graph open            # optional visual graph
 ```
 
-ForgeCode's native bridge does not rewrite Codex, Claude Code, Cursor, or other clients' MCP configuration. It uses the ForceGraph 2.6 CLI directly and provides request-time automatic synchronization, so no persistent watcher process or editor restart is required. ForceGraph's separate `connect` workflow can expose its compact MCP gateway and shared-agent memory to other clients, but ForgeCode does not silently enable or claim those external-client features. Graph databases stay in `<project>/.code-review-graph`, automation state stays in `<project>/.forgecode/forcegraph-state.json`, and both are excluded from normal context scans and Git. Source code is not uploaded by the native bridge.
+ForgeCode's native bridge does not rewrite Codex, Claude Code, Cursor, or other clients' MCP configuration. It uses the ForceGraph 2.7 CLI directly and provides request-time automatic synchronization, so no persistent watcher process or editor restart is required. ForceGraph's separate `connect` workflow exposes a five-tool compact MCP gateway, shared-agent memory, Task Passports, and soft token-budget optimization to supported external clients. Those MCP-only features are not silently enabled or falsely reported as native ForgeCode features. Graph databases stay in `<project>/.code-review-graph`, automation state stays in `<project>/.forgecode/forcegraph-state.json`, and both are excluded from normal context scans and Git. Source code is not uploaded by the native bridge.
 
 ## Provider configuration
 
