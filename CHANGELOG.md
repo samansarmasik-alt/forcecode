@@ -2,6 +2,14 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.4.2] - 2026-07-21
+
+### Changed
+
+- Updated the native ForceGraph compatibility floor from 2.4.0 to 2.6.0; the current upstream repository reports 2.6.1.
+- Existing 2.4/2.5 installations are now upgraded automatically before eligible graph-backed coding work.
+- Updated documentation to distinguish ForgeCode's native CLI bridge from ForceGraph 2.6's optional compact MCP gateway and shared-agent memory.
+
 ## [7.4.1] - 2026-07-21
 
 ### Fixed
