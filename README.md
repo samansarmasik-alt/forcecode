@@ -166,6 +166,7 @@ For a custom OpenAI-compatible or Anthropic-compatible endpoint:
 ```text
 /provider custom
 /connect https://your-service.example
+/route off                  # send directly to the configured base URL
 /protocol auto
 /key
 /models
