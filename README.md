@@ -15,7 +15,9 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Model discovery, connection tests, response-latency history, token accounting, and configurable pricing.
 - Project-scoped file inspection, verified UTF-8 writes, text replacement, search, and command execution.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
+- Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
+- Optional ForceGraph structural code intelligence for impact analysis, test-gap discovery, and graph-assisted review.
 - Evidence-oriented Execution Kernel with local planning, structured debugging, verification gates, and confidence receipts.
 - AI-selected read-only subagents for research, design, backend, frontend, testing, review, and security tasks.
 - Project-aware verification and interactive program testing: ForceCode can follow terminal prompts, provide staged input, and show live process output in the activity area.
@@ -97,6 +99,7 @@ Force -p "Review the current changes and run the relevant tests"
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
+| ForceGraph | `/graph`, `/impact`, `/review` |
 | Execution engine | `/plan`, `/debug`, `/confidence`, `/engine` |
 | Parallel work | `/agents`, `/agent`, `/delegate`, `/team`, `/batch` |
 | Usage | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
@@ -134,6 +137,25 @@ Initialize and scan from inside ForgeCode:
 The same four `force-context-*` commands work directly after `Force`, for example `Force force-context-scan`. Use `/memory list`, `/memory edit`, `/memory delete`, `/memory disable`, `/memory export`, or `/memory wipe` for complete user control. The Response Analyzer stores possible decisions as low-confidence suggestions; only outcomes backed by changed files and reported verification become verified memory.
 
 ForceContext data is local, but selected memory snippets are included in requests to your configured provider. `.forceignore` excludes paths from scanning. `.force/` and memory exports must not be committed.
+
+## Automatic ForceGraph integration
+
+[ForceGraph 2.4](https://github.com/samansarmasik-alt/code-review-graph) is an optional local-first structural code graph, integrated as an automatic ForceCode subsystem. There is no required setup command: on the first request in a project containing supported source files, ForgeCode installs or upgrades ForceGraph, builds the graph, verifies the local database, and records an automation receipt. Later requests compare a compact source snapshot and incrementally index only changed files before graph-backed analysis.
+
+The AI can call the read-only `graph_context` tool before broad file scans. This provides focused architecture, blast-radius, test-gap, and review evidence while the Execution Kernel records whether graph evidence was consulted. Failure is non-fatal: ForgeCode reports a concise activity message, applies a one-hour retry cooldown, and continues with its normal file tools.
+
+Manual commands remain only for visibility and recovery:
+
+```text
+/graph                 # automatic state and native graph status
+/graph auto off        # opt out without deleting local data
+/graph repair          # force installation/build/update recovery
+/impact HEAD~1         # compact blast-radius and test-gap report
+/review main           # detailed graph-assisted review
+/graph open            # optional visual graph
+```
+
+ForgeCode's native bridge does not rewrite Codex, Claude Code, Cursor, or other clients' MCP configuration. It uses ForceGraph directly and provides request-time automatic synchronization, so no persistent watcher process or editor restart is required. Graph databases stay in `<project>/.code-review-graph`, automation state stays in `<project>/.forgecode/forcegraph-state.json`, and both are excluded from normal context scans and Git. Source code is not uploaded by the native bridge.
 
 ## Provider configuration
 
@@ -177,6 +199,8 @@ Global user settings remain outside the repository:
 `FORGECODE_HOME` can override the global settings directory. On first launch after upgrading, legacy Windows settings from `%USERPROFILE%\.forgecode` are copied to AppData when no AppData configuration exists; the legacy files are not deleted automatically.
 
 Project-specific operational state stays in `<project>\.forgecode`. ForceContext project/session cards, its incremental index, and Context Receipts stay in `<project>\.force`. Both directories are ignored by Git.
+
+Optional ForceGraph indexes stay in `<project>\.code-review-graph` and are also ignored by Git.
 
 ## Development
 
