@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.3"
+VERSION = "7.4.4"
 
 _UI_LANGUAGE = "tr"
 
@@ -1026,6 +1026,14 @@ def advertised_models_from_error(message: str) -> list[str]:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,199}", model) and model not in models:
             models.append(model)
     return models
+
+
+def custom_probe_should_stop(error: BaseException | str) -> bool:
+    """Avoid multiplying requests when a custom service is globally unavailable."""
+    message = str(error).lower()
+    if is_limit_or_quota_error(error):
+        return True
+    return ("api 305" in message or "error 305" in message) and not advertised_models_from_error(str(error))
 
 
 def write_crash_log(cfg: Config | None, exc: BaseException) -> pathlib.Path:
@@ -4898,6 +4906,14 @@ class Agent:
     def _recover_custom_model(self, cause: ApiError, retry_original: bool = False) -> ModelReply | None:
         if self.cfg.data.get("provider") not in {"custom", "kimchi"} or not self._is_model_unavailable_error(cause):
             return None
+        if custom_probe_should_stop(cause):
+            if "305" in str(cause):
+                raise ApiError(
+                    "Özel servis API 305/unavailable döndürüyor. Bu genel bir upstream/kapasite hatasıdır; "
+                    "hız sınırını büyütmemek için alternatif modeller otomatik denenmedi. API anahtarı ve bağlantı "
+                    f"ayarları korundu; biraz sonra /test kullanın. Son hata: {cause}"
+                )
+            return None
         original = str(self.cfg.data.get("model", ""))
         models = cached_models(self.cfg)
         if not models:
@@ -4942,7 +4958,8 @@ class Agent:
         errors: list[str] = []
         self._emit_activity(f"Model kullanılamıyor: {original} · alternatifler canlı sınanıyor")
         attempted: set[str] = set()
-        while candidates and len(attempted) < 20:
+        terminal_error: ApiError | None = None
+        while candidates and len(attempted) < 3:
             candidate = candidates.pop(0)
             if candidate in attempted:
                 continue
@@ -4957,6 +4974,9 @@ class Agent:
             except ApiError as exc:
                 errors.append(f"{candidate}: {exc}")
                 newly_advertised = register_error(exc, candidate)
+                if custom_probe_should_stop(exc):
+                    terminal_error = exc
+                    break
                 for suggested in reversed(newly_advertised):
                     if suggested not in attempted and suggested not in rejected and suggested not in candidates:
                         candidates.insert(0, suggested)
@@ -4972,6 +4992,11 @@ class Agent:
         self.cfg.data["model"] = original
         self.provider = make_provider(self.cfg)
         detail = errors[-1] if errors else str(cause)
+        if terminal_error is not None and is_limit_or_quota_error(terminal_error):
+            raise ApiError(
+                "Özel servis hız sınırı uyguluyor; ek model istekleri gönderilmedi. "
+                f"API anahtarı ve seçili model korundu. Biraz sonra /test kullanın. Son hata: {terminal_error}"
+            )
         if "305" in str(cause) or "305" in detail:
             raise ApiError(
                 f"Özel servis API 305/unavailable döndürüyor. {len(attempted)} model adayı sınandı ancak hiçbiri çalışmadı. "
@@ -5923,24 +5948,32 @@ class Agent:
     def test_api(self) -> tuple[str, Usage, float]:
         start = time.perf_counter()
         messages = self._health_messages(self.cfg.mode())
+        configured_retries = self.cfg.data.get("retry_attempts", 2)
+        # A health check must be cheap and deterministic. Retrying the same
+        # 305/429 request here amplifies rate limits before model/protocol
+        # recovery even starts; normal conversation retries remain unchanged.
+        self.cfg.data["retry_attempts"] = 1
         try:
-            reply = self.provider.request("You are an API health check.", messages, [], 32)
-        except ApiError as exc:
-            cause = exc
-            reply = None
-            for _ in range(3):
-                if not self._recover_custom_endpoint(cause):
-                    break
-                messages = self._health_messages(self.cfg.mode())
-                try:
-                    reply = self.provider.request("You are an API health check.", messages, [], 32)
-                    break
-                except ApiError as routed_exc:
-                    cause = routed_exc
-            if reply is None:
-                reply = self._recover_custom_model(cause)
+            try:
+                reply = self.provider.request("You are an API health check.", messages, [], 32)
+            except ApiError as exc:
+                cause = exc
+                reply = None
+                for _ in range(3):
+                    if not self._recover_custom_endpoint(cause):
+                        break
+                    messages = self._health_messages(self.cfg.mode())
+                    try:
+                        reply = self.provider.request("You are an API health check.", messages, [], 32)
+                        break
+                    except ApiError as routed_exc:
+                        cause = routed_exc
                 if reply is None:
-                    raise cause
+                    reply = self._recover_custom_model(cause)
+                    if reply is None:
+                        raise cause
+        finally:
+            self.cfg.data["retry_attempts"] = configured_retries
         elapsed = time.perf_counter() - start
         if not self.read_only:
             record_provider_latency(self.cfg, elapsed, elapsed)
@@ -7766,6 +7799,11 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                         text, _, seconds = agent.test_api()
                     print(f"{C.GREEN}Bağlantı hazır.{C.RESET} {seconds:.2f}s · protokol: {first_label} · model: {cfg.data['model']} · auth: {cfg.data['custom_auth_mode']} · yanıt: {text!r}")
                 except ApiError as first_exc:
+                    if custom_probe_should_stop(first_exc):
+                        print(f"{C.YELLOW}Bağlantı ve API anahtarı kaydedildi; servis geçici olarak kullanılamıyor.{C.RESET}")
+                        print(f"Gereksiz istek ve hız sınırı oluşturmamak için alternatif modeller ile {second_label} protokolü denenmedi.")
+                        print(f"Son hata: {first_exc}\nBiraz sonra /test kullanın; gerekirse /protocol anthropic veya /protocol openai seçin.")
+                        return True
                     print(f"{C.YELLOW}{first_label} protokolü çalışmadı; {second_label} deneniyor…{C.RESET}")
                     cfg.set_value("api_mode", "anthropic" if second_protocol == "anthropic" else "chat")
                     cfg.set_value("custom_protocol", second_protocol)
