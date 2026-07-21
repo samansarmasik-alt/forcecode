@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.1"
+VERSION = "7.4.2"
 
 _UI_LANGUAGE = "tr"
 
@@ -2426,7 +2426,8 @@ def decode_subprocess_output(value: bytes | str | None) -> str:
 
 
 FORCEGRAPH_REPOSITORY = "https://github.com/samansarmasik-alt/code-review-graph.git"
-FORCEGRAPH_MIN_VERSION = (2, 4, 0)
+FORCEGRAPH_MIN_VERSION = (2, 6, 0)
+FORCEGRAPH_MIN_VERSION_TEXT = ".".join(str(part) for part in FORCEGRAPH_MIN_VERSION)
 FORCEGRAPH_AUTO_LOCK = threading.RLock()
 
 
@@ -2561,7 +2562,7 @@ class ForceGraphBridge:
             installed_version = self.version()
             version_tuple = self._version_tuple(installed_version)
             if self.command() is None or version_tuple is None or version_tuple < FORCEGRAPH_MIN_VERSION:
-                notify("ForceGraph 2.4 hazırlanıyor · tek seferlik otomatik kurulum")
+                notify(f"ForceGraph {FORCEGRAPH_MIN_VERSION_TEXT}+ hazırlanıyor · tek seferlik otomatik kurulum")
                 install_result = self.install()
                 if install_result.startswith("ERROR:"):
                     return self._save_auto_state(
@@ -2569,12 +2570,12 @@ class ForceGraphBridge:
                         error_time=time.time(), source_signature="",
                     )
                 importlib.invalidate_caches()
-                installed_version = self.version() or "2.4+"
+                installed_version = self.version() or f"{FORCEGRAPH_MIN_VERSION_TEXT}+"
                 refreshed_tuple = self._version_tuple(installed_version)
                 if refreshed_tuple is not None and refreshed_tuple < FORCEGRAPH_MIN_VERSION:
                     return self._save_auto_state(
                         status="degraded", last_action="install-verify",
-                        error=f"ForceGraph 2.4.0+ gerekli, bulunan sürüm: {installed_version}",
+                        error=f"ForceGraph {FORCEGRAPH_MIN_VERSION_TEXT}+ gerekli, bulunan sürüm: {installed_version}",
                         error_time=time.time(), source_signature="",
                     )
 
@@ -7353,7 +7354,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             else:
                 result = f"Otomatik ForceGraph: {'açık' if cfg.data.get('forcegraph_auto_enabled', True) else 'kapalı'}"
         elif action in {"install", "kur"}:
-            print("ForceGraph 2.4+ kuruluyor veya güncelleniyor…")
+            print(f"ForceGraph {FORCEGRAPH_MIN_VERSION_TEXT}+ kuruluyor veya güncelleniyor…")
             result = bridge.install()
             if not result.startswith("ERROR:"):
                 result = "ForceGraph güncellendi. Proje haritası bir sonraki istekte otomatik hazırlanacak."
