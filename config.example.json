@@ -1,5 +1,5 @@
 {
-  "config_version": 18,
+  "config_version": 21,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",
@@ -14,6 +14,10 @@
   "temperature": 1.0,
   "timeout_seconds": 100,
   "streaming_enabled": true,
+  "first_response_timeout_seconds": 60,
+  "stream_idle_timeout_seconds": 75,
+  "request_total_timeout_seconds": 180,
+  "retry_budget_seconds": 120,
   "max_agent_steps": 0,
   "goal_max_rounds": 3,
   "retry_attempts": 2,
@@ -26,6 +30,7 @@
   "system_prompt_extra": "",
   "model_cache": {},
   "latency_stats": {},
+  "request_watchdog_stats": {},
   "web_search_mode": "auto",
   "web_max_results": 3,
   "thinking_mode": "off",
@@ -69,5 +74,12 @@
   "backup_primary_state": {},
   "backup_last_reason": "",
   "backup_last_switch": "",
-  "forcegraph_auto_enabled": true
+  "forcegraph_auto_enabled": true,
+  "sandbox_enabled": true,
+  "sandbox_engine": "auto",
+  "sandbox_network_enabled": true,
+  "sandbox_auto_transfer": true,
+  "sandbox_snapshot_enabled": true,
+  "sandbox_max_file_mb": 20,
+  "sandbox_max_transfer_mb": 200
 }
