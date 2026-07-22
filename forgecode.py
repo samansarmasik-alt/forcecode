@@ -3799,6 +3799,19 @@ class WorkspaceTools:
         if self.sandbox is not None and self.sandbox.active():
             return self.sandbox.command_argv(command, interactive=True), False
         if os.name == "nt":
+            # Avoid PowerShell's native-output buffering for the Python runtime
+            # that launched ForgeCode.  In particular CPython 3.10 can already
+            # be waiting at input() while its prompt is still hidden upstream.
+            escaped_executable = str(sys.executable).replace("'", "''")
+            python_prefix = f"& '{escaped_executable}'"
+            if command[:len(python_prefix)].casefold() == python_prefix.casefold():
+                tail = command[len(python_prefix):].strip()
+                arguments = shlex.split(tail, posix=False) if tail else []
+                arguments = [
+                    value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'} else value
+                    for value in arguments
+                ]
+                return [sys.executable, "-u", *arguments], False
             return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windows_shell_command(command)], False
         return command, True
 
