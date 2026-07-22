@@ -3885,10 +3885,16 @@ class WorkspaceTools:
         if not approved:
             return rejection
         command_value, shell = self._interactive_command(selected)
+        process_env = os.environ.copy()
+        # CPython 3.10 on Windows may retain prompts behind the PowerShell
+        # wrapper when stdout is a pipe.  Unbuffered UTF-8 output lets the
+        # tester observe the prompt before it sends staged stdin.
+        process_env.setdefault("PYTHONUNBUFFERED", "1")
+        process_env.setdefault("PYTHONIOENCODING", "utf-8")
         options: dict[str, Any] = {
             "cwd": self.root, "shell": shell, "stdin": subprocess.PIPE,
             "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
-            "text": False, "bufsize": 0,
+            "text": False, "bufsize": 0, "env": process_env,
         }
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
