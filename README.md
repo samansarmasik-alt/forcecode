@@ -1,5 +1,7 @@
 # ForgeCode
 
+Current release: **v7.6.0**. ForceSandbox runs AI work in a private project copy, executes shell commands through Docker or Podman, and transfers only verified, conflict-free changes back to the real project.
+
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
 The terminal interface supports both English and Turkish. New installations ask for a language before provider setup; existing users can switch at any time with `/language en` or `/language tr`.
@@ -14,6 +16,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - More than twenty provider presets, local Ollama/LM Studio support, and configurable custom endpoints.
 - Model discovery, connection tests, response-latency history, token accounting, and configurable pricing.
 - Project-scoped file inspection, verified UTF-8 writes, text replacement, search, and command execution.
+- Default-on ForceSandbox isolation with project-only container mounts, snapshots, conflict detection, rollback, and controlled transfer.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
@@ -25,7 +28,9 @@ The terminal interface supports both English and Turkish. New installations ask 
 
 ## Safety model
 
-ForgeCode confines file tools to the selected project directory. Empty paths, project-root writes, directory paths, and path traversal are rejected. Writes are performed through verified UTF-8 temporary files and atomically replace the target only after validation.
+ForceSandbox is enabled by default. AI file tools see only a private copy under the ForgeCode AppData directory, while generic shell commands run in an ephemeral Docker/Podman container that mounts only that copy. If no working isolation engine is available, shell commands fail closed; file tools remain available in the private workspace. Secrets and common credential files are excluded from staging.
+
+Verified, conflict-free task changes are atomically transferred to the real project after a snapshot. Failed verification or a concurrently changed real file keeps the work inside the sandbox. Empty paths, directory targets, traversal, links, and reparse points are rejected. Trusted ForceCode controllers handle snapshots, provider requests, and the argument-constrained ForceGraph bridge; ForceGraph analyzes the sandbox copy rather than the real project.
 
 Commands and file changes require confirmation by default. Smart Autopilot can approve clearly safe project work, while a deterministic safety layer blocks known destructive system operations. Full autopilot is available but should be enabled only in a disposable or version-controlled workspace.
 
@@ -37,6 +42,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and the supported-v
 
 - Windows 10 or later
 - Python 3.10 or later, available as `py -3` or `python`
+- Docker Desktop or Podman for isolated AI shell commands; without one, command tools are safely blocked
 - An API key for the selected hosted provider; Ollama and LM Studio can run locally without one
 
 ## Quick start
@@ -96,7 +102,9 @@ Force -p "Review the current changes and run the relevant tests"
 | Language | `/language en`, `/language tr` |
 | Custom APIs | `/connect`, `/protocol`, `/route`, `/endpoint`, `/profiles`, `/profile` |
 | Work modes | `/mode`, `/thinking`, `/temperature`, `/efficiency`, `/power`, `/stream` |
+| Request reliability | `/watchdog fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
+| Sandbox | `/sandbox` (arrow-key settings, pending transfer, snapshots, logs, cleanup) |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
@@ -106,6 +114,10 @@ Force -p "Review the current changes and run the relevant tests"
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+## ForceSandbox
+
+No per-task sandbox command is required. Each request works in a ForceCode-owned copy, keeps internet access enabled by default, and exposes no host Desktop, Documents, other projects, saved API keys, or system folders to model tools. Open `/sandbox` to view status and the workspace, toggle network or automatic transfer, create/restore snapshots, inspect redacted logs, select Docker/Podman, or clean the isolated copy. Set `sandbox_enabled` to `false` only if you intentionally want the legacy direct-workspace behavior; restart ForceCode after changing it.
 
 ## Execution Kernel
 
@@ -196,6 +208,7 @@ Global user settings remain outside the repository:
 | Installed runtime | `%LOCALAPPDATA%\ForgeCode\app` |
 | Global launcher | `%LOCALAPPDATA%\ForgeCode\bin\Force.cmd` |
 | User-level ForceContext preferences | `%LOCALAPPDATA%\ForgeCode\memory\user.json` |
+| ForceSandbox workspaces, snapshots, and logs | `%LOCALAPPDATA%\ForgeCode\sandboxes\<project-id>` |
 
 `FORGECODE_HOME` can override the global settings directory. On first launch after upgrading, legacy Windows settings from `%USERPROFILE%\.forgecode` are copied to AppData when no AppData configuration exists; the legacy files are not deleted automatically.
 

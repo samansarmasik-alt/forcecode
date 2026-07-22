@@ -2,6 +2,46 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.6.0] - 2026-07-22
+
+### Added
+
+- Added default-on ForceSandbox workspaces under ForgeCode's AppData directory. AI file tools now operate on a private, secret-filtered project copy rather than the real project.
+- Added Docker/Podman command isolation with a project-only mount, ephemeral read-only container filesystem, optional network blocking, dropped Linux capabilities, and no inherited API keys or host environment.
+- Added verified transfer gates, concurrent-edit conflict detection, per-task path scoping, pre-transfer snapshots, integrity checks, rollback, pending-change retention, and redacted security logs.
+- Added an arrow-key `/sandbox` control menu for status, network, automatic transfer, snapshots, pending transfer, workspace, logs, engine selection, restore, and cleanup.
+
+### Changed
+
+- ForceGraph continues to work against the private sandbox copy so structural analysis does not expose the real project workspace to model tools.
+- Automatic project tests use container-native commands and can pass scripted or interactive input through the isolated runtime.
+
+### Security
+
+- Generic command execution now fails closed when Docker or Podman is unavailable instead of silently falling back to the host shell.
+- Common environment files, credentials, private keys, SSH/cloud configuration directories, symlinks, and Windows reparse points are excluded or rejected at the sandbox boundary.
+- A successful task transfers only files changed during that task; older unverified sandbox work cannot piggyback on a later successful verification.
+
+## [7.5.0] - 2026-07-22
+
+### Added
+
+- Added a request lifecycle watchdog with independent first-response, streaming-idle, and total-call budgets. Active SSE traffic refreshes the idle window, while stalled calls are detached before they can block the terminal for several minutes.
+- Added `/watchdog fast|balanced|patient|status`, compact stall receipts in `/diagnostics`, and watchdog details in `/status`.
+- Added a shared cancellation signal for detached API workers so late failures cannot trigger another transport retry after the user or watchdog has already moved on.
+- Added a total retry-time budget. Retry count, delay, and cumulative time can now be controlled together with `/retry <count> [delay] [budget]`.
+
+### Changed
+
+- Streaming sockets now use an inactivity timeout instead of being unbounded. Long, actively producing responses still continue normally.
+- Planner, safety-classifier, and other helper calls use a short bounded wait so an optional preflight cannot hold up the main task.
+- Provider latency now recognizes the first received SSE activity even when a tool call streams without visible text.
+
+### Fixed
+
+- Prevented the previous 100-second transport timeout multiplied by retries and recovery calls from turning one failed request into a 200-300 second wait.
+- Plain-JSON fallback after unsupported SSE is bounded and cancellation-aware instead of waiting indefinitely.
+
 ## [7.4.5] - 2026-07-22
 
 ### Added

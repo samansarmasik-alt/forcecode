@@ -102,6 +102,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
             self.assertEqual(cfg.data["timeout_seconds"], 100)
+            self.assertEqual(forgecode.request_watchdog_limits(cfg), (60, 75, 180))
 
     def test_typed_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +203,7 @@ class WorkspaceTests(unittest.TestCase):
         self.tools = forgecode.WorkspaceTools(self.root, self.cfg, lambda _: True)
 
     def tearDown(self):
+        self.tools.close_processes()
         self.tmp.cleanup()
 
     def test_blocks_path_escape(self):
@@ -213,8 +215,8 @@ class WorkspaceTests(unittest.TestCase):
             self.tools.safe_path("/tmp/proxy-hunter/index.html")
         self.cfg.select_provider("custom")
         self.cfg.data.update({"api_mode": "anthropic", "custom_protocol": "anthropic", "autopilot_mode": True})
-        self.assertEqual(self.tools.safe_path("/tmp/proxy-hunter/index.html"), self.root / "index.html")
-        self.assertEqual(self.tools.safe_path("/workspace/assets/css/site.css"), self.root / "assets/css/site.css")
+        self.assertEqual(self.tools.safe_path("/tmp/proxy-hunter/index.html"), self.root.resolve() / "index.html")
+        self.assertEqual(self.tools.safe_path("/workspace/assets/css/site.css"), self.root.resolve() / "assets/css/site.css")
         with self.assertRaises(ValueError):
             self.tools.safe_path("/etc/passwd")
 
@@ -1051,7 +1053,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 19)
+            self.assertEqual(cfg.data["config_version"], 21)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1079,7 +1081,7 @@ class CommandAssistTests(unittest.TestCase):
             with mock.patch.object(forgecode.subprocess, "Popen", return_value=process) as popen:
                 self.assertEqual(forgecode.launch_forgecode_window(agent, "backend"), 4321)
             command = popen.call_args.args[0]
-            self.assertIn(str(root), command)
+            self.assertIn(str(root.resolve()), command)
             self.assertEqual(command[-2:], ["--session", "backend"])
 
     def test_role_profile_routes_subagent_to_another_provider_and_model(self):
@@ -2585,7 +2587,7 @@ class StreamingAndModelMenuTests(unittest.TestCase):
             forgecode.time.sleep(0.05)
             self.assertEqual(chunks, [])
 
-    def test_unsupported_streaming_falls_back_without_read_timeout_before_emitting_text(self):
+    def test_unsupported_streaming_fallback_remains_bounded_before_emitting_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
             consumer = mock.Mock(side_effect=forgecode.ApiError("API 400: stream unsupported"))
@@ -2595,9 +2597,9 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 result = forgecode.stream_or_json(cfg, "https://x.test", {}, {"stream": True}, 10, consumer, lambda _: None)
             self.assertEqual(result, {"ok": True})
             self.assertNotIn("stream", fallback.call_args.args[3])
-            self.assertIsNone(fallback.call_args.args[4])
+            self.assertEqual(fallback.call_args.args[4], 10)
 
-    def test_sse_stream_uses_no_socket_timeout(self):
+    def test_sse_stream_uses_idle_socket_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
             with mock.patch.object(forgecode, "iter_sse_json", return_value=iter(())) as sse:
@@ -2606,15 +2608,112 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                     lambda events, emit: {"ok": True}, lambda _: None,
                 )
             self.assertEqual(result, {"ok": True})
-            self.assertIsNone(sse.call_args.args[3])
+            self.assertEqual(sse.call_args.args[3], 75)
 
-    def test_stream_status_explains_unlimited_and_normal_timeout_modes(self):
+    def test_stream_status_explains_watchdog_and_normal_timeout_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
-            self.assertIn("zaman aşımı yok", forgecode.stream_status_text(cfg))
-            self.assertIn("Ctrl+C", forgecode.stream_status_text(cfg))
+            self.assertIn("duran akış otomatik kesilir", forgecode.stream_status_text(cfg))
+            self.assertIn("ilk 60 sn", forgecode.request_watchdog_status_text(cfg))
             cfg.set_value("streaming_enabled", "off")
             self.assertIn("normal API timeout: 100 sn", forgecode.stream_status_text(cfg))
+
+    def test_watchdog_stops_request_that_never_returns_first_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "timeout_seconds": 1,
+                "first_response_timeout_seconds": 0.05,
+                "stream_idle_timeout_seconds": 1,
+                "request_total_timeout_seconds": 1,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            release = forgecode.threading.Event()
+
+            class StuckProvider:
+                def request(self, *args):
+                    release.wait(1)
+                    return forgecode.ModelReply("late", [], forgecode.Usage(), [])
+
+            agent.provider = StuckProvider()
+            started = forgecode.time.monotonic()
+            try:
+                with self.assertRaisesRegex(forgecode.ApiError, "ilk yanıtı vermedi"):
+                    agent._request_with_heartbeat([], 32, False)
+                self.assertLess(forgecode.time.monotonic() - started, 0.5)
+                self.assertEqual(cfg.data["request_watchdog_stats"]["last_reason"], "first_response")
+            finally:
+                release.set()
+
+    def test_watchdog_stops_stream_after_progress_becomes_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "timeout_seconds": 1,
+                "first_response_timeout_seconds": 0.5,
+                "stream_idle_timeout_seconds": 0.05,
+                "request_total_timeout_seconds": 1,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            release = forgecode.threading.Event()
+
+            class IdleProvider:
+                def request(self, *args):
+                    args[-1]("başladı")
+                    release.wait(1)
+                    return forgecode.ModelReply("late", [], forgecode.Usage(), [])
+
+            agent.provider = IdleProvider()
+            try:
+                with self.assertRaisesRegex(forgecode.ApiError, "ilerlemedi"):
+                    agent._request_with_heartbeat([], 32, False)
+                self.assertEqual(cfg.data["request_watchdog_stats"]["last_reason"], "stream_idle")
+            finally:
+                release.set()
+
+    def test_watchdog_total_limit_stops_even_an_active_stream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "timeout_seconds": 1,
+                "first_response_timeout_seconds": 0.05,
+                "stream_idle_timeout_seconds": 0.05,
+                "request_total_timeout_seconds": 0.12,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            release = forgecode.threading.Event()
+
+            class BusyProvider:
+                def request(self, *args):
+                    callback = args[-1]
+                    while not release.wait(0.01):
+                        callback(".")
+                    return forgecode.ModelReply("late", [], forgecode.Usage(), [])
+
+            agent.provider = BusyProvider()
+            try:
+                with self.assertRaisesRegex(forgecode.ApiError, "çalışma sınırını aştı"):
+                    agent._request_with_heartbeat([], 32, False)
+                self.assertEqual(cfg.data["request_watchdog_stats"]["last_reason"], "total")
+            finally:
+                release.set()
+
+    def test_cancel_token_prevents_late_transport_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cancelled = forgecode.threading.Event()
+            cancelled.set()
+            forgecode._REQUEST_RUNTIME.cancel_event = cancelled
+            try:
+                with mock.patch.object(forgecode, "post_json") as post:
+                    with self.assertRaisesRegex(forgecode.ApiError, "gereksiz tekrar"):
+                        forgecode.post_json_with_retry(cfg, "https://x.test", {}, {}, 10)
+                    post.assert_not_called()
+            finally:
+                delattr(forgecode._REQUEST_RUNTIME, "cancel_event")
 
 
 class ProviderLatencyTests(unittest.TestCase):
@@ -3182,6 +3281,220 @@ class ExecutionKernelTests(unittest.TestCase):
             report = forgecode.load_json(root / ".forgecode" / "last-run.json", {})
             self.assertEqual(report["errors"][0]["category"], "rate-limit")
             self.assertFalse(report["verification_passed"])
+
+
+class ForceSandboxTests(unittest.TestCase):
+    def make_manager(self, base: pathlib.Path):
+        project = base / "project"
+        project.mkdir()
+        cfg = forgecode.Config(base / "home")
+        cfg.data["_runtime_enable_sandbox"] = True
+        return project, cfg, forgecode.ForceSandboxManager(project, cfg)
+
+    def test_prepare_uses_private_workspace_and_excludes_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            (project / "app.py").write_text("print('safe')\n", encoding="utf-8")
+            (project / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+            (project / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+            (project / ".ssh").mkdir()
+            (project / ".ssh" / "id_rsa").write_text("private", encoding="utf-8")
+            (project / ".docker").mkdir()
+            (project / ".docker" / "config.json").write_text('{"auths":{"private":"secret"}}', encoding="utf-8")
+
+            workspace = sandbox.prepare()
+
+            self.assertNotEqual(workspace, project)
+            self.assertEqual((workspace / "app.py").read_text(encoding="utf-8"), "print('safe')\n")
+            self.assertTrue((workspace / ".env.example").is_file())
+            self.assertFalse((workspace / ".env").exists())
+            self.assertFalse((workspace / ".ssh").exists())
+            self.assertFalse((workspace / ".docker" / "config.json").exists())
+
+    def test_unverified_work_is_held_then_verified_transfer_can_be_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            (project / "app.txt").write_text("before", encoding="utf-8")
+            sandbox.prepare()
+            (sandbox.workspace / "app.txt").write_text("after", encoding="utf-8")
+
+            held = sandbox.transfer(verified=False)
+            self.assertEqual(held.status, "held")
+            self.assertEqual((project / "app.txt").read_text(encoding="utf-8"), "before")
+
+            applied = sandbox.transfer(verified=True)
+            self.assertEqual(applied.status, "applied")
+            self.assertEqual((project / "app.txt").read_text(encoding="utf-8"), "after")
+            self.assertTrue(pathlib.Path(applied.snapshot).is_dir())
+
+            sandbox.restore_latest_snapshot()
+            self.assertEqual((project / "app.txt").read_text(encoding="utf-8"), "before")
+            self.assertEqual((sandbox.workspace / "app.txt").read_text(encoding="utf-8"), "before")
+
+    def test_real_project_change_creates_conflict_instead_of_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            (project / "app.txt").write_text("base", encoding="utf-8")
+            sandbox.prepare()
+            (sandbox.workspace / "app.txt").write_text("sandbox", encoding="utf-8")
+            (project / "app.txt").write_text("external", encoding="utf-8")
+
+            result = sandbox.transfer(verified=True)
+
+            self.assertEqual(result.status, "conflict")
+            self.assertEqual(result.conflicts, ["app.txt"])
+            self.assertEqual((project / "app.txt").read_text(encoding="utf-8"), "external")
+
+    def test_verified_task_does_not_piggyback_older_unverified_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            (project / "old.txt").write_text("base-old", encoding="utf-8")
+            (project / "new.txt").write_text("base-new", encoding="utf-8")
+            sandbox.prepare()
+            (sandbox.workspace / "old.txt").write_text("unverified-old", encoding="utf-8")
+            sandbox.transfer(verified=False, paths=["old.txt"])
+            (sandbox.workspace / "new.txt").write_text("verified-new", encoding="utf-8")
+
+            result = sandbox.transfer(verified=True, paths=["new.txt"])
+
+            self.assertEqual(result.changed, ["new.txt"])
+            self.assertEqual((project / "new.txt").read_text(encoding="utf-8"), "verified-new")
+            self.assertEqual((project / "old.txt").read_text(encoding="utf-8"), "base-old")
+            self.assertEqual(sandbox.pending_changes(), ["old.txt"])
+
+    def test_failed_transfer_rolls_real_project_back_to_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            target = project / "app.txt"
+            target.write_text("before", encoding="utf-8")
+            sandbox.prepare()
+            source = sandbox.workspace / "app.txt"
+            source.write_text("after", encoding="utf-8")
+            original_copy = sandbox._atomic_copy
+
+            def fail_after_real_copy(copy_source, copy_target):
+                original_copy(copy_source, copy_target)
+                if pathlib.Path(copy_source).resolve() == source.resolve() and pathlib.Path(copy_target).resolve() == target.resolve():
+                    raise OSError("simulated transfer interruption")
+
+            with mock.patch.object(sandbox, "_atomic_copy", side_effect=fail_after_real_copy):
+                with self.assertRaises(OSError):
+                    sandbox.transfer(verified=True)
+            self.assertEqual(target.read_text(encoding="utf-8"), "before")
+            self.assertEqual(sandbox.recent_logs()[-1]["event"], "transfer_rolled_back")
+
+    def test_security_log_is_valid_json_and_redacts_keys_and_private_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            secret = "sk-sandbox-secret-1234567890"
+            private_url = "http://127.0.0.1:9000/private"
+            sandbox._log("probe", {"command": f"curl {private_url}", "token": secret})
+            raw = sandbox.log_path.read_text(encoding="utf-8")
+            self.assertNotIn(secret, raw)
+            self.assertNotIn(private_url, raw)
+            self.assertEqual(json.loads(raw)["event"], "probe")
+
+    def test_commands_fail_closed_without_container_engine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            cfg.data["auto_approve_commands"] = True
+            tools = forgecode.WorkspaceTools(sandbox.prepare(), cfg, lambda _: True, sandbox=sandbox)
+            with mock.patch.object(sandbox, "engine_status", return_value=("bulunamadı", False)), mock.patch.object(
+                forgecode.subprocess, "run"
+            ) as run:
+                output = tools.execute("run_command", {"command": "echo isolated"})
+            self.assertIn("yerel kabuk komutu engellendi", output)
+            run.assert_not_called()
+
+    def test_container_command_mounts_only_workspace_and_passes_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            cfg.data["custom_api_key"] = "sk-secret-must-not-leak"
+            cfg.data["auto_approve_commands"] = True
+            sandbox.prepare()
+            sandbox._engine_cache = ("docker", True)
+            with mock.patch.object(sandbox, "_engine_candidate", return_value="docker"):
+                argv = sandbox.command_argv("python app.py")
+            joined = " ".join(argv)
+            self.assertIn(str(sandbox.workspace), joined)
+            self.assertNotIn(str(project), joined)
+            self.assertNotIn("sk-secret-must-not-leak", joined)
+            self.assertIn("--read-only", argv)
+            self.assertNotIn("--network", argv)
+
+            tools = forgecode.WorkspaceTools(sandbox.workspace, cfg, lambda _: True, sandbox=sandbox)
+            completed = mock.Mock(returncode=0, stdout=b"ok\n", stderr=b"")
+            with mock.patch.object(sandbox, "command_argv", return_value=["docker", "run"]) as command_argv, mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ):
+                output = tools.tool_run_command("python app.py", stdin="Ada\n")
+            command_argv.assert_called_once_with("python app.py", interactive=True)
+            self.assertIn("exit_code=0", output)
+
+    def test_network_toggle_and_arrow_menu_are_typed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            sandbox.prepare()
+            sandbox._engine_cache = ("docker", True)
+            with mock.patch.object(sandbox, "_engine_candidate", return_value="docker"):
+                cfg.data["sandbox_network_enabled"] = False
+                argv = sandbox.command_argv("echo safe")
+            self.assertIn("--network", argv)
+            agent = mock.Mock(cfg=cfg, sandbox=sandbox)
+            keys = iter(["down", "\r"])
+            self.assertEqual(
+                forgecode.choose_sandbox_menu(agent, key_reader=lambda: next(keys), render=False),
+                "network",
+            )
+
+    def test_agent_file_tools_are_rooted_in_sandbox_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            (project / "README.md").write_text("private project", encoding="utf-8")
+            agent = forgecode.Agent(
+                project, cfg, forgecode.GoalStore(project), lambda _: False, sandbox=sandbox
+            )
+            self.assertEqual(agent.root, project.resolve())
+            self.assertEqual(agent.tools.root, sandbox.workspace)
+            self.assertIn("FORCESANDBOX ACTIVE", agent.system())
+            self.assertIn("Working directory: /workspace", agent.system())
+
+    def test_agent_transfers_only_after_successful_verification_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            cfg.data.update({"auto_subagents": False, "auto_approve_writes": True, "power_mode": "off"})
+            agent = forgecode.Agent(
+                project, cfg, forgecode.GoalStore(project), lambda _: True, sandbox=sandbox
+            )
+            replies = [
+                forgecode.ModelReply(
+                    "", [{"id": "write", "name": "write_file", "arguments": {
+                        "path": "index.html", "content": "<!doctype html><html lang='tr'><title>Safe</title><h1>Safe</h1></html>",
+                    }}], forgecode.Usage(), [{"type": "tool_use", "id": "write", "name": "write_file", "input": {}}],
+                ),
+                forgecode.ModelReply(
+                    "", [{"id": "test", "name": "test_project", "arguments": {}}],
+                    forgecode.Usage(), [{"type": "tool_use", "id": "test", "name": "test_project", "input": {}}],
+                ),
+                forgecode.ModelReply(
+                    "Dosya oluşturuldu ve doğrulandı.", [], forgecode.Usage(),
+                    [{"type": "text", "text": "Dosya oluşturuldu ve doğrulandı."}],
+                ),
+            ]
+            provider = mock.MagicMock()
+            provider.request.side_effect = replies
+            agent.provider = provider
+
+            answer = agent.ask("index.html dosyası oluştur")
+
+            self.assertTrue(
+                (project / "index.html").is_file(),
+                f"answer={answer!r} report={agent.last_execution_report!r} calls={provider.request.call_count} pending={sandbox.pending_changes()!r}",
+            )
+            self.assertIn("ForceSandbox", answer)
+            self.assertEqual(sandbox.pending_changes(), [])
+            self.assertTrue(agent.last_execution_report["verification_passed"])
+            self.assertEqual(provider.request.call_count, 3)
 
 
 if __name__ == "__main__":

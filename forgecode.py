@@ -39,6 +39,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+# Keep the real host path class stable even in tests that emulate Windows by
+# temporarily patching os.name on a Linux runner.
+HOST_PATH_TYPE = type(pathlib.Path())
+
+
 # Eski Windows kod sayfalarında Unicode simgeleri uygulamayı durdurmasın.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -46,7 +51,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.4.5"
+VERSION = "7.6.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -222,11 +227,11 @@ def load_json(path: pathlib.Path, default: Any) -> Any:
 def app_home() -> pathlib.Path:
     custom = os.environ.get("FORGECODE_HOME")
     if custom:
-        return pathlib.Path(custom).expanduser()
+        return HOST_PATH_TYPE(custom).expanduser()
     local_app_data = os.environ.get("LOCALAPPDATA")
     if os.name == "nt" and local_app_data:
-        return pathlib.Path(local_app_data) / "ForgeCode"
-    return pathlib.Path.home() / ".forgecode"
+        return HOST_PATH_TYPE(local_app_data) / "ForgeCode"
+    return HOST_PATH_TYPE.home() / ".forgecode"
 
 
 def migrate_legacy_app_home(destination: pathlib.Path) -> None:
@@ -245,7 +250,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 19,
+    "config_version": 21,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -260,6 +265,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "temperature": 1.0,
     "timeout_seconds": 100,
     "streaming_enabled": True,
+    "first_response_timeout_seconds": 60,
+    "stream_idle_timeout_seconds": 75,
+    "request_total_timeout_seconds": 180,
+    "retry_budget_seconds": 120,
     "max_agent_steps": 0,
     "goal_max_rounds": 3,
     "retry_attempts": 2,
@@ -272,6 +281,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "system_prompt_extra": "",
     "model_cache": {},
     "latency_stats": {},
+    "request_watchdog_stats": {},
     "web_search_mode": "auto",
     "web_max_results": 3,
     "thinking_mode": "off",
@@ -312,6 +322,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "backup_last_reason": "",
     "backup_last_switch": "",
     "forcegraph_auto_enabled": True,
+    "sandbox_enabled": True,
+    "sandbox_engine": "auto",
+    "sandbox_network_enabled": True,
+    "sandbox_auto_transfer": True,
+    "sandbox_snapshot_enabled": True,
+    "sandbox_max_file_mb": 20,
+    "sandbox_max_transfer_mb": 200,
 }
 
 
@@ -402,9 +419,10 @@ class Config:
         # backwards-compatible config files; zero means unlimited.
         if saved.get("config_version", 1) < 16 and saved.get("max_agent_steps", 12) == 12:
             saved["max_agent_steps"] = 0
-        saved["config_version"] = 19
+        saved["config_version"] = 21
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
+        self.data["_runtime_enable_sandbox"] = home is None
         set_ui_language(str(self.data.get("ui_language", "tr")))
         if self.data.get("backup_active") and self.data.get("backup_api_key"):
             self.data["_runtime_api_key_override"] = str(self.data["backup_api_key"])
@@ -494,12 +512,23 @@ class Config:
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "timeout_seconds", "goal_max_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers"}:
+        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "goal_max_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
             value: Any = int(raw)
             if value <= 0:
                 raise ValueError("Değer sıfırdan büyük olmalı")
             if name == "retry_attempts" and value > 5:
                 raise ValueError("retry_attempts 1 ile 5 arasında olmalı")
+            watchdog_maximums = {
+                "first_response_timeout_seconds": 180,
+                "stream_idle_timeout_seconds": 300,
+                "request_total_timeout_seconds": 600,
+                "retry_budget_seconds": 300,
+            }
+            if name in watchdog_maximums and value > watchdog_maximums[name]:
+                raise ValueError(f"{name} en fazla {watchdog_maximums[name]} olabilir")
+            sandbox_maximums = {"sandbox_max_file_mb": 1024, "sandbox_max_transfer_mb": 4096}
+            if name in sandbox_maximums and value > sandbox_maximums[name]:
+                raise ValueError(f"{name} en fazla {sandbox_maximums[name]} olabilir")
         elif name in {"temperature", "retry_backoff_seconds", "input_price_per_million", "output_price_per_million"}:
             value = float(raw)
             if value < 0:
@@ -508,7 +537,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "forcegraph_auto_enabled"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -528,6 +557,10 @@ class Config:
             value = raw.lower()
             if value not in {"off", "auto", "on"}:
                 raise ValueError("power_mode: off, auto veya on olmalı")
+        elif name == "sandbox_engine":
+            value = raw.lower()
+            if value not in {"auto", "docker", "podman"}:
+                raise ValueError("sandbox_engine: auto, docker veya podman olmalı")
         elif name == "custom_auth_mode":
             value = raw.lower()
             if value not in {"auto", "bearer", "x-api-key", "api-key", "both", "none"}:
@@ -1049,7 +1082,7 @@ def write_crash_log(cfg: Config | None, exc: BaseException) -> pathlib.Path:
     return path
 
 
-def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | None) -> dict[str, Any]:
+def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | float | None) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -1092,28 +1125,56 @@ def is_transient_api_error(exc: ApiError) -> bool:
     return any(marker in message for marker in (
         "api 408", "api 429", "api 500", "api 502", "api 503", "api 504",
         "connection reset", "connection aborted", "temporarily unavailable",
-        "bağlantı hatası", "remote end closed",
+        "bağlantı hatası", "remote end closed", "timed out", "timeout",
+        "zaman aşımı",
     ))
 
 
-def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | None) -> dict[str, Any]:
+_REQUEST_RUNTIME = threading.local()
+
+
+def _request_cancelled() -> bool:
+    event = getattr(_REQUEST_RUNTIME, "cancel_event", None)
+    return bool(event is not None and event.is_set())
+
+
+def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | float | None) -> dict[str, Any]:
     attempts = max(1, min(5, int(cfg.data.get("retry_attempts", 2))))
     backoff = max(0.0, min(10.0, float(cfg.data.get("retry_backoff_seconds", 0.5))))
+    budget = max(1.0, float(cfg.data.get("retry_budget_seconds", 120)))
+    deadline = time.monotonic() + budget
     last_error: ApiError | None = None
     for attempt in range(1, attempts + 1):
+        if _request_cancelled():
+            raise ApiError("İstek gözetmen tarafından iptal edildi; gereksiz tekrar gönderilmedi.")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ApiError(f"API tekrar bütçesi {budget:g} saniyede tükendi.") from last_error
+        effective_timeout = min(float(timeout), remaining) if timeout is not None else remaining
         try:
-            return post_json(url, headers, payload, timeout)
+            return post_json(url, headers, payload, effective_timeout)
         except ApiError as exc:
             last_error = exc
             if attempt >= attempts or not is_transient_api_error(exc):
                 raise
-            if backoff:
-                time.sleep(backoff * attempt)
+            delay = min(backoff * attempt, max(0.0, deadline - time.monotonic()))
+            cancel_event = getattr(_REQUEST_RUNTIME, "cancel_event", None)
+            if delay and cancel_event is not None:
+                if cancel_event.wait(delay):
+                    raise ApiError("İstek gözetmen tarafından iptal edildi; gereksiz tekrar gönderilmedi.") from exc
+            elif delay:
+                time.sleep(delay)
     assert last_error is not None
     raise last_error
 
 
-def iter_sse_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | None):
+def iter_sse_json(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int | float | None,
+    on_progress: Callable[[], None] | None = None,
+):
     """Yield JSON objects from an SSE response, accepting plain JSON fallbacks."""
     req = urllib.request.Request(
         url,
@@ -1128,6 +1189,8 @@ def iter_sse_json(url: str, headers: dict[str, str], payload: dict[str, Any], ti
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
+            if on_progress:
+                on_progress()
             content_type = str(response.headers.get("Content-Type", "")).lower()
             if "text/event-stream" not in content_type:
                 raw = response.read().decode("utf-8", errors="replace")
@@ -1142,6 +1205,8 @@ def iter_sse_json(url: str, headers: dict[str, str], payload: dict[str, Any], ti
                 return
             data_lines: list[str] = []
             for raw_line in response:
+                if on_progress:
+                    on_progress()
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
                 if not line:
                     if data_lines:
@@ -1316,6 +1381,11 @@ def stream_or_json(
 ) -> dict[str, Any]:
     """Use SSE when supported, then safely fall back before any text was emitted."""
     emitted = False
+    progress_callback = getattr(on_text, "_forgecode_touch", None)
+    socket_timeout = max(
+        0.05,
+        min(float(timeout), float(cfg.data.get("stream_idle_timeout_seconds", 75))),
+    )
 
     def emit(delta: str) -> None:
         nonlocal emitted
@@ -1323,11 +1393,10 @@ def stream_or_json(
         on_text(delta)
 
     try:
-        # Streaming code/model responses may legitimately take many minutes.
-        # Disable the socket read timeout only for SSE; Ctrl+C still detaches
-        # the daemon request immediately. The configured timeout remains in
-        # force for non-streaming fallback requests and workspace commands.
-        return consumer(iter_sse_json(endpoint, headers, payload, None), emit)
+        # The socket timeout is an idle limit, not a total-generation limit.
+        # Every received SSE line refreshes the socket and outer watchdog, so
+        # long active generations continue while dead connections terminate.
+        return consumer(iter_sse_json(endpoint, headers, payload, socket_timeout, progress_callback), emit)
     except ApiError as exc:
         message = str(exc).lower()
         unsupported = any(marker in message for marker in (
@@ -1338,13 +1407,10 @@ def stream_or_json(
         fallback_payload = dict(payload)
         fallback_payload.pop("stream", None)
         # Some compatible APIs accept `stream: true` but reject SSE, or send a
-        # normal JSON response only after a long tool/reasoning pass. This
-        # fallback is still part of an interactive generation running in the
-        # Agent's detachable daemon thread, so a socket read deadline adds no
-        # safety: Ctrl+C can already detach it. Keep the configured timeout for
-        # explicit non-streaming mode and health checks, but never cut off a
-        # streaming generation merely because its transport fell back to JSON.
-        return post_json_with_retry(cfg, endpoint, headers, fallback_payload, None)
+        # normal JSON response only after a long tool/reasoning pass. Keep the
+        # fallback bounded too. The outer watchdog can detach earlier,
+        # and its cancellation token prevents a late retry from wasting quota.
+        return post_json_with_retry(cfg, endpoint, headers, fallback_payload, timeout)
 
 
 def get_json(url: str, headers: dict[str, str], timeout: int) -> Any:
@@ -1660,6 +1726,44 @@ def record_provider_latency(cfg: Config, total_seconds: float, first_response_se
     cfg.save()
 
 
+def request_watchdog_limits(cfg: Config, read_only: bool = False) -> tuple[float, float, float]:
+    """Return first-response, stream-idle, and total limits for one model call."""
+    transport = max(0.05, float(cfg.data.get("timeout_seconds", 100)))
+    first = max(0.05, min(float(cfg.data.get("first_response_timeout_seconds", 60)), transport))
+    idle = max(0.05, min(float(cfg.data.get("stream_idle_timeout_seconds", 75)), transport))
+    total = max(first, idle, float(cfg.data.get("request_total_timeout_seconds", 180)))
+    if read_only:
+        total = min(total, max(first, transport))
+    return first, idle, total
+
+
+def record_request_watchdog(cfg: Config, reason: str, elapsed_seconds: float) -> None:
+    """Persist compact, secret-free stall diagnostics for `/diagnostics`."""
+    previous = cfg.data.get("request_watchdog_stats", {})
+    if not isinstance(previous, dict):
+        previous = {}
+    cfg.data["request_watchdog_stats"] = {
+        "timeouts": max(0, int(previous.get("timeouts", 0))) + 1,
+        "last_reason": str(reason),
+        "last_elapsed_seconds": round(max(0.0, elapsed_seconds), 2),
+        "provider": str(cfg.data.get("provider", "")),
+        "model": str(cfg.data.get("model", "")),
+        "updated": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    cfg.save()
+
+
+def request_watchdog_status_text(cfg: Config) -> str:
+    first, idle, total = request_watchdog_limits(cfg)
+    stats = cfg.data.get("request_watchdog_stats", {})
+    last = ""
+    if isinstance(stats, dict) and stats.get("timeouts"):
+        last = f" · son kesme: {stats.get('last_reason', '?')} ({float(stats.get('last_elapsed_seconds', 0)):g} sn)"
+    if cfg.data.get("ui_language") == "en":
+        return f"Request watchdog: first {first:g}s · idle {idle:g}s · total {total:g}s{last}"
+    return f"İstek gözetmeni: ilk {first:g} sn · durgun {idle:g} sn · toplam {total:g} sn{last}"
+
+
 def provider_has_key(cfg: Config, provider: str) -> bool:
     preset = PROVIDERS[provider]
     if not preset.get("key"):
@@ -1701,8 +1805,8 @@ def stream_status_text(cfg: Config) -> str:
         english_speed = ""
         if isinstance(item, dict) and item.get("samples"):
             english_speed = f" · last first response {int(item.get('first_last_ms', item.get('last_ms', 0)))} ms · last total {int(item.get('last_ms', 0))} ms"
-        return f"Live response on · {protocol} · no timeout · Ctrl+C to stop{english_speed}"
-    return f"Canlı yanıt açık · {protocol} · zaman aşımı yok · Ctrl+C ile durdurulur{speed}"
+        return f"Live response on · {protocol} · active streams continue · stalled streams stop automatically{english_speed}"
+    return f"Canlı yanıt açık · {protocol} · aktif akış sürer · duran akış otomatik kesilir{speed}"
 
 
 @dataclass
@@ -2845,11 +2949,492 @@ def is_known_safe_read_command(command: str) -> bool:
 
 IGNORE_DIRS = {
     ".git", ".forgecode", ".force", ".code-review-graph", "node_modules",
-    ".venv", "venv", "__pycache__", "dist", "build",
+    ".venv", "venv", "__pycache__", "dist", "build", ".ssh", ".aws",
+    ".azure", ".gnupg", ".kube",
 }
+
+SANDBOX_SECRET_NAMES = {
+    ".env", ".npmrc", ".pypirc", "credentials.json", "service-account.json",
+    ".envrc", ".git-credentials", ".netrc", "auth.json", "secrets.json",
+    "id_rsa", "id_ed25519", "known_hosts", "authorized_keys",
+}
+SANDBOX_SECRET_SUFFIXES = {".pem", ".p12", ".pfx", ".key", ".kdbx", ".keystore"}
+
+
+@dataclass
+class SandboxTransferResult:
+    status: str
+    changed: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    snapshot: str = ""
+    message: str = ""
+
+
+class ForceSandboxManager:
+    """Stage project work privately and transfer only verified, conflict-free changes."""
+
+    def __init__(self, project_root: pathlib.Path, cfg: Config):
+        self.project_root = project_root.resolve()
+        self.cfg = cfg
+        identity = hashlib.sha256(str(self.project_root).casefold().encode("utf-8")).hexdigest()[:16]
+        self.base = (cfg.home / "sandboxes" / identity).resolve()
+        self.workspace = self.base / "workspace"
+        self.snapshots = self.base / "snapshots"
+        self.state_path = self.base / "state.json"
+        self.log_path = self.base / "sandbox.jsonl"
+        self._lock = threading.RLock()
+        self._engine_cache: tuple[str, bool] | None = None
+        self._session_enforced = bool(cfg.data.get("sandbox_enabled", True) and cfg.data.get("_runtime_enable_sandbox", False))
+
+    def active(self) -> bool:
+        return self._session_enforced
+
+    @staticmethod
+    def _is_link(path: pathlib.Path) -> bool:
+        try:
+            return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+        except OSError:
+            return True
+
+    @staticmethod
+    def _safe_relative(raw: str) -> pathlib.PurePosixPath:
+        normalized = str(raw).replace("\\", "/").strip("/")
+        relative = pathlib.PurePosixPath(normalized)
+        if not normalized or relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError(f"Güvensiz sandbox yolu: {raw}")
+        return relative
+
+    def _safe_target(self, root: pathlib.Path, relative: str) -> pathlib.Path:
+        rel = self._safe_relative(relative)
+        target = (root / pathlib.Path(*rel.parts)).resolve()
+        try:
+            target.relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"Sandbox yolu çalışma alanının dışına çıkıyor: {relative}") from exc
+        current = root.resolve()
+        for part in rel.parts:
+            current = current / part
+            if current.exists() and self._is_link(current):
+                raise ValueError(f"Sandbox aktarımında bağlantı/reparse noktası engellendi: {relative}")
+        return target
+
+    @staticmethod
+    def _digest(path: pathlib.Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(128 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _ignored(self, relative: pathlib.PurePosixPath) -> bool:
+        if any(part in IGNORE_DIRS for part in relative.parts):
+            return True
+        name = relative.name.casefold()
+        if ".docker" in {part.casefold() for part in relative.parts[:-1]} and name == "config.json":
+            return True
+        if name in SANDBOX_SECRET_NAMES or pathlib.PurePosixPath(name).suffix in SANDBOX_SECRET_SUFFIXES:
+            return True
+        if name.startswith(".env.") and not name.endswith((".example", ".sample", ".template")):
+            return True
+        return False
+
+    def manifest(self, root: pathlib.Path) -> dict[str, dict[str, Any]]:
+        root = root.resolve()
+        if not root.exists():
+            return {}
+        maximum_file = max(1, int(self.cfg.data.get("sandbox_max_file_mb", 20))) * 1024 * 1024
+        maximum_total = max(1, int(self.cfg.data.get("sandbox_max_transfer_mb", 200))) * 1024 * 1024
+        total = 0
+        result: dict[str, dict[str, Any]] = {}
+        for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+            directory_path = pathlib.Path(directory)
+            kept: list[str] = []
+            for name in names:
+                candidate = directory_path / name
+                relative = pathlib.PurePosixPath(candidate.relative_to(root).as_posix())
+                if not self._ignored(relative) and not self._is_link(candidate):
+                    kept.append(name)
+            names[:] = kept
+            for name in files:
+                path = directory_path / name
+                relative = pathlib.PurePosixPath(path.relative_to(root).as_posix())
+                if self._ignored(relative) or self._is_link(path):
+                    continue
+                try:
+                    size = path.stat().st_size
+                    if size > maximum_file:
+                        continue
+                    total += size
+                    if total > maximum_total:
+                        raise ValueError(
+                            f"ForceSandbox proje sınırı aşıldı: en fazla {maximum_total // (1024 * 1024)} MB. "
+                            "sandbox_max_transfer_mb ayarını yükseltebilirsiniz."
+                        )
+                    result[relative.as_posix()] = {"sha256": self._digest(path), "size": size}
+                except FileNotFoundError:
+                    continue
+        return result
+
+    @staticmethod
+    def _atomic_copy(source: pathlib.Path, target: pathlib.Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.forcesandbox-{uuid.uuid4().hex}.tmp")
+        try:
+            with source.open("rb") as reader, temporary.open("wb") as writer:
+                shutil.copyfileobj(reader, writer, length=128 * 1024)
+                writer.flush()
+                os.fsync(writer.fileno())
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _log(self, event: str, details: dict[str, Any] | None = None) -> None:
+        self.base.mkdir(parents=True, exist_ok=True)
+
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {redact_sensitive(str(key))[:100]: sanitize(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [sanitize(item) for item in value]
+            if isinstance(value, str):
+                return redact_sensitive(value)
+            if value is None or isinstance(value, (bool, int, float)):
+                return value
+            return redact_sensitive(str(value))
+
+        row = {
+            "time": dt.datetime.now().isoformat(timespec="seconds"),
+            "event": redact_sensitive(str(event))[:100],
+            "details": sanitize(details or {}),
+        }
+        with self.log_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def _load_state(self) -> dict[str, Any]:
+        state = load_json(self.state_path, {})
+        return state if isinstance(state, dict) else {}
+
+    def _save_state(self, state: dict[str, Any]) -> None:
+        state.update({
+            "version": 1,
+            "project_fingerprint": hashlib.sha256(str(self.project_root).casefold().encode("utf-8")).hexdigest(),
+            "workspace": str(self.workspace),
+            "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        })
+        atomic_json(self.state_path, state)
+
+    def pending_changes(self) -> list[str]:
+        state = self._load_state()
+        base = state.get("base_manifest", {})
+        if not isinstance(base, dict):
+            base = {}
+        current = self.manifest(self.workspace)
+        return sorted(name for name in set(base) | set(current) if base.get(name) != current.get(name))
+
+    def _sync_project_to_workspace(self, project_manifest: dict[str, dict[str, Any]]) -> None:
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        current = self.manifest(self.workspace)
+        for relative, signature in project_manifest.items():
+            if current.get(relative) == signature:
+                continue
+            self._atomic_copy(self._safe_target(self.project_root, relative), self._safe_target(self.workspace, relative))
+        for relative in sorted(set(current) - set(project_manifest), reverse=True):
+            target = self._safe_target(self.workspace, relative)
+            if target.is_file():
+                target.unlink()
+        for directory, _, _ in os.walk(self.workspace, topdown=False):
+            path = pathlib.Path(directory)
+            if path != self.workspace:
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+
+    def prepare(self) -> pathlib.Path:
+        if not self.active():
+            return self.project_root
+        with self._lock:
+            self.base.mkdir(parents=True, exist_ok=True)
+            self.snapshots.mkdir(parents=True, exist_ok=True)
+            state = self._load_state()
+            base = state.get("base_manifest", {}) if isinstance(state.get("base_manifest", {}), dict) else {}
+            current = self.manifest(self.workspace)
+            pending = bool(base and any(base.get(name) != current.get(name) for name in set(base) | set(current)))
+            if pending:
+                self._log("prepare_preserved_pending", {"count": len(self.pending_changes())})
+                return self.workspace
+            self._sync_project_to_workspace(self.manifest(self.project_root))
+            synchronized = self.manifest(self.workspace)
+            state["base_manifest"] = synchronized
+            state["prepared_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            self._save_state(state)
+            self._log("prepared", {"files": len(synchronized)})
+            return self.workspace
+
+
+    def _engine_candidate(self) -> str:
+        selected = str(self.cfg.data.get("sandbox_engine", "auto")).lower()
+        candidates = [selected] if selected != "auto" else ["docker", "podman"]
+        for candidate in candidates:
+            executable = shutil.which(candidate)
+            if executable:
+                return executable
+        return ""
+
+    def engine_status(self, verify: bool = False) -> tuple[str, bool]:
+        if self._engine_cache is not None and (self._engine_cache[1] or not verify):
+            return self._engine_cache
+        executable = self._engine_candidate()
+        if not executable:
+            self._engine_cache = ("bulunamadı", False)
+            return self._engine_cache
+        name = pathlib.Path(executable).stem.lower()
+        if not verify:
+            self._engine_cache = (name, False)
+            return self._engine_cache
+        try:
+            completed = subprocess.run(
+                [executable, "info"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=5, shell=False,
+            )
+            available = completed.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            available = False
+        self._engine_cache = (name, available)
+        return self._engine_cache
+
+    def _container_image(self) -> str:
+        if any(self.workspace.glob("*.csproj")) or any(self.workspace.glob("*.sln")):
+            return "mcr.microsoft.com/dotnet/sdk:9.0"
+        if (self.workspace / "package.json").is_file():
+            return "node:22-bookworm"
+        if (self.workspace / "go.mod").is_file():
+            return "golang:1.24-bookworm"
+        if (self.workspace / "Cargo.toml").is_file():
+            return "rust:1.87-bookworm"
+        if (self.workspace / "pyproject.toml").is_file() or (self.workspace / "requirements.txt").is_file() or any(self.workspace.glob("*.py")):
+            return "python:3.13-slim"
+        return "ubuntu:24.04"
+
+    def command_argv(self, command: str, interactive: bool = False) -> list[str]:
+        engine, available = self.engine_status(verify=True)
+        if not available:
+            raise ValueError(
+                "ForceSandbox gerçek izolasyon motoru bulamadı veya motor çalışmıyor. "
+                "Güvenlik için yerel kabuk komutu engellendi; Docker Desktop ya da Podman başlatın. "
+                "Dosya araçları özel sandbox klasöründe güvenle çalışmaya devam eder."
+            )
+        executable = self._engine_candidate()
+        mount = f"type=bind,source={self.workspace},target=/workspace"
+        arguments = [
+            executable, "run", "--rm", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+            "--pids-limit=512", "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=268435456",
+            "--mount", mount, "--workdir", "/workspace",
+            "--env", "HOME=/tmp/forge-home", "--env", "CI=1", "--env", "FORGECODE_SANDBOX=1",
+        ]
+        if interactive:
+            arguments.append("-i")
+        if not self.cfg.data.get("sandbox_network_enabled", True):
+            arguments.extend(["--network", "none"])
+        arguments.extend([self._container_image(), "sh", "-lc", str(command)])
+        self._log("command", {"engine": engine, "network": bool(self.cfg.data.get("sandbox_network_enabled", True)), "command": str(command)[:1000]})
+        return arguments
+
+    def create_snapshot(self, paths: list[str] | None = None) -> pathlib.Path:
+        with self._lock:
+            actual = self.manifest(self.project_root)
+            selected = sorted(set(paths) if paths is not None else set(actual))
+            name = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+            target = self.snapshots / name
+            files_root = target / "files"
+            existing: list[str] = []
+            absent: list[str] = []
+            target.mkdir(parents=True, exist_ok=False)
+            for relative in selected:
+                if relative in actual:
+                    self._atomic_copy(
+                        self._safe_target(self.project_root, relative),
+                        self._safe_target(files_root, relative),
+                    )
+                    existing.append(relative)
+                else:
+                    absent.append(relative)
+            atomic_json(target / "snapshot.json", {
+                "created_at": dt.datetime.now().isoformat(timespec="seconds"),
+                "existing": existing,
+                "absent": absent,
+            })
+            state = self._load_state()
+            state["last_snapshot"] = str(target)
+            self._save_state(state)
+            self._log("snapshot", {"name": name, "files": len(existing), "absent": len(absent)})
+            return target
+
+    def _restore_snapshot(self, snapshot: pathlib.Path) -> None:
+        metadata = load_json(snapshot / "snapshot.json", {})
+        existing = metadata.get("existing", []) if isinstance(metadata, dict) else []
+        absent = metadata.get("absent", []) if isinstance(metadata, dict) else []
+        for relative in existing:
+            self._atomic_copy(
+                self._safe_target(snapshot / "files", str(relative)),
+                self._safe_target(self.project_root, str(relative)),
+            )
+        for relative in absent:
+            target = self._safe_target(self.project_root, str(relative))
+            if target.is_file():
+                target.unlink()
+
+    def restore_latest_snapshot(self) -> str:
+        with self._lock:
+            state = self._load_state()
+            raw = str(state.get("last_snapshot", ""))
+            if not raw:
+                raise ValueError("Son sandbox snapshot'ı bulunamadı")
+            snapshot = pathlib.Path(raw).resolve()
+            try:
+                snapshot.relative_to(self.snapshots.resolve())
+            except ValueError as exc:
+                raise ValueError("Geri yüklenecek güvenilir sandbox snapshot'ı bulunamadı") from exc
+            if not snapshot.is_dir():
+                raise ValueError("Son sandbox snapshot'ı bulunamadı")
+            self._restore_snapshot(snapshot)
+            project_manifest = self.manifest(self.project_root)
+            self._sync_project_to_workspace(project_manifest)
+            state["base_manifest"] = self.manifest(self.workspace)
+            self._save_state(state)
+            self._log("snapshot_restored", {"name": snapshot.name})
+            return snapshot.name
+
+    def transfer(self, verified: bool, force: bool = False, paths: list[str] | None = None) -> SandboxTransferResult:
+        if not self.active():
+            return SandboxTransferResult("disabled", message="ForceSandbox kapalı")
+        with self._lock:
+            state = self._load_state()
+            base = state.get("base_manifest", {}) if isinstance(state.get("base_manifest", {}), dict) else {}
+            current = self.manifest(self.workspace)
+            changed = sorted(name for name in set(base) | set(current) if base.get(name) != current.get(name))
+            if paths is not None:
+                selected = {self._safe_relative(name).as_posix() for name in paths}
+                changed = [name for name in changed if name in selected]
+            if not changed:
+                return SandboxTransferResult("clean", message="Aktarılacak değişiklik yok")
+            if not force and not self.cfg.data.get("sandbox_auto_transfer", True):
+                self._log("transfer_held", {"reason": "auto_transfer_off", "count": len(changed)})
+                return SandboxTransferResult("held", changed, message="Otomatik aktarım kapalı; değişiklikler sandbox'ta bekliyor")
+            if not force and not verified:
+                self._log("transfer_held", {"reason": "verification_failed", "count": len(changed)})
+                return SandboxTransferResult("held", changed, message="Doğrulama geçmedi; gerçek proje değiştirilmedi")
+            actual = self.manifest(self.project_root)
+            conflicts = [name for name in changed if actual.get(name) != base.get(name)]
+            if conflicts:
+                self._log("transfer_conflict", {"conflicts": conflicts[:100]})
+                return SandboxTransferResult("conflict", changed, conflicts, message="Gerçek proje görev sırasında değişti; otomatik aktarım durduruldu")
+            transfer_bytes = sum(int(current.get(name, {}).get("size", 0)) for name in changed)
+            maximum = max(1, int(self.cfg.data.get("sandbox_max_transfer_mb", 200))) * 1024 * 1024
+            if transfer_bytes > maximum:
+                return SandboxTransferResult("held", changed, message=f"Aktarım {maximum // (1024 * 1024)} MB güvenlik sınırını aşıyor")
+            snapshot_path = pathlib.Path()
+            if self.cfg.data.get("sandbox_snapshot_enabled", True):
+                snapshot_path = self.create_snapshot(changed)
+                # create_snapshot persists last_snapshot; continue from that
+                # fresh state so the transfer receipt cannot overwrite it.
+                state = self._load_state()
+            try:
+                for relative in changed:
+                    target = self._safe_target(self.project_root, relative)
+                    if relative not in current:
+                        if target.is_file():
+                            target.unlink()
+                        continue
+                    self._atomic_copy(self._safe_target(self.workspace, relative), target)
+                verified_actual = self.manifest(self.project_root)
+                mismatches = [name for name in changed if verified_actual.get(name) != current.get(name)]
+                if mismatches:
+                    raise OSError("Aktarım sonrası bütünlük doğrulaması başarısız: " + ", ".join(mismatches[:10]))
+            except Exception:
+                if snapshot_path:
+                    self._restore_snapshot(snapshot_path)
+                self._log("transfer_rolled_back", {"count": len(changed)})
+                raise
+            updated_base = dict(base)
+            for relative in changed:
+                if relative in current:
+                    updated_base[relative] = current[relative]
+                else:
+                    updated_base.pop(relative, None)
+            state["base_manifest"] = updated_base
+            state["last_transfer"] = {
+                "time": dt.datetime.now().isoformat(timespec="seconds"),
+                "files": changed[:200],
+                "snapshot": str(snapshot_path) if snapshot_path else "",
+            }
+            self._save_state(state)
+            self._log("transfer_applied", {"count": len(changed), "snapshot": snapshot_path.name if snapshot_path else ""})
+            return SandboxTransferResult(
+                "applied", changed, snapshot=str(snapshot_path),
+                message=f"{len(changed)} değişiklik doğrulanarak gerçek projeye aktarıldı",
+            )
+
+    def cleanup(self) -> None:
+        with self._lock:
+            resolved = self.workspace.resolve()
+            try:
+                resolved.relative_to(self.base.resolve())
+            except ValueError as exc:
+                raise ValueError("Güvensiz sandbox temizleme yolu") from exc
+            if resolved.exists():
+                shutil.rmtree(resolved)
+            state = self._load_state()
+            state["base_manifest"] = {}
+            self._save_state(state)
+            self.prepare()
+            self._log("cleaned")
+
+    def recent_logs(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.log_path.is_file():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, min(200, limit)):]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
+    def status_text(self, verify_engine: bool = False) -> str:
+        if not self.active():
+            return "ForceSandbox: kapalı"
+        engine, available = self.engine_status(verify_engine)
+        if available:
+            engine_state = f"{engine} hazır"
+        elif engine != "bulunamadı" and not verify_engine:
+            engine_state = f"{engine} bulundu · henüz doğrulanmadı"
+        else:
+            engine_state = f"{engine} · komutlar kilitli"
+        pending = len(self.pending_changes()) if self.workspace.exists() else 0
+        state = self._load_state()
+        last_snapshot = pathlib.Path(str(state.get("last_snapshot", ""))).name if state.get("last_snapshot") else "yok"
+        return (
+            f"ForceSandbox: açık · motor {engine_state}\n"
+            f"İnternet: {'açık' if self.cfg.data.get('sandbox_network_enabled', True) else 'kapalı'} · "
+            f"otomatik aktarım: {'açık' if self.cfg.data.get('sandbox_auto_transfer', True) else 'kapalı'} · "
+            f"snapshot: {'açık' if self.cfg.data.get('sandbox_snapshot_enabled', True) else 'kapalı'}\n"
+            f"Çalışma alanı: {self.workspace}\nBekleyen değişiklik: {pending} · son snapshot: {last_snapshot}"
+        )
+
 
 AI_EDITABLE_SETTINGS = {
     "max_tokens", "temperature", "timeout_seconds", "streaming_enabled",
+    "first_response_timeout_seconds", "stream_idle_timeout_seconds",
+    "request_total_timeout_seconds", "retry_budget_seconds",
     "retry_attempts", "retry_backoff_seconds", "max_tool_output_chars",
     "web_search_mode", "web_max_results", "thinking_mode", "thinking_budget_tokens",
     "efficiency_mode", "power_mode", "web_project_mode", "work_mode",
@@ -2927,13 +3512,14 @@ class InteractiveProcess:
 
 
 class WorkspaceTools:
-    def __init__(self, root: pathlib.Path, cfg: Config, confirm: Callable[[str], bool], risk_assessor: Callable[[str, str], tuple[str, str]] | None = None, diagnostic_provider: Callable[[], str] | None = None, progress: Callable[[str], None] | None = None):
+    def __init__(self, root: pathlib.Path, cfg: Config, confirm: Callable[[str], bool], risk_assessor: Callable[[str, str], tuple[str, str]] | None = None, diagnostic_provider: Callable[[], str] | None = None, progress: Callable[[str], None] | None = None, sandbox: ForceSandboxManager | None = None):
         self.root = root.resolve()
         self.cfg = cfg
         self.confirm = confirm
         self.risk_assessor = risk_assessor
         self.diagnostic_provider = diagnostic_provider
         self.progress = progress
+        self.sandbox = sandbox
         self._risk_cache: dict[str, tuple[str, str]] = {}
         self._processes: dict[str, InteractiveProcess] = {}
         self._process_lock = threading.RLock()
@@ -3060,7 +3646,11 @@ class WorkspaceTools:
     def visible_files(self) -> list[pathlib.Path]:
         result = []
         for path in self.root.rglob("*"):
-            if path.is_file() and not any(part in IGNORE_DIRS for part in path.relative_to(self.root).parts):
+            if (
+                path.is_file()
+                and not ForceSandboxManager._is_link(path)
+                and not any(part in IGNORE_DIRS for part in path.relative_to(self.root).parts)
+            ):
                 result.append(path)
         return result
 
@@ -3068,11 +3658,12 @@ class WorkspaceTools:
         result: dict[str, tuple[int, int]] = {}
         config_home = self.cfg.home.resolve()
         for path in self.visible_files():
-            try:
-                path.resolve().relative_to(config_home)
-                continue
-            except ValueError:
-                pass
+            if self.sandbox is None or not self.sandbox.active():
+                try:
+                    path.resolve().relative_to(config_home)
+                    continue
+                except ValueError:
+                    pass
             try:
                 stat = path.stat()
                 result[path.relative_to(self.root).as_posix()] = (stat.st_size, stat.st_mtime_ns)
@@ -3082,7 +3673,7 @@ class WorkspaceTools:
 
     def changed_since(self, before: dict[str, tuple[int, int]]) -> list[str]:
         after = self.snapshot()
-        return sorted(name for name, signature in after.items() if before.get(name) != signature)
+        return sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
 
     def execute(self, name: str, args: dict[str, Any]) -> str:
         try:
@@ -3205,7 +3796,22 @@ class WorkspaceTools:
         return f"OK: {local_path} güncellendi."
 
     def _interactive_command(self, command: str) -> tuple[list[str] | str, bool]:
+        if self.sandbox is not None and self.sandbox.active():
+            return self.sandbox.command_argv(command, interactive=True), False
         if os.name == "nt":
+            # Avoid PowerShell's native-output buffering for the Python runtime
+            # that launched ForgeCode.  In particular CPython 3.10 can already
+            # be waiting at input() while its prompt is still hidden upstream.
+            escaped_executable = str(sys.executable).replace("'", "''")
+            python_prefix = f"& '{escaped_executable}'"
+            if command[:len(python_prefix)].casefold() == python_prefix.casefold():
+                tail = command[len(python_prefix):].strip()
+                arguments = shlex.split(tail, posix=False) if tail else []
+                arguments = [
+                    value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'} else value
+                    for value in arguments
+                ]
+                return [sys.executable, "-u", *arguments], False
             return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windows_shell_command(command)], False
         return command, True
 
@@ -3292,10 +3898,16 @@ class WorkspaceTools:
         if not approved:
             return rejection
         command_value, shell = self._interactive_command(selected)
+        process_env = os.environ.copy()
+        # CPython 3.10 on Windows may retain prompts behind the PowerShell
+        # wrapper when stdout is a pipe.  Unbuffered UTF-8 output lets the
+        # tester observe the prompt before it sends staged stdin.
+        process_env.setdefault("PYTHONUNBUFFERED", "1")
+        process_env.setdefault("PYTHONIOENCODING", "utf-8")
         options: dict[str, Any] = {
             "cwd": self.root, "shell": shell, "stdin": subprocess.PIPE,
             "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
-            "text": False, "bufsize": 0,
+            "text": False, "bufsize": 0, "env": process_env,
         }
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -3306,7 +3918,11 @@ class WorkspaceTools:
             self._processes[process_id] = session
         threading.Thread(target=self._read_interactive_process, args=(session,), daemon=True,
                          name=f"forgecode-process-{process_id}").start()
-        deadline = time.monotonic() + 0.6
+        # Windows CI and cold Python/PowerShell starts can take longer than a
+        # fraction of a second before the child publishes its first prompt.
+        # Waiting briefly here makes staged-input programs deterministic while
+        # still returning immediately as soon as output or process exit exists.
+        deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             with session.lock:
                 if session.output:
@@ -3426,7 +4042,12 @@ class WorkspaceTools:
         heartbeat = threading.Thread(target=command_heartbeat, name="forgecode-command-progress", daemon=True)
         heartbeat.start()
         try:
-            if os.name == "nt":
+            if self.sandbox is not None and self.sandbox.active():
+                self._notify_progress("ForceSandbox: komut izole container içinde çalışıyor")
+                completed = subprocess.run(
+                    self.sandbox.command_argv(command, interactive=stdin is not None), shell=False, **run_options
+                )
+            elif os.name == "nt":
                 translated = windows_shell_command(command)
                 completed = subprocess.run(
                     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", translated],
@@ -3510,8 +4131,9 @@ class WorkspaceTools:
             return run_test(selected)
         names = {path.relative_to(self.root).as_posix() for path in self.visible_files()}
         lower_names = {name.lower() for name in names}
-        python_executable = str(sys.executable)
-        if os.name == "nt":
+        sandboxed = self.sandbox is not None and self.sandbox.active()
+        python_executable = "python" if sandboxed else str(sys.executable)
+        if os.name == "nt" and not sandboxed:
             python_command = "& '" + python_executable.replace("'", "''") + "'"
         else:
             python_command = shlex.quote(python_executable)
@@ -3536,7 +4158,7 @@ class WorkspaceTools:
             return run_test("dotnet test")
         if "pom.xml" in lower_names:
             return run_test("mvn test")
-        if "gradlew.bat" in lower_names:
+        if "gradlew.bat" in lower_names and not sandboxed:
             return run_test(".\\gradlew.bat test")
         if "gradlew" in lower_names:
             return run_test("./gradlew test")
@@ -3576,6 +4198,8 @@ class WorkspaceTools:
             )
         numeric_limits: dict[str, tuple[float, float]] = {
             "max_tokens": (256, 65536), "temperature": (0, 1), "timeout_seconds": (5, 600),
+            "first_response_timeout_seconds": (5, 180), "stream_idle_timeout_seconds": (5, 300),
+            "request_total_timeout_seconds": (15, 600), "retry_budget_seconds": (5, 300),
             "retry_attempts": (1, 5), "retry_backoff_seconds": (0, 10),
             "max_tool_output_chars": (1000, 100000), "web_max_results": (1, 20),
             "thinking_budget_tokens": (1024, 32000), "subagent_timeout_seconds": (5, 300),
@@ -3690,9 +4314,11 @@ def run_goal_until_complete(
     return GoalRunResult(False, rounds, last_answer, changed_files)
 
 
-def project_context(root: pathlib.Path, efficiency: str = "off") -> str:
-    pieces = [f"Working directory: {root}"]
-    if os.name == "nt":
+def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool = False) -> str:
+    pieces = ["Working directory: /workspace (ForceSandbox isolated copy)" if sandboxed else f"Working directory: {root}"]
+    if sandboxed:
+        pieces.append("Command environment: isolated Linux container with project-only storage. Use portable POSIX commands; file tools still require project-relative paths.")
+    elif os.name == "nt":
         pieces.append("Operating system: Windows. Use Windows PowerShell/CMD-compatible commands; do not use Unix-only commands such as 'ls -la' or 'cat'.")
     names = ("AGENTS.md", "CLAUDE.md", "README.md", "pyproject.toml", "package.json") if efficiency in {"off", "power"} else ("AGENTS.md", "CLAUDE.md", "pyproject.toml", "package.json")
     per_file_limit = 50000 if efficiency == "off" else 20000 if efficiency == "power" else 6000 if efficiency == "balanced" else 3000
@@ -3705,7 +4331,11 @@ def project_context(root: pathlib.Path, efficiency: str = "off") -> str:
         limit = 300 if efficiency == "power" else 120 if efficiency == "balanced" else 60
         files = []
         for path in root.rglob("*"):
-            if path.is_file() and not any(part in IGNORE_DIRS for part in path.relative_to(root).parts):
+            if (
+                path.is_file()
+                and not ForceSandboxManager._is_link(path)
+                and not any(part in IGNORE_DIRS for part in path.relative_to(root).parts)
+            ):
                 files.append(path.relative_to(root).as_posix())
                 if len(files) >= limit:
                     break
@@ -3841,7 +4471,11 @@ class LegacyForceContext:
         extensions: collections.Counter[str] = collections.Counter()
         todos: list[str] = []
         for path in self.root.rglob("*"):
-            if not path.is_file() or any(part in IGNORE_DIRS for part in path.relative_to(self.root).parts):
+            if (
+                not path.is_file()
+                or ForceSandboxManager._is_link(path)
+                or any(part in IGNORE_DIRS for part in path.relative_to(self.root).parts)
+            ):
                 continue
             relative = path.relative_to(self.root).as_posix()
             files.append(relative)
@@ -4601,22 +5235,27 @@ class ExecutionKernel:
 
 
 class Agent:
-    def __init__(self, root: pathlib.Path, cfg: Config, goals: GoalStore, confirm: Callable[[str], bool], read_only: bool = False, role: str = "", record_history: bool = True, session_name: str | None = None, auto_graph_runtime: bool = False):
-        self.root, self.cfg, self.goals = root, cfg, goals
+    def __init__(self, root: pathlib.Path, cfg: Config, goals: GoalStore, confirm: Callable[[str], bool], read_only: bool = False, role: str = "", record_history: bool = True, session_name: str | None = None, auto_graph_runtime: bool = False, sandbox: ForceSandboxManager | None = None):
+        self.root, self.cfg, self.goals = root.resolve(), cfg, goals
         self.provider = make_provider(cfg)
-        self.tools = WorkspaceTools(root, cfg, confirm, self.assess_tool_risk, self.diagnostics_report)
+        self.sandbox = sandbox or ForceSandboxManager(self.root, cfg)
+        work_root = self.sandbox.prepare() if self.sandbox.active() else self.root
+        self.tools = WorkspaceTools(work_root, cfg, confirm, self.assess_tool_risk, self.diagnostics_report, sandbox=self.sandbox)
         self.force_graph = self.tools.force_graph
+        # ForceGraph remains a trusted, argument-constrained controller, but
+        # its project root is the private sandbox copy rather than the host
+        # project. This preserves graph intelligence without exposing host data.
         self.force_graph.runtime_auto = bool(auto_graph_runtime and not read_only)
         self.messages: list[Any] = []
         self.session_usage = Usage()
         self.session_cost_usd = 0.0
         self.usage_store = UsageStore(cfg.home)
-        self.history_store = HistoryStore(root)
+        self.history_store = HistoryStore(self.root)
         self.session_name = safe_session_name(session_name or str(cfg.data.get("session_name", "main")))
-        self.session_store = SessionStore(root, self.session_name, cfg)
-        self.force_context = ForceContext(root)
-        self.execution_kernel = ExecutionKernel(root, cfg)
-        self.last_execution_report: dict[str, Any] = load_json(root / ".forgecode" / "last-run.json", {})
+        self.session_store = SessionStore(self.root, self.session_name, cfg)
+        self.force_context = ForceContext(self.root)
+        self.execution_kernel = ExecutionKernel(self.root, cfg)
+        self.last_execution_report: dict[str, Any] = load_json(self.root / ".forgecode" / "last-run.json", {})
         self._force_context_text = ""
         self.completed_turns: list[list[Any]] = []
         self._system_cache = ""
@@ -4678,6 +5317,7 @@ class Agent:
             "FORGECODE DIAGNOSTICS (secrets redacted)\n"
             f"project={self.root}\nsession={self.session_name}\nprovider={self.cfg.data.get('provider')}\n"
             f"model={self.cfg.data.get('model')}\nprotocol={route.get('protocol')}\nrequest_endpoint={redact_sensitive(str(route.get('request', '')))}\n"
+            f"request_watchdog={request_watchdog_status_text(self.cfg)}\n"
             "\nLatest execution-kernel receipt:\n" + json.dumps({
                 "run_id": execution.get("run_id"), "task_type": execution.get("task_type"),
                 "confidence": execution.get("confidence"), "confidence_level": execution.get("confidence_level"),
@@ -4692,17 +5332,30 @@ class Agent:
     def _daemon_future(function: Callable[..., Any], *args: Any) -> concurrent.futures.Future:
         """Run blocking network work without making Ctrl+C wait for its socket."""
         future: concurrent.futures.Future = concurrent.futures.Future()
+        cancel_event = threading.Event()
+        setattr(future, "_forgecode_cancel_event", cancel_event)
 
         def runner() -> None:
             if not future.set_running_or_notify_cancel():
                 return
+            _REQUEST_RUNTIME.cancel_event = cancel_event
             try:
                 future.set_result(function(*args))
             except BaseException as exc:
                 future.set_exception(exc)
+            finally:
+                if hasattr(_REQUEST_RUNTIME, "cancel_event"):
+                    delattr(_REQUEST_RUNTIME, "cancel_event")
 
         threading.Thread(target=runner, daemon=True, name="forgecode-api").start()
         return future
+
+    @staticmethod
+    def _cancel_daemon_future(future: concurrent.futures.Future) -> None:
+        cancel_event = getattr(future, "_forgecode_cancel_event", None)
+        if cancel_event is not None:
+            cancel_event.set()
+        future.cancel()
 
     def _request_with_heartbeat(self, tools: list[dict[str, Any]], output_limit: int, web_search: bool) -> ModelReply:
         label = f"{self.role} alt ajan" if self.read_only else "Ana model"
@@ -4715,24 +5368,33 @@ class Agent:
         generation = self._stream_generation
         self.last_streamed_reply = ""
         first_response_seconds: float | None = None
+        last_progress_at = started
+        first_limit, idle_limit, total_limit = request_watchdog_limits(self.cfg, self.read_only)
+
+        def touch_progress() -> None:
+            nonlocal first_response_seconds, last_progress_at
+            now = time.monotonic()
+            last_progress_at = now
+            if first_response_seconds is None:
+                first_response_seconds = now - started
 
         def emit_text(delta: str) -> None:
-            nonlocal first_response_seconds
             if generation != self._stream_generation or not delta:
                 return
-            if first_response_seconds is None:
-                first_response_seconds = time.monotonic() - started
+            touch_progress()
             self.last_streamed_reply += delta
             self.streamed_turn_output = (self.streamed_turn_output + delta)[-20000:]
             if self.stream_callback:
                 self.stream_callback(delta)
 
+        setattr(emit_text, "_forgecode_touch", touch_progress)
+
         # Streaming is a transport/reliability setting, not merely a UI
         # feature. Keep it enabled for subagents, one-shot calls, and tool
         # follow-up rounds even when no terminal renderer consumes the text.
         # emit_text safely buffers progress and only paints when a callback is
-        # present. This also gives every streamed generation the unlimited
-        # socket-read behavior implemented by stream_or_json.
+        # present. Every transport event refreshes the idle watchdog even when
+        # a tool call produces no user-visible text.
         stream_sink = emit_text if self.cfg.data.get("streaming_enabled", True) else None
         future = self._daemon_future(self.provider.request, self.system(), self.messages, tools, output_limit, web_search, stream_sink)
         try:
@@ -4748,16 +5410,34 @@ class Agent:
                     if self.input_poller:
                         self.input_poller()
                     now = time.monotonic()
+                    elapsed = now - started
+                    watchdog_reason = ""
+                    watchdog_message = ""
+                    if elapsed >= total_limit:
+                        watchdog_reason = "total"
+                        watchdog_message = f"İstek toplam {total_limit:g} saniyelik çalışma sınırını aştı. Geç yanıt güvenle ayrıldı."
+                    elif first_response_seconds is None and elapsed >= first_limit:
+                        watchdog_reason = "first_response"
+                        watchdog_message = f"Model {first_limit:g} saniye içinde ilk yanıtı vermedi. Takılan istek güvenle durduruldu."
+                    elif first_response_seconds is not None and now - last_progress_at >= idle_limit:
+                        watchdog_reason = "stream_idle"
+                        watchdog_message = f"Canlı yanıt {idle_limit:g} saniye ilerlemedi. Durgun bağlantı güvenle durduruldu."
+                    if watchdog_reason:
+                        record_request_watchdog(self.cfg, watchdog_reason, elapsed)
+                        self._emit_activity(f"{label}: istek gözetmeni kesti · {watchdog_reason} · {elapsed:.1f} sn")
+                        raise ApiError(watchdog_message)
                     if now >= next_heartbeat:
                         if stream_sink:
                             stream_state = "ilk parça bekleniyor" if first_response_seconds is None else "canlı yanıt sürüyor"
-                            self._emit_activity(f"{label}: {stream_state} · {int(now - started)} sn · zaman aşımı yok · Ctrl+C durdurur")
+                            remaining = max(0, int(total_limit - elapsed))
+                            self._emit_activity(f"{label}: {stream_state} · {int(elapsed)} sn · gözetmen {remaining} sn · Ctrl+C durdurur")
                         else:
-                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(now - started)} sn")
+                            remaining = max(0, int(min(first_limit, total_limit) - elapsed))
+                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · ilk yanıt bütçesi {remaining} sn")
                         next_heartbeat = now + 5
         finally:
             if not future.done():
-                future.cancel()
+                self._cancel_daemon_future(future)
                 self._stream_generation += 1
             # urllib cannot reliably abort an in-flight socket from another
             # thread. The daemonized late response is detached and can never
@@ -5035,6 +5715,15 @@ class Agent:
                     "Never call a tool without all required arguments. Use only the tools explicitly supplied by this client. "
                     "In read-only/plan work never call Bash or any command tool."
                 )
+            sandbox_note = ""
+            if self.sandbox.active():
+                sandbox_note = (
+                    "\nFORCESANDBOX ACTIVE: all file tools operate on an isolated project copy. Host Desktop, Documents, "
+                    "user files, other projects, system folders, credentials, API keys, and environment secrets are unavailable. "
+                    "Commands run only inside a project-mounted container with no host paths; network access follows the user-controlled sandbox setting. "
+                    "Use relative file paths. Validate changes in the sandbox; ForgeCode alone decides whether verified changes can be atomically transferred. "
+                    "Never ask for or attempt a host path, Docker socket, extra mount, secret, or sandbox escape."
+                )
             prompt_template = SYSTEM_PROMPT
             if self.cfg.data.get("provider") == "custom" and self.cfg.mode() == "anthropic" and self.cfg.data.get("efficiency_mode") != "off" and not self._power_active:
                 prompt_template = COMPACT_PROXY_SYSTEM_PROMPT
@@ -5071,8 +5760,8 @@ class Agent:
                 )
             self._system_cache = prompt_template.format(
                 goals=self.goals.active_text(),
-                context=project_context(self.root, "power" if self._power_active else self.cfg.data.get("efficiency_mode", "balanced")),
-                extra=f"{self.cfg.data['system_prompt_extra']}\n{thinking_note}\n{work_note}{power_note}{proxy_note}{language_note}{durable_note}" + (f"\nYou are a read-only {self.role} subagent. Never write, run commands, or delegate. Return concise evidence, file paths, risks, and conclusions." if self.read_only else ""),
+                context=project_context(self.tools.root, "power" if self._power_active else self.cfg.data.get("efficiency_mode", "balanced"), self.sandbox.active()),
+                extra=f"{self.cfg.data['system_prompt_extra']}\n{thinking_note}\n{work_note}{power_note}{proxy_note}{sandbox_note}{language_note}{durable_note}" + (f"\nYou are a read-only {self.role} subagent. Never write, run commands, or delegate. Return concise evidence, file paths, risks, and conclusions." if self.read_only else ""),
             )
         return self._system_cache
 
@@ -5251,6 +5940,8 @@ class Agent:
         started = time.monotonic()
         next_heartbeat = started + 5
         future = self._daemon_future(self.provider.request, system, messages, [], max_tokens, False)
+        first_limit, _, total_limit = request_watchdog_limits(self.cfg, True)
+        helper_limit = min(first_limit, total_limit, max(5.0, float(self.cfg.data.get("subagent_timeout_seconds", 30))))
         try:
             while True:
                 try:
@@ -5261,12 +5952,18 @@ class Agent:
                     if self.input_poller:
                         self.input_poller()
                     now = time.monotonic()
+                    elapsed = now - started
+                    if elapsed >= helper_limit:
+                        record_request_watchdog(self.cfg, "helper_first_response", elapsed)
+                        self._emit_activity(f"{label}: gözetmen kesti · {elapsed:.1f} sn")
+                        raise ApiError(f"{label} {helper_limit:g} saniye içinde yanıt vermedi; ana işin takılmaması için durduruldu.")
                     if now >= next_heartbeat:
-                        self._emit_activity(f"{label}: yanıt bekleniyor · {int(now - started)} sn")
+                        remaining = max(0, int(helper_limit - elapsed))
+                        self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · bütçe {remaining} sn")
                         next_heartbeat = now + 5
         finally:
             if not future.done():
-                future.cancel()
+                self._cancel_daemon_future(future)
 
     def assess_tool_risk(self, operation: str, details: str) -> tuple[str, str]:
         """Ask the active AI for a terse risk verdict without exposing tools."""
@@ -5419,7 +6116,7 @@ class Agent:
             int(self.cfg.data.get("subagent_timeout_seconds", 30)),
         )
         child_cfg.data["auto_subagents"] = False
-        child = Agent(self.root, child_cfg, self.goals, lambda _: False, read_only=True, role=role, record_history=False, session_name=self.session_name)
+        child = Agent(self.root, child_cfg, self.goals, lambda _: False, read_only=True, role=role, record_history=False, session_name=self.session_name, sandbox=self.sandbox)
         child.activity_callback = self.activity_callback
         self._emit_activity(f"{role} alt ajan: başladı · zaman aşımı {child_cfg.data['timeout_seconds']} sn")
         role_focus = {
@@ -5527,6 +6224,8 @@ class Agent:
         return any(word in lowered for word in ("web", "internette", "araştır", "güncel", "bugün", "latest", "news", "haber", "fiyat", "2026"))
 
     def ask(self, prompt: str, on_tool: Callable[[str, dict[str, Any]], None] | None = None, force_web: bool = False, output_cap: int | None = None, step_cap: int | None = None) -> str:
+        if self.sandbox.active():
+            self.sandbox.prepare()
         original_prompt = prompt
         baseline = self.tools.snapshot()
         conversational = is_simple_conversation(original_prompt)
@@ -5808,6 +6507,22 @@ class Agent:
                 finalize_execution(final_text, changed_files)
                 if self.last_execution_report.get("missing_evidence"):
                     answer += "\n\nDoğrulama uyarısı: " + "; ".join(self.last_execution_report["missing_evidence"])
+                if self.sandbox.active() and changed_files:
+                    try:
+                        transfer = self.sandbox.transfer(
+                            bool(self.last_execution_report.get("verification_passed")), paths=changed_files
+                        )
+                        if transfer.status == "applied":
+                            answer += f"\n\nForceSandbox: {transfer.message}. Snapshot: {pathlib.Path(transfer.snapshot).name if transfer.snapshot else 'kapalı'}."
+                            self._emit_activity(f"ForceSandbox aktarımı: {len(transfer.changed)} dosya · bütünlük doğrulandı")
+                        elif transfer.status in {"held", "conflict"}:
+                            answer += "\n\nForceSandbox: " + transfer.message + ". Gerçek proje korunarak değişiklikler izole alanda tutuldu."
+                            if transfer.conflicts:
+                                answer += " Çakışanlar: " + ", ".join(transfer.conflicts[:10])
+                            self._emit_activity(f"ForceSandbox aktarımı bekletildi: {transfer.status}")
+                    except (OSError, ValueError) as exc:
+                        self.record_runtime_error("tool_error", exc, {"source": "sandbox_transfer"})
+                        answer += f"\n\nForceSandbox aktarımı güvenle geri alındı: {exc}. Gerçek proje önceki halinde korundu."
                 self._record_turn(original_prompt, answer, Usage(self.session_usage.input_tokens - before_in, self.session_usage.output_tokens - before_out), changed_files)
                 self._remember_turn(turn_start)
                 return answer
@@ -6019,6 +6734,7 @@ HELP = """Komutlar
   /language <tr|en>      Arayüz dilini değiştir
   /init [ek not]         Projeyi başka bir AI/kod uygulamasına devret
   /dashboard             Proje, hafıza, ekip ve bağlantı paneli
+  /sandbox               Ok tuşlu ForceSandbox güvenlik ve aktarım menüsü
   /prompt [metin|clear]  Her isteğe eklenen başlangıç talimatı
   /memory                Kalıcı proje notları ve oturum özeti
   /remember <not>        Proje için kalıcı bilgi kaydet
@@ -6054,6 +6770,7 @@ HELP = """Komutlar
   /profile <işlem> <ad>  save, use veya delete bağlantı profili
   /backup <işlem>        Kota dolunca kullanılacak yedek API'yi yönet
   /retry [sayı] [sn]     Geçici API hatası tekrar politikası
+  /watchdog [profil]     Takılan istek sınırları: fast, balanced veya patient
   /goal <hedef>          Hedefi ekle, uygula ve doğrulanana dek ilerle
   /goals                 Hedefleri listele
   /done <id|sıra>        Hedefi tamamla
@@ -6066,7 +6783,7 @@ HELP = """Komutlar
   /test                   API bağlantısını ve modeli test et
   /models [filtre]        Modelleri sağlayıcıdan tara ve göster
   /model [ad|sıra]        Ok tuşlarıyla seç veya ad/sıra ile değiştir
-  /stream [on|off|status] Süresiz canlı yanıt akışını yönet
+  /stream [on|off|status] Gözetmen korumalı canlı yanıt akışını yönet
   /queue <mesaj>          Aktif model çalışırken mesajı kesmeden sıraya ekle
   /free                   OpenRouter ücretsiz yönlendiricisini seç
   /web <auto|on|off>      Web araması davranışını ayarla
@@ -6096,6 +6813,7 @@ HELP_EN = """Commands
   /language <tr|en>      Change the interface language
   /init [note]           Prepare a portable handoff for another coding AI
   /dashboard             Show project, memory, team, and connection overview
+  /sandbox               Open the arrow-key ForceSandbox security menu
   /prompt [text|clear]   Manage instructions added to every request
   /memory                Show persistent project notes and session summary
   /remember <note>       Save a persistent project note
@@ -6130,6 +6848,7 @@ HELP_EN = """Commands
   /profile <action>      Save, use, or delete a connection profile
   /backup <action>       Manage quota/rate-limit backup API failover
   /retry [count] [sec]   Configure transient API retry policy
+  /watchdog [profile]    Stalled-request limits: fast, balanced, or patient
   /goal <goal>           Add, execute, and verify a persistent goal
   /resume [id|no]        Resume an active goal
   /goals                 List goals
@@ -6143,7 +6862,7 @@ HELP_EN = """Commands
   /test                   Test the API connection and selected model
   /models [filter]        Discover and list provider models
   /model [name|no]        Choose with arrows or select directly
-  /stream [on|off]       Manage live streaming responses
+  /stream [on|off]       Manage watchdog-protected live streaming
   /queue <message>        Queue a message while the model is working
   /free                   Select the OpenRouter free-model router
   /web <auto|on|off>      Configure web search behavior
@@ -6170,8 +6889,8 @@ Use Tab/arrow keys for command suggestions. While the model works, type and pres
 
 
 COMMANDS = [
-    "/goal", "/goals", "/graph", "/language", "/init", "/dashboard", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/team", "/teamroles", "/agentconfig", "/batch",
-    "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/resume", "/done", "/status",
+    "/goal", "/goals", "/graph", "/language", "/init", "/dashboard", "/sandbox", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/team", "/teamroles", "/agentconfig", "/batch",
+    "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/watchdog", "/resume", "/done", "/status",
     "/usage", "/history", "/settings", "/set", "/key", "/test",
     "/models", "/model", "/stream", "/queue", "/free", "/web", "/search", "/thinking", "/temperature", "/mode", "/autopilot",
     "/efficiency", "/power", "/context", "/activity", "/agents", "/agent", "/delegate",
@@ -7015,6 +7734,127 @@ def choose_model_menu(cfg: Config, models: list[str], key_reader: Callable[[], s
             selected = 0
 
 
+def choose_sandbox_menu(agent: Agent, key_reader: Callable[[], str] | None = None, render: bool = True) -> str:
+    """Return one ForceSandbox action from a deliberately simple arrow menu."""
+    cfg = agent.cfg
+    sandbox = agent.sandbox
+    engine = str(cfg.data.get("sandbox_engine", "auto"))
+    options = [
+        ("status", "Durum ve çalışma alanı"),
+        ("network", f"İnternet erişimi: {'açık' if cfg.data.get('sandbox_network_enabled', True) else 'kapalı'}"),
+        ("transfer_toggle", f"Otomatik aktarım: {'açık' if cfg.data.get('sandbox_auto_transfer', True) else 'kapalı'}"),
+        ("snapshot_toggle", f"Otomatik snapshot: {'açık' if cfg.data.get('sandbox_snapshot_enabled', True) else 'kapalı'}"),
+        ("transfer", f"Bekleyen değişiklikleri aktar ({len(sandbox.pending_changes()) if sandbox.active() else 0})"),
+        ("snapshot", "Şimdi snapshot oluştur"),
+        ("restore", "Son snapshot'ı geri yükle"),
+        ("logs", "Güvenlik loglarını göster"),
+        ("folder", "Sandbox çalışma klasörünü aç"),
+        ("engine", f"İzolasyon motoru: {engine}"),
+        ("cleanup", "Sandbox'ı temizle ve projeden yenile"),
+        ("exit", "Kapat"),
+    ]
+    if key_reader is None:
+        if os.name != "nt" or not sys.stdin.isatty():
+            return "status"
+        import msvcrt
+
+        def key_reader() -> str:
+            char = msvcrt.getwch()
+            if char in {"\x00", "\xe0"}:
+                return {"H": "up", "P": "down", "G": "home", "O": "end"}.get(msvcrt.getwch(), "")
+            return char
+
+    selected = 0
+    rendered_lines = 0
+    while True:
+        if render:
+            if rendered_lines:
+                sys.stdout.write(f"\033[{rendered_lines}A")
+            lines = [f"{C.BOLD}{C.CYAN}ForceSandbox{C.RESET}  {C.DIM}↑/↓ gezin · Enter seç · Esc kapat{C.RESET}"]
+            for index, (_, label) in enumerate(options):
+                marker = "❯" if index == selected else " "
+                color = C.CYAN if index == selected else ""
+                lines.append(f"{color}{marker} {label}{C.RESET}")
+            rendered_lines = len(lines)
+            for line in lines:
+                sys.stdout.write("\r\033[2K" + line + "\n")
+            sys.stdout.flush()
+        key = key_reader()
+        if key in {"\r", "\n", "enter"}:
+            if render and rendered_lines:
+                sys.stdout.write(f"\033[{rendered_lines}A")
+                for _ in range(rendered_lines):
+                    sys.stdout.write("\r\033[2K\n")
+                sys.stdout.write(f"\033[{rendered_lines}A")
+                sys.stdout.flush()
+            return options[selected][0]
+        if key in {"\x1b", "esc"}:
+            return "exit"
+        if key == "up":
+            selected = (selected - 1) % len(options)
+        elif key == "down":
+            selected = (selected + 1) % len(options)
+        elif key == "home":
+            selected = 0
+        elif key == "end":
+            selected = len(options) - 1
+
+
+def run_sandbox_menu_action(action: str, agent: Agent, cfg: Config) -> str:
+    sandbox = agent.sandbox
+    if action in {"", "status"}:
+        return sandbox.status_text(verify_engine=True)
+    if not sandbox.active() and action in {"transfer", "snapshot", "restore", "logs", "folder", "cleanup"}:
+        return "ForceSandbox kapalı. /set sandbox_enabled true yaptıktan sonra ForceCode'u yeniden başlatın."
+    if action == "network":
+        cfg.set_value("sandbox_network_enabled", "false" if cfg.data.get("sandbox_network_enabled", True) else "true")
+        return f"Sandbox internet erişimi: {'açık' if cfg.data['sandbox_network_enabled'] else 'kapalı'}"
+    if action == "transfer_toggle":
+        cfg.set_value("sandbox_auto_transfer", "false" if cfg.data.get("sandbox_auto_transfer", True) else "true")
+        return f"Sandbox otomatik aktarım: {'açık' if cfg.data['sandbox_auto_transfer'] else 'kapalı'}"
+    if action == "snapshot_toggle":
+        cfg.set_value("sandbox_snapshot_enabled", "false" if cfg.data.get("sandbox_snapshot_enabled", True) else "true")
+        return f"Sandbox otomatik snapshot: {'açık' if cfg.data['sandbox_snapshot_enabled'] else 'kapalı'}"
+    if action == "transfer":
+        result = sandbox.transfer(verified=True, force=True)
+        return "ForceSandbox: " + result.message + (" · " + ", ".join(result.conflicts[:10]) if result.conflicts else "")
+    if action == "snapshot":
+        snapshot = sandbox.create_snapshot()
+        return f"Snapshot oluşturuldu: {snapshot.name}"
+    if action == "restore":
+        if not agent.tools.confirm("Son ForceSandbox snapshot'ı gerçek projeye geri yüklensin mi?"):
+            return "Snapshot geri yükleme iptal edildi."
+        return "Snapshot geri yüklendi: " + sandbox.restore_latest_snapshot()
+    if action == "logs":
+        rows = sandbox.recent_logs(30)
+        return "ForceSandbox logları\n" + ("\n".join(
+            f"{row.get('time', '?')} · {row.get('event', '?')} · {str(row.get('details', ''))[:300]}" for row in rows
+        ) or "Henüz log yok.")
+    if action == "folder":
+        sandbox.prepare()
+        if os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(str(sandbox.workspace))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(sandbox.workspace)], start_new_session=True)
+        else:
+            subprocess.Popen(["xdg-open", str(sandbox.workspace)], start_new_session=True)
+        return f"Sandbox klasörü açıldı: {sandbox.workspace}"
+    if action == "engine":
+        order = ["auto", "docker", "podman"]
+        current = str(cfg.data.get("sandbox_engine", "auto"))
+        if current not in order:
+            current = "auto"
+        cfg.set_value("sandbox_engine", order[(order.index(current) + 1) % len(order)])
+        sandbox._engine_cache = None
+        return "Sandbox motoru: " + str(cfg.data["sandbox_engine"])
+    if action == "cleanup":
+        if not agent.tools.confirm("Bekleyen sandbox değişiklikleri silinip güvenli alan gerçek projeden yenilensin mi?"):
+            return "Sandbox temizliği iptal edildi."
+        sandbox.cleanup()
+        return "Sandbox temizlendi ve gerçek projeden yeniden hazırlandı."
+    return "ForceSandbox menüsü kapatıldı."
+
+
 def show_doctor(agent: Agent, cfg: Config) -> None:
     checks = [
         (sys.version_info >= (3, 10), f"Python {sys.version_info.major}.{sys.version_info.minor}"),
@@ -7031,6 +7871,15 @@ def show_doctor(agent: Agent, cfg: Config) -> None:
         print(f" {symbol} {text_value}")
     cache_count = len(cached_models(cfg))
     print(f" {'✓' if cache_count else '○'} Model önbelleği: {cache_count} model")
+    if agent.sandbox.active():
+        sandbox_engine, sandbox_ready = agent.sandbox.engine_status(verify=True)
+        print(
+            f" {'✓' if sandbox_ready else '✗'} ForceSandbox: açık · {sandbox_engine} · "
+            f"{'izole komutlar hazır' if sandbox_ready else 'komutlar güvenlik için kilitli'}"
+        )
+        print(f"   Çalışma alanı: {agent.sandbox.workspace}")
+    else:
+        print(" ○ ForceSandbox: kapalı")
     graph_state = agent.force_graph.state()
     graph_ok = graph_state.get("status") == "ready"
     print(f" {'✓' if graph_ok else '○'} ForceGraph otomatik: "
@@ -7082,6 +7931,7 @@ def show_dashboard(agent: Agent, cfg: Config, goals: GoalStore) -> None:
     print(f" API: {route['request']}")
     backup_state, backup_target = backup_status(cfg)
     print(f" Yedek API: {backup_state} · {backup_target}")
+    print(" " + agent.sandbox.status_text(verify_engine=False).replace("\n", "\n "))
     print(f" Mod: {cfg.data['work_mode']} · güç {cfg.data.get('power_mode', 'auto')} · otomatik {autopilot_state(cfg)} · düşünme {cfg.data['thinking_mode']} · verim {cfg.data['efficiency_mode']} · web {cfg.data['web_search_mode']}")
     graph_state = agent.force_graph.state()
     print(f" ForceGraph: {'otomatik' if cfg.data.get('forcegraph_auto_enabled', True) else 'kapalı'} · {graph_state.get('status', 'bekliyor')}")
@@ -7099,7 +7949,7 @@ def show_dashboard(agent: Agent, cfg: Config, goals: GoalStore) -> None:
             print(" Uzman bağlantıları: " + " · ".join(assignments))
     print(f" Aktif hedef: {sum(not goal['done'] for goal in goals.goals)} · başlangıç promptu: {'ayarlı' if str(cfg.data.get('startup_prompt', '')).strip() else 'boş'}")
     show_usage("Bu pencere", agent.session_usage, cfg, agent.session_cost_usd)
-    print("Kısayollar: /memory · /sessions · /team · /models · /context · /logs")
+    print("Kısayollar: /sandbox · /memory · /sessions · /team · /models · /context · /logs")
 
 
 def launch_forgecode_window(agent: Agent, session_name: str) -> int:
@@ -7333,6 +8183,13 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f"{C.RED}Devir dosyaları yazılamadı: {exc}{C.RESET}")
     elif cmd == "/dashboard":
         show_dashboard(agent, cfg, goals)
+    elif cmd == "/sandbox":
+        try:
+            action = choose_sandbox_menu(agent)
+            print(run_sandbox_menu_action(action, agent, cfg))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            agent.record_runtime_error("tool_error", exc, {"source": "sandbox_menu"})
+            print(f"{C.RED}ForceSandbox hatası: {exc}{C.RESET}")
     elif cmd == "/prompt":
         value = line[len(parts[0]):].strip()
         if not value:
@@ -7958,7 +8815,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                 backup_cfg.data["backup_active"] = False
                 if backup_cfg.requires_key() and not backup_cfg.key():
                     raise ValueError("Yedek sağlayıcının API anahtarı yok. Önce /backup key kullanın veya sağlayıcı anahtarını /key ile kaydedin")
-                tester = Agent(agent.root, backup_cfg, goals, agent.tools.confirm, read_only=True, record_history=False, session_name=agent.session_name)
+                tester = Agent(agent.root, backup_cfg, goals, agent.tools.confirm, read_only=True, record_history=False, session_name=agent.session_name, sandbox=agent.sandbox)
                 with Spinner("Yedek API test ediliyor"):
                     text, usage, seconds = tester.test_api()
                 print(f"{C.GREEN}✓ Yedek API çalışıyor{C.RESET} · {backup_cfg.data['provider']}/{backup_cfg.data['model']} · {seconds:.2f}s · {text!r}")
@@ -8001,18 +8858,43 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
     elif cmd == "/retry":
         if len(parts) < 2:
             print(f"Retry: {cfg.data.get('retry_attempts', 2)} deneme · {float(cfg.data.get('retry_backoff_seconds', 0.5)):g} sn geri çekilme")
-            print("Kullanım: /retry <1-5> [0-10 sn]")
+            print(f"Toplam retry bütçesi: {float(cfg.data.get('retry_budget_seconds', 120)):g} sn")
+            print("Kullanım: /retry <1-5> [0-10 sn] [5-300 bütçe-sn]")
         else:
             try:
                 attempts = int(parts[1])
                 backoff = float(parts[2]) if len(parts) >= 3 else float(cfg.data.get("retry_backoff_seconds", 0.5))
+                budget = int(parts[3]) if len(parts) >= 4 else int(cfg.data.get("retry_budget_seconds", 120))
                 if not 1 <= attempts <= 5 or not 0 <= backoff <= 10:
                     raise ValueError("Retry sayısı 1-5, bekleme 0-10 saniye olmalı")
+                if not 5 <= budget <= 300:
+                    raise ValueError("Retry bütçesi 5-300 saniye olmalı")
                 cfg.set_value("retry_attempts", str(attempts))
                 cfg.set_value("retry_backoff_seconds", str(backoff))
-                print(f"Retry politikası: {attempts} deneme · {backoff:g} sn")
+                cfg.set_value("retry_budget_seconds", str(budget))
+                print(f"Retry politikası: {attempts} deneme · {backoff:g} sn · toplam {budget} sn bütçe")
             except (ValueError, TypeError) as exc:
                 print(f"{C.RED}{exc}{C.RESET}")
+    elif cmd == "/watchdog":
+        profile = parts[1].lower() if len(parts) >= 2 else "status"
+        profiles = {
+            "fast": (30, 45, 120, 75),
+            "balanced": (60, 75, 180, 120),
+            "patient": (90, 120, 300, 180),
+        }
+        if profile in {"status", "durum"}:
+            print(request_watchdog_status_text(cfg))
+            print("Profiller: /watchdog fast|balanced|patient")
+        elif profile in profiles:
+            first, idle, total, retry_budget = profiles[profile]
+            cfg.set_value("first_response_timeout_seconds", str(first))
+            cfg.set_value("stream_idle_timeout_seconds", str(idle))
+            cfg.set_value("request_total_timeout_seconds", str(total))
+            cfg.set_value("retry_budget_seconds", str(retry_budget))
+            print(f"{C.GREEN}İstek gözetmeni profili: {profile}{C.RESET}")
+            print(request_watchdog_status_text(cfg))
+        else:
+            print("Kullanım: /watchdog fast|balanced|patient|status")
     elif cmd == "/language":
         if len(parts) < 2:
             current = "English" if cfg.data.get("ui_language") == "en" else "Türkçe"
@@ -8105,11 +8987,12 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         if cfg.data["provider"] == "custom":
             protocol = "Anthropic/Claude Code" if cfg.mode() == "anthropic" else "OpenAI"
             protocol_line = f"\nProtokol: {protocol} · auth: {cfg.data.get('custom_auth_mode', 'auto')}"
-        print(f"Proje: {agent.root}\nOturum: {agent.session_name}\nSağlayıcı: {cfg.data['provider']}\nModel: {cfg.data['model']}{protocol_line}\n{stream_status_text(cfg)}\nOtomatik: {autopilot_state(cfg)} · Mod: {cfg.data['work_mode']} · Güç: {cfg.data.get('power_mode', 'auto')} · Web: {cfg.data['web_search_mode']} · Thinking: {cfg.data['thinking_mode']} · Temperature: {float(cfg.data['temperature']):g} · Kalite: {cfg.data['web_project_mode']} · Verimlilik: {cfg.data['efficiency_mode']}\nAktif hedef: {sum(not g['done'] for g in goals.goals)}")
+        print(f"Proje: {agent.root}\nOturum: {agent.session_name}\nSağlayıcı: {cfg.data['provider']}\nModel: {cfg.data['model']}{protocol_line}\n{stream_status_text(cfg)}\n{request_watchdog_status_text(cfg)}\nOtomatik: {autopilot_state(cfg)} · Mod: {cfg.data['work_mode']} · Güç: {cfg.data.get('power_mode', 'auto')} · Web: {cfg.data['web_search_mode']} · Thinking: {cfg.data['thinking_mode']} · Temperature: {float(cfg.data['temperature']):g} · Kalite: {cfg.data['web_project_mode']} · Verimlilik: {cfg.data['efficiency_mode']}\nAktif hedef: {sum(not g['done'] for g in goals.goals)}")
         route = endpoint_plan(cfg)
         print(f"API: {route['request']} (kaynak: {route['source']})")
         backup_state, backup_target = backup_status(cfg)
         print(f"Yedek API: {backup_state} · {backup_target}")
+        print(agent.sandbox.status_text(verify_engine=False))
         show_usage("Bu oturum", agent.session_usage, cfg, agent.session_cost_usd)
     elif cmd == "/usage":
         show_usage("Bu oturum", agent.session_usage, cfg, agent.session_cost_usd)
@@ -8416,6 +9299,11 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
         renderer.activity(activity_line)
     agent.activity_callback = show_activity
     print_banner(root, cfg, agent.session_name)
+    if agent.sandbox.active():
+        print(
+            f"{C.GREEN}ForceSandbox açık:{C.RESET} AI dosyaları {agent.sandbox.workspace} içinde; "
+            "komutlar yalnızca Docker/Podman ile çalışır · /sandbox"
+        )
     print(f"{C.DIM}Model çalışırken yazıp Enter = anında yönlendir · /queue <mesaj> = sıraya ekle · Ctrl+C = durdur.{C.RESET}\n")
     if cfg.requires_key() and not cfg.key():
         print(f"{C.YELLOW}API anahtarı ayarlanmadı.{C.RESET} /key ile ekleyin veya ortam değişkeni kullanın.\n")

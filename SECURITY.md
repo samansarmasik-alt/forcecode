@@ -22,4 +22,6 @@ Please allow maintainers reasonable time to validate and fix the issue before pu
 
 ForgeCode sends prompts and selected project context to the configured AI provider. Provider security, retention, billing, and availability are governed by that provider. Review provider terms before sending proprietary code.
 
-ForgeCode does not promise a perfect sandbox. Keep important projects under version control, review proposed operations, use least-privilege API keys, and avoid full autopilot outside disposable environments.
+ForceSandbox is enabled by default. Model file tools operate in a private project copy and generic commands require Docker or Podman, with only that copy mounted into an ephemeral container. The container receives no ForgeCode API key or inherited host environment. Missing container isolation fails closed instead of falling back to the host shell. Common credentials, links, reparse points, and project metadata are not staged.
+
+The ForgeCode controller itself remains a trusted host process: it contacts the configured provider, stores user settings, creates snapshots, performs conflict-checked transfers, and may run the argument-constrained ForceGraph bridge against the sandbox copy. Internet-enabled containers can still communicate with remote services, so untrusted dependencies and remote scripts remain supply-chain risks. Keep important projects under version control, use least-privilege keys, review sandbox logs and pending transfers, and report any host-path or secret exposure privately.
