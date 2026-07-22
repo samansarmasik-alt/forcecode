@@ -214,8 +214,8 @@ class WorkspaceTests(unittest.TestCase):
             self.tools.safe_path("/tmp/proxy-hunter/index.html")
         self.cfg.select_provider("custom")
         self.cfg.data.update({"api_mode": "anthropic", "custom_protocol": "anthropic", "autopilot_mode": True})
-        self.assertEqual(self.tools.safe_path("/tmp/proxy-hunter/index.html"), self.root / "index.html")
-        self.assertEqual(self.tools.safe_path("/workspace/assets/css/site.css"), self.root / "assets/css/site.css")
+        self.assertEqual(self.tools.safe_path("/tmp/proxy-hunter/index.html"), self.root.resolve() / "index.html")
+        self.assertEqual(self.tools.safe_path("/workspace/assets/css/site.css"), self.root.resolve() / "assets/css/site.css")
         with self.assertRaises(ValueError):
             self.tools.safe_path("/etc/passwd")
 

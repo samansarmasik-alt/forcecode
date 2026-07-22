@@ -39,6 +39,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+# Keep the real host path class stable even in tests that emulate Windows by
+# temporarily patching os.name on a Linux runner.
+HOST_PATH_TYPE = type(pathlib.Path())
+
+
 # Eski Windows kod sayfalarında Unicode simgeleri uygulamayı durdurmasın.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -222,11 +227,11 @@ def load_json(path: pathlib.Path, default: Any) -> Any:
 def app_home() -> pathlib.Path:
     custom = os.environ.get("FORGECODE_HOME")
     if custom:
-        return pathlib.Path(custom).expanduser()
+        return HOST_PATH_TYPE(custom).expanduser()
     local_app_data = os.environ.get("LOCALAPPDATA")
     if os.name == "nt" and local_app_data:
-        return pathlib.Path(local_app_data) / "ForgeCode"
-    return pathlib.Path.home() / ".forgecode"
+        return HOST_PATH_TYPE(local_app_data) / "ForgeCode"
+    return HOST_PATH_TYPE.home() / ".forgecode"
 
 
 def migrate_legacy_app_home(destination: pathlib.Path) -> None:
@@ -5208,10 +5213,10 @@ class ExecutionKernel:
 
 class Agent:
     def __init__(self, root: pathlib.Path, cfg: Config, goals: GoalStore, confirm: Callable[[str], bool], read_only: bool = False, role: str = "", record_history: bool = True, session_name: str | None = None, auto_graph_runtime: bool = False, sandbox: ForceSandboxManager | None = None):
-        self.root, self.cfg, self.goals = root, cfg, goals
+        self.root, self.cfg, self.goals = root.resolve(), cfg, goals
         self.provider = make_provider(cfg)
-        self.sandbox = sandbox or ForceSandboxManager(root, cfg)
-        work_root = self.sandbox.prepare() if self.sandbox.active() else root
+        self.sandbox = sandbox or ForceSandboxManager(self.root, cfg)
+        work_root = self.sandbox.prepare() if self.sandbox.active() else self.root
         self.tools = WorkspaceTools(work_root, cfg, confirm, self.assess_tool_risk, self.diagnostics_report, sandbox=self.sandbox)
         self.force_graph = self.tools.force_graph
         # ForceGraph remains a trusted, argument-constrained controller, but
@@ -5222,12 +5227,12 @@ class Agent:
         self.session_usage = Usage()
         self.session_cost_usd = 0.0
         self.usage_store = UsageStore(cfg.home)
-        self.history_store = HistoryStore(root)
+        self.history_store = HistoryStore(self.root)
         self.session_name = safe_session_name(session_name or str(cfg.data.get("session_name", "main")))
-        self.session_store = SessionStore(root, self.session_name, cfg)
-        self.force_context = ForceContext(root)
-        self.execution_kernel = ExecutionKernel(root, cfg)
-        self.last_execution_report: dict[str, Any] = load_json(root / ".forgecode" / "last-run.json", {})
+        self.session_store = SessionStore(self.root, self.session_name, cfg)
+        self.force_context = ForceContext(self.root)
+        self.execution_kernel = ExecutionKernel(self.root, cfg)
+        self.last_execution_report: dict[str, Any] = load_json(self.root / ".forgecode" / "last-run.json", {})
         self._force_context_text = ""
         self.completed_turns: list[list[Any]] = []
         self._system_cache = ""
