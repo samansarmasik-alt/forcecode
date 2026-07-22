@@ -203,6 +203,7 @@ class WorkspaceTests(unittest.TestCase):
         self.tools = forgecode.WorkspaceTools(self.root, self.cfg, lambda _: True)
 
     def tearDown(self):
+        self.tools.close_processes()
         self.tmp.cleanup()
 
     def test_blocks_path_escape(self):
@@ -1080,7 +1081,7 @@ class CommandAssistTests(unittest.TestCase):
             with mock.patch.object(forgecode.subprocess, "Popen", return_value=process) as popen:
                 self.assertEqual(forgecode.launch_forgecode_window(agent, "backend"), 4321)
             command = popen.call_args.args[0]
-            self.assertIn(str(root), command)
+            self.assertIn(str(root.resolve()), command)
             self.assertEqual(command[-2:], ["--session", "backend"])
 
     def test_role_profile_routes_subagent_to_another_provider_and_model(self):
@@ -3453,7 +3454,7 @@ class ForceSandboxTests(unittest.TestCase):
             agent = forgecode.Agent(
                 project, cfg, forgecode.GoalStore(project), lambda _: False, sandbox=sandbox
             )
-            self.assertEqual(agent.root, project)
+            self.assertEqual(agent.root, project.resolve())
             self.assertEqual(agent.tools.root, sandbox.workspace)
             self.assertIn("FORCESANDBOX ACTIVE", agent.system())
             self.assertIn("Working directory: /workspace", agent.system())

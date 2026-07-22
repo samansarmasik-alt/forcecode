@@ -3899,7 +3899,11 @@ class WorkspaceTools:
             self._processes[process_id] = session
         threading.Thread(target=self._read_interactive_process, args=(session,), daemon=True,
                          name=f"forgecode-process-{process_id}").start()
-        deadline = time.monotonic() + 0.6
+        # Windows CI and cold Python/PowerShell starts can take longer than a
+        # fraction of a second before the child publishes its first prompt.
+        # Waiting briefly here makes staged-input programs deterministic while
+        # still returning immediately as soon as output or process exit exists.
+        deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             with session.lock:
                 if session.output:
