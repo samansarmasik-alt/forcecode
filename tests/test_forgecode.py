@@ -1053,7 +1053,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 21)
+            self.assertEqual(cfg.data["config_version"], 22)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -3311,6 +3311,28 @@ class ForceSandboxTests(unittest.TestCase):
             self.assertFalse((workspace / ".ssh").exists())
             self.assertFalse((workspace / ".docker" / "config.json").exists())
 
+    def test_manifest_skips_unreadable_entries_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, sandbox = self.make_manager(pathlib.Path(tmp))
+            unreadable = project / "blocked.txt"
+            unreadable.write_text("blocked", encoding="utf-8")
+            with mock.patch.object(sandbox, "_digest", side_effect=PermissionError(13, "Permission denied", str(unreadable))):
+                self.assertEqual(sandbox.manifest(project), {})
+
+    def test_windows_auto_engine_prefers_native_without_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            cfg.data["sandbox_engine"] = "auto"
+            with mock.patch.object(forgecode.sys, "platform", "win32"), mock.patch.object(
+                forgecode.shutil, "which", return_value=None
+            ) as which:
+                self.assertEqual(sandbox._engine_candidate(), "native")
+            which.assert_not_called()
+
+    def test_native_python_startup_diagnostic_is_hidden(self):
+        raw = "Failed to find real location of C:\\ForceCodeSandbox\\Python313\\python.exe\r\nREADY\r\n"
+        self.assertEqual(forgecode.clean_native_runtime_noise(raw), "READY\n")
+
     def test_unverified_work_is_held_then_verified_transfer_can_be_restored(self):
         with tempfile.TemporaryDirectory() as tmp:
             project, _, sandbox = self.make_manager(pathlib.Path(tmp))
@@ -3403,7 +3425,7 @@ class ForceSandboxTests(unittest.TestCase):
                 forgecode.subprocess, "run"
             ) as run:
                 output = tools.execute("run_command", {"command": "echo isolated"})
-            self.assertIn("yerel kabuk komutu engellendi", output)
+            self.assertIn("normal", output)
             run.assert_not_called()
 
     def test_container_command_mounts_only_workspace_and_passes_stdin(self):

@@ -2,6 +2,30 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.6.1] - 2026-07-22
+
+### Added
+
+- Added a dependency-free native Windows ForceSandbox engine built on AppContainer process isolation. Each project receives a distinct security identity and execution directory under `C:\ForceCodeSandbox`.
+- Added native process-tree containment, active-process and memory limits, sanitized environments, private home/temp directories, optional outbound internet capability, and interactive stdin/stdout support.
+- Added a shared minimal Python 3 runtime for isolated project tests. It excludes host `site-packages`, user packages, credentials, and API keys.
+
+### Changed
+
+- Windows `sandbox_engine=auto` now selects the native engine without probing or requiring Docker. Docker and Podman remain optional explicit engines and the non-Windows fallback.
+- Network mode changes now recreate the native runner with a separate online or offline AppContainer profile.
+- `/sandbox` can cycle through `auto`, `native`, `docker`, and `podman`.
+
+### Fixed
+
+- Fixed startup crashes when OneDrive or Windows exposes an unreadable path such as `...`; inaccessible entries are skipped instead of aborting project staging.
+- Removed recursive ACL changes to the host Python installation, eliminating long startup stalls and preventing ForceSandbox from broadening access to user-installed packages.
+- Filtered a harmless CPython AppContainer real-path diagnostic from command and interactive-process output.
+
+### Security
+
+- Verified locally that online sandboxes retain outbound HTTPS, offline sandboxes block it, project identities cannot read one another, host user files remain inaccessible, and project files plus scripted stdin still work.
+
 ## [7.6.0] - 2026-07-22
 
 ### Added
