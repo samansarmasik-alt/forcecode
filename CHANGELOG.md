@@ -2,6 +2,44 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.6.5] - 2026-08-01
+
+### Added
+
+- Added `/watchdog off` (also `unlimited`) for slow APIs. It removes first-response, streaming-idle, total-call, socket-read, retry-budget, helper-call, and subagent request time limits.
+
+### Changed
+
+- Unbounded API calls still run in detachable background workers, retain five-second progress heartbeats, accept live prompt input, and remain immediately cancellable with Ctrl+C.
+- Selecting `fast`, `balanced`, or `patient` automatically re-enables the request watchdog.
+
+## [7.6.4] - 2026-08-01
+
+### Fixed
+
+- Explicit custom routes ending in `/chat/completions` now permanently select OpenAI Chat wire format, while `/messages` routes select Anthropic Messages format regardless of the first discovered model name.
+- Migrated older custom connections that learned Anthropic plus `x-api-key` from a Claude-first model list even though the user entered a Chat Completions URL. Authentication is safely re-detected with the corrected protocol.
+- Prevented `/protocol` from creating a route/payload mismatch when an explicit endpoint already determines the protocol.
+
+## [7.6.3] - 2026-08-01
+
+### Added
+
+- Added FreeModel as a first-class provider using its documented `https://api.freemodel.dev/v1` OpenAI-compatible API, `auto` model router, Bearer authentication, and `FREEMODEL_API_KEY` environment variable.
+- Existing keys saved against a FreeModel custom host are reused locally when switching to the new provider, without exposing or duplicating the secret outside ForgeCode settings.
+
+### Fixed
+
+- Successful HTTP responses containing neither visible text nor tool calls are now rejected as malformed completions instead of being reported as a ready connection or a completed task.
+
+## [7.6.2] - 2026-08-01
+
+### Fixed
+
+- Preserved visible streamed output when an OpenAI-compatible gateway returns a minimal completion envelope without final output content.
+- Added one bounded final-response recovery turn when a model finishes tool work without producing a user-visible result.
+- Removed the contradictory `Tamamlandı` plus `model produced no final result` combination. ForceCode now verifies the exact answer shown to the user and does not claim completion if the model remains empty.
+
 ## [7.6.1] - 2026-07-22
 
 ### Added

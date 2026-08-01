@@ -102,6 +102,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
             self.assertEqual(cfg.data["timeout_seconds"], 100)
+            self.assertTrue(cfg.data["watchdog_enabled"])
             self.assertEqual(forgecode.request_watchdog_limits(cfg), (60, 75, 180))
 
     def test_typed_settings_round_trip(self):
@@ -154,6 +155,22 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(cfg.data["output_price_per_million"], 1.20)
             self.assertTrue(cfg.requires_key())
 
+    def test_freemodel_provider_uses_official_api_and_reuses_saved_custom_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("custom")
+            cfg.data.update({
+                "base_url": "https://work.freemodel.dev/v1",
+                "custom_api_key": "fe_test_local_key",
+            })
+
+            cfg.select_provider("freemodel")
+
+            self.assertEqual(cfg.base_url(), "https://api.freemodel.dev/v1")
+            self.assertEqual(cfg.data["model"], "auto")
+            self.assertEqual(cfg.key(), "fe_test_local_key")
+            self.assertTrue(cfg.requires_key())
+
     def test_advanced_modes_validate(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
@@ -177,6 +194,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(forgecode.PROVIDERS["github"]["url"], "https://models.github.ai/inference")
         self.assertEqual(forgecode.PROVIDERS["huggingface"]["url"], "https://router.huggingface.co/v1")
         self.assertIn("compatible-mode/v1", forgecode.PROVIDERS["dashscope"]["url"])
+        self.assertEqual(list(forgecode.PROVIDERS)[23], "freemodel")
 
     def test_team_roles_are_typed_deduplicated_and_validated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -730,6 +748,33 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], "https://llm.kimchi.dev/openai/v1/chat/completions")
         self.assertEqual(post.call_args.args[1]["Authorization"], "Bearer kimchi-secret")
 
+    def test_freemodel_uses_bearer_key_auto_router_and_official_endpoint(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("freemodel")
+        cfg.data["freemodel_api_key"] = "fe_test_secret"
+        fake = {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {}}
+        with mock.patch.object(forgecode, "post_json", return_value=fake) as post:
+            reply = forgecode.OpenAIChatProvider(cfg).request("s", [{"role": "user", "content": "hi"}], [])
+        self.assertEqual(reply.text, "ok")
+        self.assertEqual(post.call_args.args[0], "https://api.freemodel.dev/v1/chat/completions")
+        self.assertEqual(post.call_args.args[1]["Authorization"], "Bearer fe_test_secret")
+        self.assertEqual(post.call_args.args[2]["model"], "auto")
+
+    def test_empty_successful_completions_are_rejected_across_protocols(self):
+        cases = (
+            ("anthropic", forgecode.AnthropicProvider, {"content": [], "usage": {}}),
+            ("openai", forgecode.OpenAIProvider, {"output": [], "usage": {}}),
+            ("freemodel", forgecode.OpenAIChatProvider, {"choices": [{"message": {"content": ""}}], "usage": {}}),
+        )
+        for provider_name, provider_type, response in cases:
+            with self.subTest(provider=provider_name):
+                cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+                cfg.select_provider(provider_name)
+                cfg.data[f"{provider_name}_api_key"] = "test-secret"
+                with mock.patch.object(forgecode, "post_json", return_value=response):
+                    with self.assertRaisesRegex(forgecode.ApiError, "görünür içerik veya araç çağrısı"):
+                        provider_type(cfg).request("s", [{"role": "user", "content": "hi"}], [])
+
     def test_openai_responses_web_tool(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
         cfg.select_provider("openai")
@@ -978,6 +1023,27 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(cfg.data["model"], "claude-sonnet-5")
             self.assertIn("alternatif modeller", output.getvalue())
 
+    def test_connect_chat_endpoint_pins_openai_even_when_first_model_is_claude(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = mock.MagicMock()
+            agent.test_api.return_value = ("OK", forgecode.Usage(), 0.25)
+            output = io.StringIO()
+            endpoint = "https://work.example.test/v1/chat/completions"
+            with mock.patch.object(forgecode.getpass, "getpass", return_value="test-key"), mock.patch.object(
+                forgecode, "show_models", return_value=["claude-first", "gpt-second"]
+            ), mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command(
+                    f"/connect {endpoint}", agent, cfg, forgecode.GoalStore(root)
+                ))
+            self.assertEqual(cfg.data["custom_protocol"], "openai")
+            self.assertEqual(cfg.mode(), "chat")
+            self.assertEqual(cfg.data["custom_endpoint_path"], endpoint)
+            self.assertEqual(forgecode.endpoint_plan(cfg)["request"], endpoint)
+            self.assertEqual(agent.test_api.call_count, 1)
+            self.assertIn("protokol: OpenAI", output.getvalue())
+
 
 class CommandAssistTests(unittest.TestCase):
     def test_explanatory_nouns_do_not_trigger_build_repair_requests(self):
@@ -1053,7 +1119,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 22)
+            self.assertEqual(cfg.data["config_version"], 23)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1153,6 +1219,38 @@ class CommandAssistTests(unittest.TestCase):
         cfg.set_value("base_url", "https://proxy.test/v1/messages")
         self.assertEqual(cfg.base_url(), "https://proxy.test/v1")
         self.assertEqual(cfg.data["custom_endpoint_path"], "https://proxy.test/v1/messages")
+
+    def test_explicit_custom_route_pins_protocol_and_old_config_is_migrated(self):
+        self.assertEqual(
+            forgecode.custom_protocol_for_route("https://proxy.test/v1/chat/completions"), "openai"
+        )
+        self.assertEqual(forgecode.custom_protocol_for_route("/v1/messages"), "anthropic")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            (home / "config.json").write_text(json.dumps({
+                "config_version": 22,
+                "provider": "custom",
+                "api_mode": "anthropic",
+                "custom_protocol": "anthropic",
+                "custom_auth_mode": "x-api-key",
+                "custom_endpoint_path": "https://proxy.test/v1/chat/completions",
+            }), encoding="utf-8")
+            cfg = forgecode.Config(home)
+        self.assertEqual(cfg.mode(), "chat")
+        self.assertEqual(cfg.data["custom_protocol"], "openai")
+        self.assertEqual(cfg.data["custom_auth_mode"], "auto")
+        self.assertEqual(cfg.data["config_version"], 23)
+
+    def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("custom")
+        cfg.data.update({
+            "custom_endpoint_path": "https://proxy.test/v1/chat/completions",
+            "custom_protocol": "anthropic",
+            "api_mode": "anthropic",
+        })
+        self.assertEqual(cfg.mode(), "chat")
+        self.assertIsInstance(forgecode.make_provider(cfg), forgecode.OpenAIChatProvider)
 
     def test_route_off_command_sends_directly_to_base_url(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2469,6 +2567,31 @@ class StreamingAndModelMenuTests(unittest.TestCase):
         self.assertEqual(chunks, ["Hi"])
         self.assertEqual(data, response)
 
+    def test_responses_stream_preserves_deltas_when_completed_body_is_empty(self):
+        chunks = []
+        data = forgecode.consume_responses_stream(iter([
+            {"type": "response.output_text.delta", "delta": "Gerçek "},
+            {"type": "response.output_text.delta", "delta": "sonuç"},
+            {"type": "response.completed", "response": {"status": "completed", "usage": {}}},
+        ]), chunks.append)
+        self.assertEqual(chunks, ["Gerçek ", "sonuç"])
+        self.assertEqual(data["output"][0]["content"][0]["text"], "Gerçek sonuç")
+
+    def test_streaming_transport_recovers_visible_text_from_empty_envelope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+
+            class Provider:
+                def request(self, *args):
+                    args[5]("Akıştan gelen sonuç")
+                    return forgecode.ModelReply("", [], forgecode.Usage(), [])
+
+            agent.provider = Provider()
+            reply = agent._request_with_heartbeat([], 128, False)
+            self.assertEqual(reply.text, "Akıştan gelen sonuç")
+
     def test_model_menu_uses_arrows_and_enter(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
@@ -2609,6 +2732,69 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 )
             self.assertEqual(result, {"ok": True})
             self.assertEqual(sse.call_args.args[3], 75)
+
+    def test_watchdog_off_removes_stream_socket_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.set_value("watchdog_enabled", "false")
+            with mock.patch.object(forgecode, "iter_sse_json", return_value=iter(())) as sse:
+                result = forgecode.stream_or_json(
+                    cfg, "https://x.test", {}, {"stream": True}, 1,
+                    lambda events, emit: {"ok": True}, lambda _: None,
+                )
+            self.assertEqual(result, {"ok": True})
+            self.assertIsNone(sse.call_args.args[3])
+
+    def test_watchdog_off_allows_slow_first_response_and_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "watchdog_enabled": False,
+                "timeout_seconds": 0.02,
+                "first_response_timeout_seconds": 0.02,
+                "stream_idle_timeout_seconds": 0.02,
+                "request_total_timeout_seconds": 0.02,
+                "subagent_timeout_seconds": 0.02,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            class SlowProvider:
+                def request(self, *args):
+                    forgecode.time.sleep(0.08)
+                    return forgecode.ModelReply("geç ama başarılı", [], forgecode.Usage(), [])
+
+            agent.provider = SlowProvider()
+            self.assertEqual(agent._request_with_heartbeat([], 32, False).text, "geç ama başarılı")
+            self.assertEqual(
+                agent._standalone_request("Yardımcı", "system", "user", 32).text,
+                "geç ama başarılı",
+            )
+
+    def test_watchdog_off_passes_no_timeout_to_chat_transport(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("freemodel")
+        cfg.data.update({"freemodel_api_key": "test-key", "watchdog_enabled": False})
+        response = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+        with mock.patch.object(forgecode, "post_json", return_value=response) as post:
+            self.assertEqual(
+                forgecode.OpenAIChatProvider(cfg).request("s", [{"role": "user", "content": "u"}], []).text,
+                "ok",
+            )
+        self.assertIsNone(post.call_args.args[3])
+
+    def test_watchdog_off_command_persists_unlimited_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            output = io.StringIO()
+            with mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command(
+                    "/watchdog off", mock.MagicMock(), cfg, forgecode.GoalStore(root)
+                ))
+            self.assertFalse(cfg.data["watchdog_enabled"])
+            self.assertIn("süre sınırı yok", forgecode.request_watchdog_status_text(cfg))
+            self.assertIn("Ctrl+C", output.getvalue())
 
     def test_stream_status_explains_watchdog_and_normal_timeout_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3267,6 +3453,44 @@ class ExecutionKernelTests(unittest.TestCase):
             self.assertIn("FORGECODE EXECUTION CONTRACT", json.dumps(sent_messages, ensure_ascii=False))
             self.assertIn("Açıklama", answer)
             self.assertIn("confidence", agent.last_execution_report)
+
+    def test_agent_requests_one_real_final_instead_of_warning_after_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = self.make_cfg(root)
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            provider = mock.MagicMock()
+            provider.request.side_effect = [
+                forgecode.ModelReply("", [], forgecode.Usage(), []),
+                forgecode.ModelReply("Gerçek nihai yanıt.", [], forgecode.Usage(), []),
+            ]
+            agent.provider = provider
+
+            answer = agent.ask("Python nedir?")
+
+            self.assertEqual(answer, "Gerçek nihai yanıt.")
+            self.assertEqual(provider.request.call_count, 2)
+            self.assertNotIn("model produced no final result", answer)
+            self.assertEqual(agent.last_execution_report["missing_evidence"], [])
+
+    def test_agent_never_claims_completed_when_model_stays_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = self.make_cfg(root)
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            provider = mock.MagicMock()
+            provider.request.side_effect = [
+                forgecode.ModelReply("", [], forgecode.Usage(), []),
+                forgecode.ModelReply("", [], forgecode.Usage(), []),
+            ]
+            agent.provider = provider
+
+            answer = agent.ask("Python nedir?")
+
+            self.assertIn("görünür bir nihai sonuç üretmedi", answer)
+            self.assertIn("tamamlanmış sayılmadı", answer)
+            self.assertNotEqual(answer.strip(), "Tamamlandı.")
+            self.assertNotIn("model produced no final result", answer)
 
     def test_terminal_api_failure_is_preserved_for_debug_command(self):
         with tempfile.TemporaryDirectory() as tmp:

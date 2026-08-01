@@ -54,7 +54,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.6.1"
+VERSION = "7.6.5"
 
 _UI_LANGUAGE = "tr"
 
@@ -183,6 +183,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "huggingface": {"label": "Hugging Face Inference Providers", "mode": "chat", "url": "https://router.huggingface.co/v1", "model": "openai/gpt-oss-120b:fastest", "env": "HF_TOKEN", "key": True},
     "siliconflow": {"label": "SiliconFlow", "mode": "chat", "url": "https://api.siliconflow.com/v1", "model": "deepseek-ai/DeepSeek-V3.2", "env": "SILICONFLOW_API_KEY", "key": True},
     "dashscope": {"label": "Alibaba DashScope / Qwen", "mode": "chat", "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "env": "DASHSCOPE_API_KEY", "key": True},
+    "freemodel": {"label": "FreeModel (resmî API)", "mode": "chat", "url": "https://api.freemodel.dev/v1", "model": "auto", "env": "FREEMODEL_API_KEY", "key": True},
 }
 
 KIMCHI_PRICING: dict[str, tuple[float, float]] = {
@@ -253,7 +254,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 22,
+    "config_version": 23,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -268,6 +269,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "temperature": 1.0,
     "timeout_seconds": 100,
     "streaming_enabled": True,
+    "watchdog_enabled": True,
     "first_response_timeout_seconds": 60,
     "stream_idle_timeout_seconds": 75,
     "request_total_timeout_seconds": 180,
@@ -375,6 +377,21 @@ def inferred_custom_route(raw_url: str) -> str:
     return value if parsed.path.rstrip("/") else "off"
 
 
+def custom_protocol_for_route(route: str) -> str:
+    """Infer protocol only when the user supplied an unambiguous API path."""
+    value = str(route).strip()
+    if value.startswith(("http://", "https://")):
+        path = urllib.parse.urlsplit(value).path
+    else:
+        path = value
+    lowered = path.rstrip("/").casefold()
+    if lowered.endswith("/chat/completions"):
+        return "openai"
+    if lowered.endswith("/messages"):
+        return "anthropic"
+    return ""
+
+
 def endpoint_hint_from_error(error: BaseException | str) -> tuple[str, str] | None:
     """Extract a supported API route advertised by a proxy error."""
     message = str(error).lower()
@@ -422,7 +439,16 @@ class Config:
         # backwards-compatible config files; zero means unlimited.
         if saved.get("config_version", 1) < 16 and saved.get("max_agent_steps", 12) == 12:
             saved["max_agent_steps"] = 0
-        saved["config_version"] = 22
+        if saved.get("config_version", 1) < 23 and saved.get("provider") == "custom":
+            pinned_protocol = custom_protocol_for_route(str(saved.get("custom_endpoint_path", "auto")))
+            if pinned_protocol:
+                saved["custom_protocol"] = pinned_protocol
+                saved["api_mode"] = "anthropic" if pinned_protocol == "anthropic" else "chat"
+                # Older /connect versions could learn x-api-key from a wrong
+                # protocol probe. Re-detect authentication once with the
+                # corrected wire format.
+                saved["custom_auth_mode"] = "auto"
+        saved["config_version"] = 23
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -445,6 +471,9 @@ class Config:
 
     def mode(self) -> str:
         if self.data.get("provider") == "custom":
+            routed_protocol = custom_protocol_for_route(str(self.data.get("custom_endpoint_path", "auto")))
+            if routed_protocol:
+                return "anthropic" if routed_protocol == "anthropic" else "chat"
             protocol = str(self.data.get("custom_protocol", "auto")).lower()
             if protocol == "anthropic":
                 return "anthropic"
@@ -486,6 +515,16 @@ class Config:
         if provider not in PROVIDERS:
             raise ValueError(f"Bilinmeyen sağlayıcı: {provider}")
         preset = PROVIDERS[provider]
+        previous_provider = str(self.data.get("provider", ""))
+        previous_base = str(self.data.get("base_url", ""))
+        reusable_freemodel_key = ""
+        if provider == "freemodel" and previous_provider == "custom":
+            try:
+                previous_host = (urllib.parse.urlsplit(previous_base).hostname or "").casefold()
+            except ValueError:
+                previous_host = ""
+            if previous_host in {"api.freemodel.dev", "work.freemodel.dev"}:
+                reusable_freemodel_key = str(self.data.get("custom_api_key", ""))
         self.data.pop("_runtime_api_key_override", None)
         self.data.update({
             "provider": provider, "model": preset["model"], "api_mode": preset["mode"], "base_url": preset["url"], "setup_complete": True,
@@ -495,6 +534,10 @@ class Config:
             "backup_active": False,
             "backup_primary_state": {},
         })
+        if reusable_freemodel_key and not self.data.get("freemodel_api_key"):
+            # Reuse only a key the user already saved for a FreeModel host.
+            # The secret remains local and is never printed or copied to docs.
+            self.data["freemodel_api_key"] = reusable_freemodel_key
         self.save()
 
     def masked_key(self) -> str:
@@ -540,7 +583,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -1085,6 +1128,17 @@ def write_crash_log(cfg: Config | None, exc: BaseException) -> pathlib.Path:
     return path
 
 
+def watchdog_enabled(cfg: Config) -> bool:
+    return bool(cfg.data.get("watchdog_enabled", True))
+
+
+def api_transport_timeout(cfg: Config) -> float | None:
+    """Return None for deliberately unbounded API I/O; Ctrl+C remains active."""
+    if not watchdog_enabled(cfg):
+        return None
+    return max(0.05, float(cfg.data.get("timeout_seconds", 100)))
+
+
 def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | float | None) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
@@ -1144,16 +1198,17 @@ def _request_cancelled() -> bool:
 def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | float | None) -> dict[str, Any]:
     attempts = max(1, min(5, int(cfg.data.get("retry_attempts", 2))))
     backoff = max(0.0, min(10.0, float(cfg.data.get("retry_backoff_seconds", 0.5))))
-    budget = max(1.0, float(cfg.data.get("retry_budget_seconds", 120)))
+    unbounded = not watchdog_enabled(cfg)
+    budget = float("inf") if unbounded else max(1.0, float(cfg.data.get("retry_budget_seconds", 120)))
     deadline = time.monotonic() + budget
     last_error: ApiError | None = None
     for attempt in range(1, attempts + 1):
         if _request_cancelled():
             raise ApiError("İstek gözetmen tarafından iptal edildi; gereksiz tekrar gönderilmedi.")
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if not unbounded and remaining <= 0:
             raise ApiError(f"API tekrar bütçesi {budget:g} saniyede tükendi.") from last_error
-        effective_timeout = min(float(timeout), remaining) if timeout is not None else remaining
+        effective_timeout = None if unbounded else min(float(timeout), remaining) if timeout is not None else remaining
         try:
             return post_json(url, headers, payload, effective_timeout)
         except ApiError as exc:
@@ -1366,6 +1421,24 @@ def consume_responses_stream(events, on_text: Callable[[str], None]) -> dict[str
             final_response = event.get("response") or {}
             usage.update(final_response.get("usage") or {})
     if final_response is not None:
+        # Some compatible gateways stream valid visible text, then send a
+        # minimal response.completed object without `output`. Preserve the
+        # deltas instead of turning that success into an empty final result.
+        output = list(final_response.get("output") or [])
+        has_output_text = any(
+            item.get("type") == "message" and any(
+                part.get("type") == "output_text" and str(part.get("text", "")).strip()
+                for part in item.get("content", []) or []
+            )
+            for item in output
+        )
+        if text_parts and not has_output_text:
+            output.insert(0, {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "".join(text_parts)}],
+            })
+            final_response["output"] = output
         return final_response
     output = [items[index] for index in sorted(items)]
     if text_parts and not any(item.get("type") == "message" for item in output):
@@ -1378,16 +1451,17 @@ def stream_or_json(
     endpoint: str,
     headers: dict[str, str],
     payload: dict[str, Any],
-    timeout: int,
+    timeout: int | float | None,
     consumer: Callable[[Any, Callable[[str], None]], dict[str, Any]],
     on_text: Callable[[str], None],
 ) -> dict[str, Any]:
     """Use SSE when supported, then safely fall back before any text was emitted."""
     emitted = False
     progress_callback = getattr(on_text, "_forgecode_touch", None)
-    socket_timeout = max(
+    socket_timeout = None if not watchdog_enabled(cfg) else max(
         0.05,
-        min(float(timeout), float(cfg.data.get("stream_idle_timeout_seconds", 75))),
+        min(float(timeout) if timeout is not None else float("inf"),
+            float(cfg.data.get("stream_idle_timeout_seconds", 75))),
     )
 
     def emit(delta: str) -> None:
@@ -1416,7 +1490,7 @@ def stream_or_json(
         return post_json_with_retry(cfg, endpoint, headers, fallback_payload, timeout)
 
 
-def get_json(url: str, headers: dict[str, str], timeout: int) -> Any:
+def get_json(url: str, headers: dict[str, str], timeout: int | float | None) -> Any:
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": f"ForgeCode/{VERSION} (Python API Client)", **headers},
@@ -1554,7 +1628,7 @@ def fetch_models(cfg: Config) -> list[str]:
     detected_url = urls[0]
     for url in urls:
         try:
-            data = get_json(url, provider_headers(cfg), int(cfg.data["timeout_seconds"]))
+            data = get_json(url, provider_headers(cfg), api_transport_timeout(cfg))
             detected_url = url
             break
         except ApiError as exc:
@@ -1731,6 +1805,8 @@ def record_provider_latency(cfg: Config, total_seconds: float, first_response_se
 
 def request_watchdog_limits(cfg: Config, read_only: bool = False) -> tuple[float, float, float]:
     """Return first-response, stream-idle, and total limits for one model call."""
+    if not watchdog_enabled(cfg):
+        return float("inf"), float("inf"), float("inf")
     transport = max(0.05, float(cfg.data.get("timeout_seconds", 100)))
     first = max(0.05, min(float(cfg.data.get("first_response_timeout_seconds", 60)), transport))
     idle = max(0.05, min(float(cfg.data.get("stream_idle_timeout_seconds", 75)), transport))
@@ -1757,6 +1833,10 @@ def record_request_watchdog(cfg: Config, reason: str, elapsed_seconds: float) ->
 
 
 def request_watchdog_status_text(cfg: Config) -> str:
+    if not watchdog_enabled(cfg):
+        if cfg.data.get("ui_language") == "en":
+            return "Request watchdog: off · no API time limit · Ctrl+C still cancels"
+        return "İstek gözetmeni: kapalı · API süre sınırı yok · Ctrl+C durdurur"
     first, idle, total = request_watchdog_limits(cfg)
     stats = cfg.data.get("request_watchdog_stats", {})
     last = ""
@@ -1794,9 +1874,17 @@ def provider_latency_text(cfg: Config, provider: str, rank: int | None = None) -
 def stream_status_text(cfg: Config) -> str:
     enabled = bool(cfg.data.get("streaming_enabled", True))
     if not enabled:
+        if not watchdog_enabled(cfg):
+            if cfg.data.get("ui_language") == "en":
+                return "Live response off · no normal API timeout · Ctrl+C cancels"
+            return "Canlı yanıt kapalı · normal API zaman aşımı yok · Ctrl+C durdurur"
         if cfg.data.get("ui_language") == "en":
             return f"Live response off · normal API timeout: {int(cfg.data.get('timeout_seconds', 100))} sec"
         return f"Canlı yanıt kapalı · normal API timeout: {int(cfg.data.get('timeout_seconds', 100))} sn"
+    if not watchdog_enabled(cfg):
+        if cfg.data.get("ui_language") == "en":
+            return "Live response on · no first/idle/total timeout · Ctrl+C cancels"
+        return "Canlı yanıt açık · ilk/durgun/toplam zaman aşımı yok · Ctrl+C durdurur"
     mode = cfg.mode()
     protocol = "Anthropic SSE" if mode == "anthropic" else "OpenAI Responses SSE" if mode == "responses" else "OpenAI Chat SSE"
     stats = cfg.data.get("latency_stats", {})
@@ -1959,7 +2047,7 @@ class AnthropicProvider(Provider):
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             payload["temperature"] = 1
         endpoint = request_endpoint(self.cfg, "/v1/messages")
-        request_timeout = int(cfg["timeout_seconds"])
+        request_timeout = api_transport_timeout(self.cfg)
         streaming = bool(cfg.get("streaming_enabled", True) and on_text)
         if streaming:
             payload["stream"] = True
@@ -2043,6 +2131,8 @@ class AnthropicProvider(Provider):
             native_block.pop("function", None)
             native_block.pop("_forgecode_parse_error", None)
         u = data.get("usage", {})
+        if not text.strip() and not calls:
+            raise ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
         usage = Usage(int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)), int(u.get("cache_read_input_tokens", 0)), 1)
         return ModelReply(text, calls, usage, native_content, str(data.get("stop_reason") or ""))
 
@@ -2071,9 +2161,9 @@ class OpenAIProvider(Provider):
         headers = {"Authorization": f"Bearer {self.cfg.key()}"}
         if cfg.get("streaming_enabled", True) and on_text:
             payload["stream"] = True
-            data = stream_or_json(self.cfg, endpoint, headers, payload, cfg["timeout_seconds"], consume_responses_stream, on_text)
+            data = stream_or_json(self.cfg, endpoint, headers, payload, api_transport_timeout(self.cfg), consume_responses_stream, on_text)
         else:
-            data = post_json_with_retry(self.cfg, endpoint, headers, payload, cfg["timeout_seconds"])
+            data = post_json_with_retry(self.cfg, endpoint, headers, payload, api_transport_timeout(self.cfg))
         output = data.get("output", [])
         texts: list[str] = []
         calls: list[dict[str, Any]] = []
@@ -2090,6 +2180,8 @@ class OpenAIProvider(Provider):
                     parse_error = "tool arguments were cut off or are not valid JSON"
                 calls.append({"id": item["call_id"], "name": item["name"], "arguments": args, "parse_error": parse_error})
         u = data.get("usage", {})
+        if not any(text.strip() for text in texts) and not calls:
+            raise ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
         usage = Usage(int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)), int(u.get("input_tokens_details", {}).get("cached_tokens", 0)), 1)
         incomplete = data.get("incomplete_details") or {}
         finish_reason = str(incomplete.get("reason") or data.get("status") or "")
@@ -2137,8 +2229,8 @@ class OpenAIChatProvider(Provider):
 
         def send(request_headers: dict[str, str]) -> dict[str, Any]:
             if streaming and on_text:
-                return stream_or_json(self.cfg, endpoint, request_headers, payload, cfg["timeout_seconds"], consume_chat_stream, on_text)
-            return post_json_with_retry(self.cfg, endpoint, request_headers, payload, cfg["timeout_seconds"])
+                return stream_or_json(self.cfg, endpoint, request_headers, payload, api_transport_timeout(self.cfg), consume_chat_stream, on_text)
+            return post_json_with_retry(self.cfg, endpoint, request_headers, payload, api_transport_timeout(self.cfg))
 
         if cfg["provider"] == "custom":
             selected_auth = str(cfg.get("custom_auth_mode", "auto"))
@@ -2181,6 +2273,8 @@ class OpenAIChatProvider(Provider):
                 args = {}
                 parse_error = "tool arguments were cut off or are not valid JSON"
             calls.append({"id": item.get("id", uuid.uuid4().hex), "name": function.get("name", ""), "arguments": args, "parse_error": parse_error})
+        if not str(content).strip() and not calls:
+            raise ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
         u = data.get("usage", {}) or {}
         usage = Usage(
             int(u.get("prompt_tokens", 0)),
@@ -6317,6 +6411,7 @@ class Agent:
         first_response_seconds: float | None = None
         last_progress_at = started
         first_limit, idle_limit, total_limit = request_watchdog_limits(self.cfg, self.read_only)
+        unbounded_request = not watchdog_enabled(self.cfg)
 
         def touch_progress() -> None:
             nonlocal first_response_seconds, last_progress_at
@@ -6348,6 +6443,10 @@ class Agent:
             while True:
                 try:
                     reply = future.result(timeout=0.1)
+                    if not reply.text.strip() and not reply.tool_calls and self.last_streamed_reply.strip():
+                        # The visible stream is the canonical fallback when a
+                        # proxy returns an empty/minimal completion envelope.
+                        reply.text = self.last_streamed_reply.strip()
                     total_seconds = time.monotonic() - started
                     if not self.read_only:
                         record_provider_latency(self.cfg, total_seconds, first_response_seconds)
@@ -6374,7 +6473,10 @@ class Agent:
                         self._emit_activity(f"{label}: istek gözetmeni kesti · {watchdog_reason} · {elapsed:.1f} sn")
                         raise ApiError(watchdog_message)
                     if now >= next_heartbeat:
-                        if stream_sink:
+                        if unbounded_request:
+                            stream_state = "ilk parça bekleniyor" if first_response_seconds is None else "canlı yanıt sürüyor"
+                            self._emit_activity(f"{label}: {stream_state} · {int(elapsed)} sn · zaman aşımı yok · Ctrl+C durdurur")
+                        elif stream_sink:
                             stream_state = "ilk parça bekleniyor" if first_response_seconds is None else "canlı yanıt sürüyor"
                             remaining = max(0, int(total_limit - elapsed))
                             self._emit_activity(f"{label}: {stream_state} · {int(elapsed)} sn · gözetmen {remaining} sn · Ctrl+C durdurur")
@@ -6888,7 +6990,11 @@ class Agent:
         next_heartbeat = started + 5
         future = self._daemon_future(self.provider.request, system, messages, [], max_tokens, False)
         first_limit, _, total_limit = request_watchdog_limits(self.cfg, True)
-        helper_limit = min(first_limit, total_limit, max(5.0, float(self.cfg.data.get("subagent_timeout_seconds", 30))))
+        unbounded_request = not watchdog_enabled(self.cfg)
+        helper_limit = (
+            float("inf") if unbounded_request
+            else min(first_limit, total_limit, max(5.0, float(self.cfg.data.get("subagent_timeout_seconds", 30))))
+        )
         try:
             while True:
                 try:
@@ -6905,8 +7011,11 @@ class Agent:
                         self._emit_activity(f"{label}: gözetmen kesti · {elapsed:.1f} sn")
                         raise ApiError(f"{label} {helper_limit:g} saniye içinde yanıt vermedi; ana işin takılmaması için durduruldu.")
                     if now >= next_heartbeat:
-                        remaining = max(0, int(helper_limit - elapsed))
-                        self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · bütçe {remaining} sn")
+                        if unbounded_request:
+                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · zaman aşımı yok")
+                        else:
+                            remaining = max(0, int(helper_limit - elapsed))
+                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · bütçe {remaining} sn")
                         next_heartbeat = now + 5
         finally:
             if not future.done():
@@ -7058,14 +7167,16 @@ class Agent:
                 child_cfg.data["base_url_origin"] = "profile"
             if role_spec.get("model"):
                 child_cfg.data["model"] = str(role_spec["model"])
-        child_cfg.data["timeout_seconds"] = min(
-            int(self.cfg.data.get("timeout_seconds", 120)),
-            int(self.cfg.data.get("subagent_timeout_seconds", 30)),
-        )
+        if watchdog_enabled(child_cfg):
+            child_cfg.data["timeout_seconds"] = min(
+                int(self.cfg.data.get("timeout_seconds", 120)),
+                int(self.cfg.data.get("subagent_timeout_seconds", 30)),
+            )
         child_cfg.data["auto_subagents"] = False
         child = Agent(self.root, child_cfg, self.goals, lambda _: False, read_only=True, role=role, record_history=False, session_name=self.session_name, sandbox=self.sandbox)
         child.activity_callback = self.activity_callback
-        self._emit_activity(f"{role} alt ajan: başladı · zaman aşımı {child_cfg.data['timeout_seconds']} sn")
+        timeout_label = f"zaman aşımı {child_cfg.data['timeout_seconds']} sn" if watchdog_enabled(child_cfg) else "zaman aşımı yok"
+        self._emit_activity(f"{role} alt ajan: başladı · {timeout_label}")
         role_focus = {
             "design": "Focus on UX, visual system, accessibility, responsive behavior, and information architecture.",
             "backend": "Focus on data flow, APIs, persistence, security boundaries, performance, and failure handling.",
@@ -7263,6 +7374,7 @@ class Agent:
         completion_nudges = 0
         power_validation_nudges = 0
         engine_validation_nudges = 0
+        final_result_nudges = 0
         process_completion_nudges = 0
         mutation_seen = False
         configuration_changed = False
@@ -7448,10 +7560,27 @@ class Agent:
                     )
                     self._emit_activity("Doğrulama kapısı: eksik kanıt · " + "; ".join(actionable_missing)[:140])
                     continue
-                answer = final_text or "Tamamlandı."
+                if not final_text.strip() and not actionable_missing and final_result_nudges < 1:
+                    final_result_nudges += 1
+                    self._append_user(
+                        "FINAL RESPONSE REQUIRED: The previous turn returned no user-visible final result. "
+                        "Do not repeat tools or private reasoning. Give one concise final answer that states the actual outcome, "
+                        "changed files, checks performed, and any remaining limitation."
+                    )
+                    self._emit_activity("Nihai yanıt eksik: modelden bir kez görünür sonuç isteniyor")
+                    continue
+                if final_text.strip():
+                    answer = final_text
+                elif changed_files and not actionable_missing:
+                    answer = "İşlem tamamlandı ve mevcut değişiklikler doğrulandı."
+                else:
+                    answer = "Model bu istek için görünür bir nihai sonuç üretmedi. İstek tamamlanmış sayılmadı."
                 if changed_files:
                     answer += "\n\nDeğişen dosyalar: " + ", ".join(changed_files[:20])
-                finalize_execution(final_text, changed_files)
+                # Verify the exact response shown to the user. Previously the
+                # fallback was displayed but the empty pre-fallback text was
+                # verified, producing a contradictory warning.
+                finalize_execution(answer, changed_files)
                 if self.last_execution_report.get("missing_evidence"):
                     answer += "\n\nDoğrulama uyarısı: " + "; ".join(self.last_execution_report["missing_evidence"])
                 if self.sandbox.active() and changed_files:
@@ -7717,7 +7846,7 @@ HELP = """Komutlar
   /profile <işlem> <ad>  save, use veya delete bağlantı profili
   /backup <işlem>        Kota dolunca kullanılacak yedek API'yi yönet
   /retry [sayı] [sn]     Geçici API hatası tekrar politikası
-  /watchdog [profil]     Takılan istek sınırları: fast, balanced veya patient
+  /watchdog [profil]     İstek süre sınırı: off, fast, balanced veya patient
   /goal <hedef>          Hedefi ekle, uygula ve doğrulanana dek ilerle
   /goals                 Hedefleri listele
   /done <id|sıra>        Hedefi tamamla
@@ -7795,7 +7924,7 @@ HELP_EN = """Commands
   /profile <action>      Save, use, or delete a connection profile
   /backup <action>       Manage quota/rate-limit backup API failover
   /retry [count] [sec]   Configure transient API retry policy
-  /watchdog [profile]    Stalled-request limits: fast, balanced, or patient
+  /watchdog [profile]    Request time limits: off, fast, balanced, or patient
   /goal <goal>           Add, execute, and verify a persistent goal
   /resume [id|no]        Resume an active goal
   /goals                 List goals
@@ -9577,9 +9706,10 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             cfg.select_provider("custom")
             cfg.set_value("base_url", base_url)
             cfg.set_value("custom_auth_mode", "auto")
-            cfg.set_value("custom_protocol", "auto")
+            route_protocol = custom_protocol_for_route(requested_route)
+            cfg.set_value("custom_protocol", route_protocol or "auto")
             cfg.set_value("custom_endpoint_path", requested_route)
-            cfg.set_value("api_mode", "chat")
+            cfg.set_value("api_mode", "anthropic" if route_protocol == "anthropic" else "chat")
             print(f"Base URL kaydedildi: {cfg.base_url()} (kaynak: {cfg.base_url_source()})")
             print(f"Route secimi: {requested_route} - daha sonra /route ile degistirebilirsiniz")
             key = getpass.getpass("Özel API anahtarı (yoksa boş bırakın): ").strip()
@@ -9591,7 +9721,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             models = show_models(cfg, limit=40)
             if models:
                 cfg.set_value("model", models[0])
-                first_protocol = preferred_custom_protocol(models[0])
+                first_protocol = route_protocol or preferred_custom_protocol(models[0])
                 second_protocol = "openai" if first_protocol == "anthropic" else "anthropic"
                 cfg.set_value("custom_protocol", first_protocol)
                 cfg.set_value("api_mode", "anthropic" if first_protocol == "anthropic" else "chat")
@@ -9606,6 +9736,10 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                         text, _, seconds = agent.test_api()
                     print(f"{C.GREEN}Bağlantı hazır.{C.RESET} {seconds:.2f}s · protokol: {first_label} · model: {cfg.data['model']} · auth: {cfg.data['custom_auth_mode']} · yanıt: {text!r}")
                 except ApiError as first_exc:
+                    if route_protocol:
+                        print(f"{C.RED}Açık API yolu {first_label} protokolünü zorunlu kılıyor ve test başarısız oldu.{C.RESET}")
+                        print(f"Yol ve protokol değiştirilmedi. Son hata: {first_exc}")
+                        return True
                     if custom_probe_should_stop(first_exc):
                         print(f"{C.YELLOW}Bağlantı ve API anahtarı kaydedildi; servis geçici olarak kullanılamıyor.{C.RESET}")
                         print(f"Gereksiz istek ve hız sınırı oluşturmamak için alternatif modeller ile {second_label} protokolü denenmedi.")
@@ -9636,6 +9770,12 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f"Özel API protokolü: {cfg.data.get('custom_protocol', 'auto')} · kullanım: /protocol auto|openai|anthropic")
         else:
             protocol = parts[1].lower()
+            pinned_protocol = custom_protocol_for_route(str(cfg.data.get("custom_endpoint_path", "auto")))
+            if pinned_protocol and protocol not in {"auto", pinned_protocol}:
+                print(f"{C.RED}Seçili API yolu {pinned_protocol} protokolünü zorunlu kılıyor. Önce /route değiştirin.{C.RESET}")
+                return True
+            if protocol == "auto" and pinned_protocol:
+                protocol = pinned_protocol
             cfg.set_value("custom_protocol", protocol)
             cfg.set_value("api_mode", "anthropic" if protocol == "anthropic" else "chat")
             cfg.set_value("custom_auth_mode", "auto")
@@ -9834,9 +9974,14 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         }
         if profile in {"status", "durum"}:
             print(request_watchdog_status_text(cfg))
-            print("Profiller: /watchdog fast|balanced|patient")
+            print("Profiller: /watchdog off|fast|balanced|patient")
+        elif profile in {"off", "unlimited", "kapalı", "kapali"}:
+            cfg.set_value("watchdog_enabled", "false")
+            print(f"{C.GREEN}İstek gözetmeni kapatıldı.{C.RESET} API süre sınırı yok; Ctrl+C çalışmaya devam eder.")
+            print(request_watchdog_status_text(cfg))
         elif profile in profiles:
             first, idle, total, retry_budget = profiles[profile]
+            cfg.set_value("watchdog_enabled", "true")
             cfg.set_value("first_response_timeout_seconds", str(first))
             cfg.set_value("stream_idle_timeout_seconds", str(idle))
             cfg.set_value("request_total_timeout_seconds", str(total))
@@ -9844,7 +9989,7 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f"{C.GREEN}İstek gözetmeni profili: {profile}{C.RESET}")
             print(request_watchdog_status_text(cfg))
         else:
-            print("Kullanım: /watchdog fast|balanced|patient|status")
+            print("Kullanım: /watchdog off|fast|balanced|patient|status")
     elif cmd == "/language":
         if len(parts) < 2:
             current = "English" if cfg.data.get("ui_language") == "en" else "Türkçe"

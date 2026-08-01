@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current release: **v7.6.1**. ForceSandbox now uses a dependency-free Windows AppContainer engine by default, keeps AI work in a private project copy, and transfers only verified, conflict-free changes back to the real project.
+Current release: **v7.6.5**. `/watchdog off` removes API first-response, idle-stream, total-call, socket, retry-budget, helper, and subagent time limits while preserving responsive Ctrl+C cancellation.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -14,6 +14,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - One Python file and no third-party runtime dependencies.
 - Anthropic Messages, OpenAI Responses, and OpenAI-compatible Chat Completions transports.
 - More than twenty provider presets, local Ollama/LM Studio support, and configurable custom endpoints.
+- First-class FreeModel support through `https://api.freemodel.dev/v1` with the `auto` router and standard Bearer authentication.
 - Model discovery, connection tests, response-latency history, token accounting, and configurable pricing.
 - Project-scoped file inspection, verified UTF-8 writes, text replacement, search, and command execution.
 - Default-on ForceSandbox isolation with a native Windows AppContainer engine, per-project identities, snapshots, conflict detection, rollback, and controlled transfer.
@@ -103,7 +104,7 @@ Force -p "Review the current changes and run the relevant tests"
 | Language | `/language en`, `/language tr` |
 | Custom APIs | `/connect`, `/protocol`, `/route`, `/endpoint`, `/profiles`, `/profile` |
 | Work modes | `/mode`, `/thinking`, `/temperature`, `/efficiency`, `/power`, `/stream` |
-| Request reliability | `/watchdog fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
+| Request reliability | `/watchdog off\|fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
 | Sandbox | `/sandbox` (arrow-key settings, pending transfer, snapshots, logs, cleanup) |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
