@@ -2,6 +2,31 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.7.0] - 2026-08-01
+
+### Added
+
+- Added ForceFlow, a persistent ordered task engine that automatically detects real project work, lets the selected AI create the task plan, and advances only after the current task passes artifact and Execution Kernel verification.
+- Normal prompts now invoke ForceFlow automatically when task decomposition adds value; one-step work remains one task and simple conversation avoids the planner entirely.
+- Added crash-safe task states in `.forgecode/tasks.json`; interrupted work resumes as paused instead of being lost or falsely marked complete.
+- Added the `apply_edits` model tool for validated multi-file exact replacements with rollback on write failure.
+- Added the `verify_artifacts` model tool for compact non-empty UTF-8, required-text, line-count, size, and SHA-256 evidence.
+- Added evidence-guided autonomous repair rounds. ForceFlow now carries the root objective, failures, and missing verification into a different recovery approach without waiting for another user prompt.
+- Added the deterministic `web_quality_check` tool and final site quality gate for responsive multi-file structure, semantic/accessibility basics, placeholder detection, duplicate IDs, and local asset integrity.
+
+### Changed
+
+- Removed the manual `/flow`, `/task`, `/tasks`, and `/batch` command surface. Sequential planning, retry, recovery, and progression are internal AI-managed behavior.
+- The dashboard and `/status` now expose open, completed, and failed sequential task counts.
+- ForceFlow automatically runs the project's focused test command when a changed task is otherwise missing only post-change check evidence.
+- Every generated subtask now retains the original user objective, preventing website quality requirements from disappearing during task decomposition.
+- Failed final website audits automatically create a bounded internal repair task and are rechecked before ForgeCode can report completion.
+
+### Security
+
+- A failed or unverified internal task blocks every later item. The next user message becomes recovery guidance and ForceFlow retries the blocked item automatically instead of silently advancing.
+- Autonomous recovery continues to honor existing approval and Smart Autopilot safety floors; exhausted repair budgets fail closed instead of looping indefinitely.
+
 ## [7.6.5] - 2026-08-01
 
 ### Added

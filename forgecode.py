@@ -54,7 +54,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.6.5"
+VERSION = "7.7.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -117,6 +117,16 @@ _EN_UI_REPLACEMENTS = (
     ("dosyasını değiştir?", "Modify file?"),
     ("içinde metin değiştirilsin mi?", "Replace text in file?"),
     ("dosya birlikte yazılsın mı?", "Write files together?"),
+    ("ForceFlow görev zinciri", "ForceFlow task chain"),
+    ("Henüz görev yok.", "No tasks yet."),
+    ("Görev sıraya eklendi", "Task queued"),
+    ("ForceFlow başladı; her görev doğrulandıktan sonra sıradakine geçilecek.", "ForceFlow started; each task must pass verification before the next begins."),
+    ("tamamlandı ve doğrulandı", "completed and verified"),
+    ("doğrulanamadı", "could not be verified"),
+    ("Zincir", "The chain"),
+    ("görevinde güvenli biçimde durdu.", "stopped safely at task."),
+    ("Bitiş ölçütü:", "Acceptance:"),
+    ("Dosyalar:", "Files:"),
     ("Smart Autopilot onayı", "Smart Autopilot approval"),
     ("komutlar", "commands"),
     ("genel görünüm", "overview"),
@@ -276,6 +286,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "retry_budget_seconds": 120,
     "max_agent_steps": 0,
     "goal_max_rounds": 3,
+    "flow_max_tasks": 12,
+    "flow_max_rounds": 3,
+    "flow_repair_rounds": 3,
+    "flow_quality_gate": True,
     "retry_attempts": 2,
     "retry_backoff_seconds": 0.5,
     "max_tool_output_chars": 30000,
@@ -558,12 +572,16 @@ class Config:
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "goal_max_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
+        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
             value: Any = int(raw)
-            if value <= 0:
+            if value < 0 or (value == 0 and name != "flow_repair_rounds"):
                 raise ValueError("Değer sıfırdan büyük olmalı")
             if name == "retry_attempts" and value > 5:
                 raise ValueError("retry_attempts 1 ile 5 arasında olmalı")
+            if name == "flow_max_tasks" and value > 50:
+                raise ValueError("flow_max_tasks 1 ile 50 arasında olmalı")
+            if name in {"flow_max_rounds", "flow_repair_rounds"} and value > 10:
+                raise ValueError(f"{name} en fazla 10 olabilir")
             watchdog_maximums = {
                 "first_response_timeout_seconds": 180,
                 "stream_idle_timeout_seconds": 300,
@@ -583,7 +601,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -2021,6 +2039,23 @@ def tool_call_validation_error(name: str, raw_arguments: Any, parse_error: str =
         for index, item in enumerate(files, 1):
             if not isinstance(item, dict) or not str(item.get("path", "")).strip() or "content" not in item:
                 return f"write_files item {index} is incomplete; resend complete path/content fields."
+    elif name == "apply_edits":
+        edits = args.get("edits", args.get("changes"))
+        if not isinstance(edits, list) or not edits:
+            return "apply_edits requires a non-empty edits array."
+        for index, item in enumerate(edits, 1):
+            if not isinstance(item, dict):
+                return f"apply_edits item {index} must be an object."
+            if not str(item.get("path", "")).strip() or not str(item.get("old_text", "")):
+                return f"apply_edits item {index} requires path and non-empty old_text."
+            if "new_text" not in item:
+                return f"apply_edits item {index} requires the complete new_text field."
+    elif name == "verify_artifacts":
+        paths = args.get("paths", args.get("files"))
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list) or not paths or any(not str(path).strip() for path in paths):
+            return "verify_artifacts requires a non-empty paths array."
     return ""
 
 
@@ -2367,6 +2402,9 @@ TOOL_SCHEMAS = [
     {"name": "write_file", "description": "Create or completely replace a project file. Requires user approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}},
     {"name": "write_files", "description": "Create or replace multiple related project files in one atomic-looking batch with one user approval. Prefer this for multi-file websites and scaffolds.", "input_schema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}}}, "required": ["files"], "additionalProperties": False}},
     {"name": "replace_text", "description": "Replace exact text in one project file. Fails if old_text is absent or ambiguous.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False}},
+    {"name": "apply_edits", "description": "Apply 1-30 exact text edits across one or more files as one validated transaction. Every old_text is checked before any file changes; if one edit is missing or ambiguous, nothing is written. Prefer this over repeated replace_text calls for coordinated refactors.", "input_schema": {"type": "object", "properties": {"edits": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False}}}, "required": ["edits"], "additionalProperties": False}},
+    {"name": "verify_artifacts", "description": "Deterministically verify that project files exist, are non-empty UTF-8 text, and optionally contain required text. Returns size, line count, and SHA-256 evidence without exposing full contents.", "input_schema": {"type": "object", "properties": {"paths": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "string"}}, "required_text": {"type": "object", "additionalProperties": {"type": "string"}}}, "required": ["paths"], "additionalProperties": False}},
+    {"name": "web_quality_check", "description": "Run ForceCode's deterministic static-site quality gate. It checks project structure, responsive CSS, accessibility basics, placeholders, duplicate IDs, and local asset integrity. Set require_multifile for a production-quality HTML/CSS/JS structure.", "input_schema": {"type": "object", "properties": {"require_multifile": {"type": "boolean"}}, "additionalProperties": False}},
     {"name": "run_command", "description": "Run a non-interactive shell command in the project. For programs that call input() or prompt for answers, pass newline-separated responses in stdin; otherwise stdin is closed so the process cannot block waiting for terminal input. Requires approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated input sent to the process, for example: Alice\n42\ny\n"}}, "required": ["command"], "additionalProperties": False}},
     {"name": "test_project", "description": "Run the project's most relevant available test or validation. Auto-detects Python, Node, Go, Rust, .NET, Maven, Gradle, or static web projects when command is omitted. Pass stdin for scripted input, or set interactive=true to keep the process open and continue with process_input/process_status. Returns SKIP instead of inventing a test.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated answers for a non-interactive test command."}, "interactive": {"type": "boolean"}}, "additionalProperties": False}},
     {"name": "start_process", "description": "Start a persistent interactive project command. Output is streamed into ForgeCode activity and can be read with process_status. Use process_input when the program asks a question, then stop_process if it should not remain running.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"], "additionalProperties": False}},
@@ -2386,6 +2424,9 @@ TOOL_NAME_MAP = {
     "writefile": "write_file",
     "writefiles": "write_files",
     "replacetext": "replace_text",
+    "applyedits": "apply_edits",
+    "verifyartifacts": "verify_artifacts",
+    "webqualitycheck": "web_quality_check",
     "runcommand": "run_command",
     "testproject": "test_project",
     "startprocess": "start_process",
@@ -2477,6 +2518,19 @@ def normalize_tool_arguments(name: str, args: Any) -> dict[str, Any]:
             "new_text": str(source.get("new_text") or source.get("new_string") or ""),
             "replace_all": bool(source.get("replace_all", False)),
         }
+    if name == "apply_edits":
+        return {"edits": source.get("edits", source.get("changes", []))}
+    if name == "verify_artifacts":
+        paths = source.get("paths", source.get("files", []))
+        if isinstance(paths, str):
+            paths = [paths]
+        required_text = source.get("required_text", source.get("contains", {}))
+        return {
+            "paths": paths if isinstance(paths, list) else [],
+            "required_text": required_text if isinstance(required_text, dict) else {},
+        }
+    if name == "web_quality_check":
+        return {"require_multifile": bool(source.get("require_multifile", False))}
     if name == "run_command":
         result = {"command": str(source.get("command") or source.get("cmd") or "")}
         timeout = source.get("timeout_seconds", source.get("timeout"))
@@ -4506,9 +4560,20 @@ class StaticWebAudit(html.parser.HTMLParser):
         self.duplicate_ids: set[str] = set()
         self.images_without_alt = 0
         self.inputs_without_hint = 0
+        self.tags: collections.Counter[str] = collections.Counter()
+        self.has_viewport = False
+        self.html_language = ""
+        self.stylesheets: list[str] = []
+        self.scripts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = str(tag).lower()
         values = {str(key).lower(): str(value or "") for key, value in attrs}
+        self.tags[tag] += 1
+        if tag == "html":
+            self.html_language = values.get("lang", "").strip()
+        if tag == "meta" and values.get("name", "").casefold() == "viewport" and values.get("content", "").strip():
+            self.has_viewport = True
         element_id = values.get("id", "").strip()
         if element_id:
             if element_id in self.ids:
@@ -4518,6 +4583,10 @@ class StaticWebAudit(html.parser.HTMLParser):
             self.references.append(values["src"])
         if tag == "link" and values.get("href"):
             self.references.append(values["href"])
+            if "stylesheet" in values.get("rel", "").casefold():
+                self.stylesheets.append(values["href"])
+        if tag == "script" and values.get("src"):
+            self.scripts.append(values["src"])
         if tag == "img" and "alt" not in values:
             self.images_without_alt += 1
         if tag in {"input", "textarea", "select"}:
@@ -4525,6 +4594,31 @@ class StaticWebAudit(html.parser.HTMLParser):
             described = any(values.get(key, "").strip() for key in ("id", "aria-label", "aria-labelledby", "placeholder", "title"))
             if input_type != "hidden" and not described:
                 self.inputs_without_hint += 1
+
+
+@dataclass
+class WebQualityReport:
+    passed: bool
+    score: int
+    blockers: list[str]
+    warnings: list[str]
+    html_files: int
+    css_files: int
+    js_files: int
+
+    def render(self) -> str:
+        prefix = "OK" if self.passed else "ERROR"
+        lines = [
+            f"{prefix}: Web kalite kapısı {'geçti' if self.passed else 'başarısız'} · skor {self.score}/100",
+            f"Yapı: {self.html_files} HTML · {self.css_files} CSS · {self.js_files} JS",
+        ]
+        if self.blockers:
+            lines.append("Düzeltilmesi gerekenler:")
+            lines.extend("- " + item for item in self.blockers[:30])
+        if self.warnings:
+            lines.append("Kalite uyarıları:")
+            lines.extend("- " + item for item in self.warnings[:20])
+        return "\n".join(lines)
 
 
 @dataclass
@@ -4825,6 +4919,96 @@ class WorkspaceTools:
         self._write_utf8_verified(file, content.replace(old_text, new_text, -1 if replace_all else 1))
         return f"OK: {local_path} güncellendi."
 
+    def tool_apply_edits(self, edits: list[dict[str, Any]]) -> str:
+        """Apply exact multi-file edits only after the complete transaction validates."""
+        if not isinstance(edits, list) or not 1 <= len(edits) <= 30:
+            raise ValueError("Bir işlemde 1-30 düzenleme olmalı")
+        originals: dict[pathlib.Path, str] = {}
+        prepared: dict[pathlib.Path, str] = {}
+        labels: list[str] = []
+        for index, item in enumerate(edits, 1):
+            if not isinstance(item, dict):
+                raise ValueError(f"Düzenleme {index} nesne olmalı")
+            raw_path = str(item.get("path", "")).strip()
+            old_text = str(item.get("old_text", ""))
+            new_text = str(item.get("new_text", ""))
+            replace_all = bool(item.get("replace_all", False))
+            if not raw_path or not old_text:
+                raise ValueError(f"Düzenleme {index} için path ve boş olmayan old_text gerekli")
+            target = self.safe_file_path(raw_path)
+            if not target.is_file():
+                raise ValueError(f"Düzenlenecek dosya bulunamadı: {raw_path}")
+            if target not in originals:
+                originals[target] = target.read_text(encoding="utf-8")
+                prepared[target] = originals[target]
+            current = prepared[target]
+            count = current.count(old_text)
+            if count < 1 or (count != 1 and not replace_all):
+                raise ValueError(
+                    f"Düzenleme {index} ({raw_path}) old_text eşleşmesi geçersiz; bulunan: {count}"
+                )
+            prepared[target] = current.replace(old_text, new_text, -1 if replace_all else 1)
+            labels.append(target.relative_to(self.root).as_posix())
+        unique_labels = list(dict.fromkeys(labels))
+        details = "\n\n".join(
+            f"path={str(item.get('path', ''))}\nold={redact_sensitive(str(item.get('old_text', ''))[:1200])}"
+            f"\nnew={redact_sensitive(str(item.get('new_text', ''))[:1200])}"
+            for item in edits[:12]
+        )
+        approved, rejection = self._authorize(
+            "write",
+            f"{len(edits)} düzenleme {len(unique_labels)} dosyaya işlemsel olarak uygulansın mı?",
+            details,
+            bool(self.cfg.data["auto_approve_writes"]),
+        )
+        if not approved:
+            return rejection
+        written: list[pathlib.Path] = []
+        try:
+            for target, content in prepared.items():
+                self._write_utf8_verified(target, content)
+                written.append(target)
+        except Exception:
+            for target in written:
+                try:
+                    self._write_utf8_verified(target, originals[target])
+                except OSError:
+                    pass
+            raise
+        return (
+            f"OK: {len(edits)} düzenleme doğrulandı ve {len(prepared)} dosyaya uygulandı: "
+            + ", ".join(unique_labels)
+        )
+
+    def tool_verify_artifacts(self, paths: list[str], required_text: dict[str, str] | None = None) -> str:
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 50:
+            raise ValueError("Doğrulama için 1-50 dosya yolu gerekli")
+        requirements = required_text if isinstance(required_text, dict) else {}
+        rows: list[str] = []
+        seen: set[pathlib.Path] = set()
+        for raw_path in paths:
+            target = self.safe_file_path(str(raw_path))
+            if target in seen:
+                continue
+            seen.add(target)
+            if not target.is_file():
+                raise ValueError(f"Doğrulama başarısız; dosya yok: {raw_path}")
+            payload = target.read_bytes()
+            if not payload:
+                raise ValueError(f"Doğrulama başarısız; dosya boş: {raw_path}")
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"Doğrulama başarısız; UTF-8 değil: {raw_path}") from exc
+            relative = target.relative_to(self.root).as_posix()
+            expected = str(requirements.get(str(raw_path), requirements.get(relative, "")))
+            if expected and expected not in text:
+                raise ValueError(f"Doğrulama başarısız; beklenen metin bulunamadı: {relative}")
+            digest = hashlib.sha256(payload).hexdigest()[:16]
+            line_count = len(text.splitlines())
+            rows.append(f"{relative} · {len(payload)} bayt · {line_count} satır · sha256:{digest}")
+        return "OK: Artifact doğrulaması geçti\n" + "\n".join(rows)
+
     def _interactive_command(self, command: str) -> tuple[list[str] | str, bool]:
         if os.name == "nt":
             # Avoid PowerShell's native-output buffering for the Python runtime
@@ -5120,6 +5304,107 @@ class WorkspaceTools:
         self._notify_progress(f"Komut tamamlandı · {elapsed:.2f} sn: {activity_label}")
         return f"exit_code=0\nstdin={stdin_note}\n{output}"
 
+    @staticmethod
+    def _is_remote_web_reference(reference: str) -> bool:
+        value = str(reference).strip().casefold()
+        return not value or value.startswith(("#", "data:", "mailto:", "tel:", "javascript:", "http://", "https://", "//"))
+
+    def web_quality_report(self, require_multifile: bool = False) -> WebQualityReport:
+        """Return stable, model-independent quality evidence for a static site."""
+        visible = self.visible_files()
+        html_files = [path for path in visible if path.suffix.lower() in {".html", ".htm"}][:100]
+        css_files = [path for path in visible if path.suffix.lower() == ".css"][:100]
+        js_files = [path for path in visible if path.suffix.lower() == ".js"][:100]
+        blockers: list[str] = []
+        warnings: list[str] = []
+        referenced_css: set[pathlib.Path] = set()
+        referenced_js: set[pathlib.Path] = set()
+        if not html_files:
+            blockers.append("HTML giriş dosyası bulunamadı")
+        if html_files and not any(path.name.casefold() == "index.html" for path in html_files):
+            blockers.append("Statik yayın için index.html bulunamadı")
+        placeholder_pattern = re.compile(
+            r"\b(?:lorem\s+ipsum|replace\s+me|your\s+(?:logo|company|brand)|todo:\s*(?:content|copy)|placeholder\.com)\b",
+            re.IGNORECASE,
+        )
+        for file in html_files:
+            rel = file.relative_to(self.root).as_posix()
+            try:
+                raw = file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                blockers.append(f"{rel}: UTF-8 HTML okunamadı ({type(exc).__name__})")
+                continue
+            audit = StaticWebAudit()
+            try:
+                audit.feed(raw)
+                audit.close()
+            except Exception as exc:
+                blockers.append(f"{rel}: HTML ayrıştırılamadı ({type(exc).__name__})")
+                continue
+            if len(raw.strip()) < 500:
+                blockers.append(f"{rel}: sayfa iskeleti çok küçük/eksik ({len(raw.strip())} karakter)")
+            if not re.search(r"<!doctype\s+html", raw, re.IGNORECASE):
+                blockers.append(f"{rel}: HTML5 doctype eksik")
+            for required_tag in ("html", "head", "body", "main", "h1"):
+                if audit.tags.get(required_tag, 0) < 1:
+                    blockers.append(f"{rel}: semantik <{required_tag}> öğesi eksik")
+            if not audit.has_viewport:
+                blockers.append(f"{rel}: mobil viewport meta etiketi eksik")
+            if not audit.html_language:
+                warnings.append(f"{rel}: html lang değeri eksik")
+            if audit.duplicate_ids:
+                blockers.append(f"{rel}: yinelenen id: {', '.join(sorted(audit.duplicate_ids)[:10])}")
+            if audit.images_without_alt:
+                blockers.append(f"{rel}: alt niteliği olmayan {audit.images_without_alt} görsel")
+            if audit.inputs_without_hint:
+                blockers.append(f"{rel}: erişilebilir adı/ipucu olmayan {audit.inputs_without_hint} form alanı")
+            if placeholder_pattern.search(raw):
+                blockers.append(f"{rel}: kullanıcıya gösterilen placeholder içerik bulundu")
+            for reference in audit.references:
+                if self._is_remote_web_reference(reference) or any(marker in reference for marker in ("{{", "}}", "<%", "%>")):
+                    continue
+                clean = urllib.parse.unquote(urllib.parse.urlsplit(reference).path)
+                if not clean:
+                    continue
+                target = (self.root / clean.lstrip("/")) if clean.startswith("/") else (file.parent / clean)
+                try:
+                    resolved = target.resolve()
+                    resolved.relative_to(self.root)
+                except (OSError, ValueError):
+                    blockers.append(f"{rel}: proje dışına çıkan yerel varlık {reference}")
+                    continue
+                if not resolved.is_file():
+                    blockers.append(f"{rel}: eksik yerel varlık {reference}")
+                    continue
+                if resolved.suffix.casefold() == ".css":
+                    referenced_css.add(resolved)
+                elif resolved.suffix.casefold() == ".js":
+                    referenced_js.add(resolved)
+        if require_multifile and html_files:
+            if not css_files or not referenced_css:
+                blockers.append("Profesyonel site yapısı için bağlı ayrı bir CSS dosyası gerekli")
+            if not js_files or not referenced_js:
+                blockers.append("Profesyonel site yapısı için bağlı ayrı bir JavaScript dosyası gerekli")
+        css_text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in css_files)
+        js_text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in js_files)
+        if css_files:
+            if len(css_text.strip()) < 400:
+                blockers.append("CSS görsel sistem oluşturmak için çok küçük")
+            if require_multifile and not re.search(r"@media|@container|clamp\s*\(", css_text, re.IGNORECASE):
+                blockers.append("CSS içinde doğrulanabilir responsive davranış bulunamadı")
+            if not re.search(r":root\s*\{|--[a-z0-9_-]+\s*:", css_text, re.IGNORECASE):
+                warnings.append("CSS tasarım tokenları/değişkenleri kullanmıyor")
+        if require_multifile and js_files and len(js_text.strip()) < 80:
+            blockers.append("JavaScript dosyası gerçek bir etkileşimi doğrulayacak kadar içerik taşımıyor")
+        blockers = list(dict.fromkeys(blockers))
+        warnings = list(dict.fromkeys(warnings))
+        score = max(0, 100 - len(blockers) * 16 - len(warnings) * 4)
+        passed = not blockers and score >= 75
+        return WebQualityReport(passed, score, blockers, warnings, len(html_files), len(css_files), len(js_files))
+
+    def tool_web_quality_check(self, require_multifile: bool = False) -> str:
+        return self.web_quality_report(bool(require_multifile)).render()
+
     def _validate_static_web_project(self) -> str:
         html_files = [path for path in self.visible_files() if path.suffix.lower() in {".html", ".htm"}]
         if not html_files:
@@ -5187,10 +5472,14 @@ class WorkspaceTools:
             try:
                 scripts = json.loads(package.read_text(encoding="utf-8")).get("scripts", {})
                 test_script = str(scripts.get("test", "")).strip()
+                build_script = str(scripts.get("build", "")).strip()
             except (OSError, json.JSONDecodeError, AttributeError):
                 test_script = ""
+                build_script = ""
             if test_script and "no test specified" not in test_script.lower():
                 return run_test("npm test")
+            if build_script:
+                return run_test("npm run build")
         if "go.mod" in lower_names:
             return run_test("go test ./...")
         if "cargo.toml" in lower_names:
@@ -5355,6 +5644,584 @@ def run_goal_until_complete(
     return GoalRunResult(False, rounds, last_answer, changed_files)
 
 
+FLOW_FINAL_STATES = {"completed", "skipped"}
+FLOW_ACTIVE_STATES = {"pending", "running", "paused", "failed"}
+
+
+class TaskQueueStore:
+    """Persistent ordered work queue with crash-safe task state."""
+
+    @staticmethod
+    def _pid_alive(value: Any) -> bool:
+        try:
+            pid = int(value)
+            if pid <= 0:
+                return False
+            if os.name == "nt":
+                # Never use os.kill(pid, 0) on Windows: CPython maps most
+                # signals to TerminateProcess, so a liveness probe can kill
+                # the very ForgeCode process it is checking.
+                process_query_limited_information = 0x1000
+                still_active = 259
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    process_query_limited_information, False, pid
+                )
+                if not handle:
+                    return False
+                try:
+                    exit_code = ctypes.wintypes.DWORD()
+                    if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                        return False
+                    return int(exit_code.value) == still_active
+                finally:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+            os.kill(pid, 0)
+            return True
+        except (OSError, TypeError, ValueError, OverflowError):
+            return False
+
+    def __init__(self, root: pathlib.Path):
+        self.path = root / ".forgecode" / "tasks.json"
+        raw = load_json(self.path, {"version": 2, "tasks": []})
+        source = raw if isinstance(raw, list) else raw.get("tasks", []) if isinstance(raw, dict) else []
+        self.tasks: list[dict[str, Any]] = []
+        recovered = False
+        for item in source:
+            if not isinstance(item, dict) or not str(item.get("title") or item.get("text") or "").strip():
+                continue
+            task = dict(item)
+            task["id"] = str(task.get("id") or uuid.uuid4().hex[:8])[:12]
+            task["title"] = redact_sensitive(str(task.get("title") or task.get("text")).strip())[:4000]
+            task["acceptance"] = redact_sensitive(str(task.get("acceptance") or "").strip())[:2500]
+            task["objective"] = redact_sensitive(str(task.get("objective") or task["title"]).strip())[:4000]
+            task["kind"] = str(task.get("kind") or "task")[:40]
+            task["status"] = str(task.get("status") or "pending").lower()
+            if task["status"] not in FLOW_FINAL_STATES | FLOW_ACTIVE_STATES:
+                task["status"] = "pending"
+            if task["status"] == "running" and not self._pid_alive(task.get("owner_pid")):
+                task["status"] = "paused"
+                task["error"] = "ForgeCode kapandı veya görev kesildi; güvenli biçimde duraklatıldı."
+                task["owner_pid"] = 0
+                recovered = True
+            task.setdefault("flow_id", "manual")
+            task.setdefault("created_at", dt.datetime.now().isoformat(timespec="seconds"))
+            task.setdefault("attempts", 0)
+            task.setdefault("rounds", 0)
+            task.setdefault("repair_attempts", 0)
+            task.setdefault("changed_files", [])
+            task.setdefault("summary", "")
+            task.setdefault("missing_evidence", [])
+            task.setdefault("owner_pid", 0)
+            self.tasks.append(task)
+        if recovered:
+            self.save()
+
+    def save(self) -> None:
+        atomic_json(self.path, {"version": 2, "updated_at": dt.datetime.now().isoformat(timespec="seconds"), "tasks": self.tasks})
+
+    def add(self, title: str, acceptance: str = "", flow_id: str = "manual", objective: str = "", kind: str = "task") -> dict[str, Any]:
+        clean_title = str(title).strip()
+        if not clean_title:
+            raise ValueError("Görev metni boş olamaz")
+        task = {
+            "id": uuid.uuid4().hex[:8],
+            "flow_id": str(flow_id or "manual")[:20],
+            "title": redact_sensitive(clean_title)[:4000],
+            "acceptance": redact_sensitive(str(acceptance).strip())[:2500],
+            "objective": redact_sensitive(str(objective).strip() or clean_title)[:4000],
+            "kind": str(kind or "task")[:40],
+            "status": "pending",
+            "created_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "started_at": "",
+            "finished_at": "",
+            "attempts": 0,
+            "rounds": 0,
+            "repair_attempts": 0,
+            "changed_files": [],
+            "summary": "",
+            "confidence": 0.0,
+            "missing_evidence": [],
+            "error": "",
+            "owner_pid": 0,
+        }
+        self.tasks.append(task)
+        self.save()
+        return task
+
+    def add_many(self, items: list[Any], flow_id: str | None = None, objective: str = "") -> list[dict[str, Any]]:
+        if not isinstance(items, list) or not items:
+            raise ValueError("En az bir görev gerekli")
+        selected_flow = flow_id or uuid.uuid4().hex[:8]
+        added = []
+        for item in items:
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("task") or item.get("text") or ""
+                acceptance = item.get("acceptance") or item.get("done_when") or ""
+            else:
+                title, acceptance = str(item), ""
+            added.append(self.add(str(title), str(acceptance), selected_flow, objective))
+        return added
+
+    def find(self, wanted: str = "") -> dict[str, Any] | None:
+        value = str(wanted).strip()
+        for index, task in enumerate(self.tasks, 1):
+            if not value or value == str(index) or value == str(task.get("id")):
+                return task
+        return None
+
+    def first_unresolved(self) -> dict[str, Any] | None:
+        return next((task for task in self.tasks if task.get("status") not in FLOW_FINAL_STATES), None)
+
+    def update(self, task: dict[str, Any], status: str, **fields: Any) -> None:
+        if status not in FLOW_FINAL_STATES | FLOW_ACTIVE_STATES:
+            raise ValueError(f"Geçersiz görev durumu: {status}")
+        task["status"] = status
+        task["owner_pid"] = os.getpid() if status == "running" else 0
+        task.update(fields)
+        self.save()
+
+    def retry(self, wanted: str = "") -> dict[str, Any] | None:
+        task = self.find(wanted) if wanted else self.first_unresolved()
+        if task is None or task.get("status") in FLOW_FINAL_STATES:
+            return None
+        self.update(task, "pending", error="", missing_evidence=[], finished_at="")
+        return task
+
+    def skip(self, wanted: str = "") -> dict[str, Any] | None:
+        task = self.find(wanted) if wanted else self.first_unresolved()
+        if task is None or task.get("status") in FLOW_FINAL_STATES:
+            return None
+        self.update(task, "skipped", finished_at=dt.datetime.now().isoformat(timespec="seconds"))
+        return task
+
+    def clear_finished(self) -> int:
+        before = len(self.tasks)
+        self.tasks = [task for task in self.tasks if task.get("status") not in FLOW_FINAL_STATES]
+        removed = before - len(self.tasks)
+        if removed:
+            self.save()
+        return removed
+
+    def counts(self) -> dict[str, int]:
+        counts = collections.Counter(str(task.get("status", "pending")) for task in self.tasks)
+        return {name: int(counts.get(name, 0)) for name in ("pending", "running", "paused", "failed", "completed", "skipped")}
+
+    def completed_context(self, before_task: dict[str, Any], limit: int = 3) -> str:
+        try:
+            stop = self.tasks.index(before_task)
+        except ValueError:
+            stop = len(self.tasks)
+        rows = []
+        for task in self.tasks[:stop]:
+            if task.get("status") != "completed":
+                continue
+            summary = redact_sensitive(str(task.get("summary") or "").strip().replace("\n", " "))[:600]
+            files = ", ".join(str(name) for name in task.get("changed_files", [])[:12]) or "none"
+            rows.append(f"- {task.get('title', '')[:180]} | files: {files} | result: {summary}")
+        return "\n".join(rows[-max(1, limit):]) or "- No earlier completed queue task."
+
+
+@dataclass
+class ForceFlowTaskResult:
+    task_id: str
+    completed: bool
+    rounds: int
+    answer: str
+    changed_files: list[str]
+    missing_evidence: list[str]
+    error: str = ""
+
+
+@dataclass
+class ForceFlowRunResult:
+    completed: bool
+    processed: list[ForceFlowTaskResult]
+    blocked_task_id: str = ""
+
+
+def parse_forceflow_plan(raw: str, max_tasks: int = 12) -> list[dict[str, str]]:
+    """Parse compact JSON first, then conservative numbered/bullet text."""
+    text = str(raw).strip()
+    parsed: Any = None
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+    object_match = re.search(r"\{.*\}", text, re.DOTALL)
+    array_match = re.search(r"\[.*\]", text, re.DOTALL)
+    if object_match:
+        candidates.append(object_match.group(0))
+    if array_match:
+        candidates.append(array_match.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            break
+        except (json.JSONDecodeError, TypeError):
+            continue
+    items: Any = parsed.get("tasks", []) if isinstance(parsed, dict) else parsed
+    if not isinstance(items, list):
+        items = []
+    result: list[dict[str, str]] = []
+    for item in items:
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("task") or item.get("text") or "").strip()
+            acceptance = str(item.get("acceptance") or item.get("done_when") or "").strip()
+        else:
+            title, acceptance = str(item).strip(), ""
+        if title:
+            result.append({"title": title[:4000], "acceptance": acceptance[:2500]})
+        if len(result) >= max(1, max_tasks):
+            break
+    if result:
+        return result
+    for line in text.splitlines():
+        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        if not cleaned or cleaned == line.strip() and not re.match(r"^\s*(?:[-*•]|\d+[.)])", line):
+            continue
+        if len(cleaned) >= 4:
+            result.append({"title": cleaned[:4000], "acceptance": ""})
+        if len(result) >= max(1, max_tasks):
+            break
+    return result
+
+
+def create_forceflow_plan(agent: "Agent", objective: str, max_tasks: int) -> list[dict[str, str]]:
+    system = (
+        "You are ForceFlow's task planner. Split one software objective into the smallest useful ordered tasks. "
+        "Each task must produce a testable result, depend only on earlier tasks, and avoid duplicate setup or reporting work. "
+        "If splitting would add no value, return exactly one task; never invent filler tasks. "
+        "Do not reveal chain-of-thought. Return ONLY compact JSON: "
+        '{"tasks":[{"title":"imperative task","acceptance":"objective completion evidence"}]}.'
+    )
+    project_map = "\n".join(sorted(agent.tools.snapshot())[:100])[:3000] or "(empty project)"
+    reply = agent._standalone_request(
+        "ForceFlow planlayıcı",
+        system,
+        f"Maximum tasks: {max_tasks}\nCompact project map:\n{project_map}\n\nSoftware objective:\n{objective}",
+        min(1800, max(600, int(agent.cfg.data.get("max_tokens", 8192)))),
+    )
+    agent.session_usage.add(reply.usage)
+    agent.session_cost_usd += reply.usage.cost(agent.cfg)
+    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage)
+    tasks = parse_forceflow_plan(reply.text, max_tasks)
+    if not tasks:
+        tasks = [{"title": objective.strip(), "acceptance": "The requested outcome is implemented and verified."}]
+    return tasks
+
+
+def _forceflow_artifact_check(agent: "Agent", changed_files: list[str]) -> tuple[bool, str]:
+    existing: list[str] = []
+    removed: list[str] = []
+    for name in changed_files:
+        try:
+            target = agent.tools.safe_file_path(name)
+        except ValueError:
+            continue
+        if target.is_file():
+            existing.append(name)
+        else:
+            removed.append(name)
+    if existing:
+        result = agent.tools.tool_verify_artifacts(existing)
+        if not result.startswith("OK:"):
+            return False, result
+    if not existing and not removed:
+        return False, "No changed artifact could be verified."
+    evidence = []
+    if existing:
+        evidence.append(f"{len(existing)} non-empty UTF-8 artifact")
+    if removed:
+        evidence.append(f"{len(removed)} removed path")
+    return True, ", ".join(evidence)
+
+
+def forceflow_framework_project(agent: "Agent") -> bool:
+    """Recognize frontend frameworks that need their native build gate, not static HTML rules."""
+    root = agent.tools.root
+    package = root / "package.json"
+    if package.is_file():
+        try:
+            raw = json.loads(package.read_text(encoding="utf-8"))
+            names = set(raw.get("dependencies", {})) | set(raw.get("devDependencies", {}))
+            scripts = " ".join(str(value) for value in raw.get("scripts", {}).values()).casefold()
+            if names & {"next", "react", "react-dom", "vue", "nuxt", "svelte", "@sveltejs/kit", "vite", "@angular/core"}:
+                return True
+            if any(marker in scripts for marker in ("next ", "vite", "nuxt", "svelte-kit", "ng build")):
+                return True
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+            pass
+    return any(
+        pathlib.PurePosixPath(name).suffix.casefold() in {".jsx", ".tsx", ".vue", ".svelte"}
+        for name in agent.tools.snapshot()
+    )
+
+
+def forceflow_web_policy(agent: "Agent", objective: str) -> tuple[bool, bool, str]:
+    """Derive one stable website contract from the user's root objective."""
+    lowered = str(objective).casefold()
+    web_request = any(marker in lowered for marker in (
+        "web sitesi", "website", "landing page", "html site", "site yap", "site oluştur", "site olustur",
+        "web page", "webpage",
+    ))
+    if not web_request:
+        return False, False, ""
+    explicit_single = any(marker in lowered for marker in (
+        "tek html", "tek dosya", "single html", "single file", "one html", "one file",
+    )) or agent.cfg.data.get("web_project_mode") == "single"
+    framework_project = forceflow_framework_project(agent)
+    require_multifile = not explicit_single and not framework_project
+    contract = (
+        "WEBSITE QUALITY CONTRACT: preserve the root objective across every subtask. Use real, coherent content; "
+        "semantic HTML; a mobile viewport; accessible controls and image alt attributes; responsive layout; "
+        "a consistent visual system; working local asset links; and no lorem/placeholder output."
+    )
+    if framework_project:
+        contract += " Preserve the detected frontend framework and run its native test/build; do not replace it with a static scaffold."
+    else:
+        contract += " Inspect the rendered structure and run web_quality_check before claiming completion."
+        if require_multifile:
+            contract += " Keep HTML, responsive CSS, and functional JavaScript in linked separate files."
+    return True, require_multifile, contract
+
+
+def run_forceflow_task(
+    agent: "Agent",
+    store: TaskQueueStore,
+    task: dict[str, Any],
+    max_rounds: int,
+    on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    force_web: bool = False,
+    repair_rounds: int = 0,
+) -> ForceFlowTaskResult:
+    title = str(task.get("title", "")).strip()
+    acceptance = str(task.get("acceptance", "")).strip()
+    objective = str(task.get("objective") or title).strip()
+    full_intent = "\n".join(item for item in (objective, title, acceptance) if item)
+    baseline = agent.tools.snapshot()
+    requires_artifacts = agent._requires_artifacts(full_intent) and agent.cfg.data.get("work_mode") != "plan"
+    is_web, require_multifile, web_contract = forceflow_web_policy(agent, objective)
+    quality_repair = str(task.get("kind", "")) == "quality_repair"
+    started = dt.datetime.now().isoformat(timespec="seconds")
+    store.update(
+        task,
+        "running",
+        started_at=started,
+        finished_at="",
+        attempts=int(task.get("attempts", 0)) + 1,
+        error="",
+        missing_evidence=[],
+    )
+    primary_rounds = max(1, int(max_rounds))
+    recovery_rounds = max(0, int(repair_rounds))
+    rounds = primary_rounds + recovery_rounds
+    last_answer = ""
+    changed_files: list[str] = []
+    missing: list[str] = []
+    prior_context = store.completed_context(task)
+    for round_number in range(1, rounds + 1):
+        repairing = round_number > primary_rounds
+        phase = "otomatik onarım" if repairing else "uygulama"
+        agent._emit_activity(f"ForceFlow {task['id']}: {phase} {round_number}/{rounds}")
+        if round_number == 1:
+            prompt = (
+                "FORCEFLOW CURRENT TASK — complete only this queue item. Do not start any later task.\n"
+                f"ROOT OBJECTIVE: {objective}\n"
+                f"TASK: {title}\n"
+                f"ACCEPTANCE: {acceptance or 'Implement the requested outcome and produce deterministic verification evidence.'}\n"
+                f"EARLIER COMPLETED TASKS:\n{prior_context}\n\n"
+                + (web_contract + "\n" if web_contract else "") +
+                "Inspect the current project state, make real changes when required, run the most relevant focused check, "
+                "and report a concise verified result. If verification fails, fix it instead of claiming completion."
+            )
+        elif repairing:
+            prompt = (
+                "FORCEFLOW AUTONOMOUS REPAIR — the verified task is still incomplete. Diagnose before editing and use a "
+                "different approach when the previous one failed. Continue from current files; never discard valid work.\n"
+                f"ROOT OBJECTIVE: {objective}\nTASK: {title}\n"
+                f"ACCEPTANCE: {acceptance or 'Verified requested outcome.'}\n"
+                f"FAILED EVIDENCE: {'; '.join(missing) or 'completion was not proven'}\n"
+                f"PREVIOUS RESULT OR ERROR: {last_answer[-1800:]}\n"
+                + (web_contract + "\n" if web_contract else "") +
+                "Inspect diagnostics and artifacts, identify the root cause, repair it, then rerun the focused deterministic check. "
+                "Do not ask the user unless existing safety policy requires approval."
+            )
+        else:
+            prompt = (
+                "FORCEFLOW RETRY — continue only the current task from the existing project state.\n"
+                f"ROOT OBJECTIVE: {objective}\n"
+                f"TASK: {title}\nACCEPTANCE: {acceptance or 'Verified requested outcome.'}\n"
+                f"MISSING EVIDENCE: {'; '.join(missing) or 'completion was not proven'}\n"
+                f"PREVIOUS RESULT: {last_answer[-1600:]}\n"
+                + (web_contract + "\n" if web_contract else "") +
+                "Inspect what already changed, fix only what remains, and obtain the missing verification. Do not restart the project."
+            )
+        try:
+            if force_web:
+                last_answer = agent.ask(prompt, on_tool=on_tool, force_web=True)
+            else:
+                last_answer = agent.ask(prompt, on_tool=on_tool)
+        except ApiError as exc:
+            safe_error = redact_sensitive(str(exc))[:1200]
+            last_answer = f"API error during ForceFlow: {safe_error}"
+            missing = ["API request failed before verified completion: " + safe_error]
+            store.update(
+                task,
+                "running",
+                rounds=round_number,
+                repair_attempts=max(0, round_number - primary_rounds),
+                error=safe_error,
+                missing_evidence=missing,
+            )
+            agent.record_runtime_error("api_error", exc, {"source": "forceflow_recovery", "task_id": task.get("id")})
+            if round_number < rounds:
+                agent._emit_activity(f"ForceFlow {task['id']}: API hatası kaydedildi, otomatik yeniden denenecek")
+                time.sleep(min(2.0, max(0.0, float(agent.cfg.data.get("retry_backoff_seconds", 0.5)))))
+                continue
+            break
+        changed_files = agent.tools.changed_since(baseline)
+        report = dict(agent.last_execution_report or {})
+        missing = [str(item) for item in report.get("missing_evidence", [])]
+        if not requires_artifacts and not report.get("successful_tools"):
+            missing.append("ForceFlow task has no tool-backed project evidence")
+        artifact_ok = True
+        artifact_note = "not required"
+        if requires_artifacts:
+            artifact_ok, artifact_note = _forceflow_artifact_check(agent, changed_files)
+            if changed_files and artifact_ok:
+                missing = [
+                    item for item in missing
+                    if item not in {"no project artifact was created or changed", "changed artifacts were not inspected after mutation"}
+                ]
+            elif not changed_files:
+                missing.append("ForceFlow observed no project change for this task")
+            elif not artifact_ok:
+                missing.append(artifact_note)
+        needs_check = "no focused post-change check succeeded" in missing
+        if requires_artifacts and changed_files and artifact_ok and needs_check:
+            check_result = agent.tools.tool_test_project(timeout_seconds=int(agent.cfg.data.get("timeout_seconds", 100)))
+            agent.session_store.log_event(
+                "forceflow_verify",
+                "ForceFlow automatic project check",
+                {"task_id": task["id"], "result": redact_sensitive(check_result[:1200])},
+            )
+            if check_result.startswith("exit_code=0") or check_result.startswith("OK:"):
+                missing = [item for item in missing if item != "no focused post-change check succeeded"]
+                artifact_note += "; automatic project check passed"
+            elif not check_result.startswith("SKIP:"):
+                missing.append("automatic project check failed: " + check_result[:500])
+        quality_note = ""
+        if quality_repair and is_web:
+            quality_report = agent.tools.web_quality_report(require_multifile)
+            quality_note = quality_report.render()
+            agent.session_store.log_event(
+                "forceflow_quality",
+                "Deterministic website quality gate",
+                {"task_id": task["id"], "score": quality_report.score, "passed": quality_report.passed,
+                 "blockers": quality_report.blockers[:20]},
+            )
+            if not quality_report.passed:
+                missing.append("website quality gate: " + "; ".join(quality_report.blockers[:12]))
+        missing = list(dict.fromkeys(redact_sensitive(item)[:1200] for item in missing if item))
+        completed = bool(last_answer.strip()) and not goal_answer_is_incomplete(last_answer) and not missing
+        if requires_artifacts:
+            completed = completed and bool(changed_files) and artifact_ok
+        if completed:
+            finished = dt.datetime.now().isoformat(timespec="seconds")
+            store.update(
+                task,
+                "completed",
+                finished_at=finished,
+                rounds=round_number,
+                repair_attempts=max(0, round_number - primary_rounds),
+                changed_files=changed_files[:100],
+                summary=redact_sensitive(last_answer.strip())[-2000:],
+                confidence=float(report.get("confidence", 0.0)),
+                missing_evidence=[],
+                evidence=(artifact_note + (f"; web quality {quality_note.splitlines()[0]}" if quality_note else "")),
+            )
+            agent.session_store.log_event(
+                "forceflow_task",
+                "Sequential task completed and verified",
+                {"task_id": task["id"], "round": round_number, "changed_files": changed_files[:100]},
+            )
+            return ForceFlowTaskResult(str(task["id"]), True, round_number, last_answer, changed_files, [])
+        store.update(
+            task,
+            "running",
+            rounds=round_number,
+            repair_attempts=max(0, round_number - primary_rounds),
+            changed_files=changed_files[:100],
+            summary=redact_sensitive(last_answer.strip())[-2000:],
+            confidence=float(report.get("confidence", 0.0)),
+            missing_evidence=missing,
+        )
+    error = redact_sensitive("; ".join(missing)) or "Görev tamamlanmış olduğunu kanıtlayamadı."
+    store.update(
+        task,
+        "failed",
+        finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+        rounds=rounds,
+        repair_attempts=recovery_rounds,
+        error=error,
+        missing_evidence=missing,
+    )
+    return ForceFlowTaskResult(str(task["id"]), False, rounds, last_answer, changed_files, missing, error)
+
+
+def run_forceflow_queue(
+    agent: "Agent",
+    store: TaskQueueStore,
+    max_rounds: int,
+    on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    force_web: bool = False,
+    repair_rounds: int = 0,
+) -> ForceFlowRunResult:
+    processed: list[ForceFlowTaskResult] = []
+    while True:
+        task = store.first_unresolved()
+        if task is None:
+            return ForceFlowRunResult(True, processed)
+        status = str(task.get("status", "pending"))
+        if status == "paused":
+            store.update(task, "pending", error="")
+        elif status == "running":
+            return ForceFlowRunResult(False, processed, str(task.get("id", "")))
+        elif status == "failed":
+            return ForceFlowRunResult(False, processed, str(task.get("id", "")))
+        try:
+            result = run_forceflow_task(agent, store, task, max_rounds, on_tool, force_web, repair_rounds)
+        except KeyboardInterrupt:
+            store.update(
+                task,
+                "paused",
+                error="Kullanıcı Ctrl+C ile durdurdu; görev ilerlemesi korunuyor.",
+                finished_at="",
+            )
+            raise
+        except SteeringInterrupt:
+            store.update(
+                task,
+                "paused",
+                error="Canlı kullanıcı yönlendirmesi alındı; görev yeni talimatla otomatik sürdürülecek.",
+                finished_at="",
+            )
+            raise
+        except Exception as exc:
+            store.update(
+                task,
+                "failed",
+                error=f"{type(exc).__name__}: {redact_sensitive(str(exc))[:1200]}",
+                finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+            )
+            if isinstance(exc, ApiError):
+                agent.record_runtime_error("api_error", exc, {"source": "forceflow", "task_id": task.get("id")})
+            return ForceFlowRunResult(False, processed, str(task.get("id", "")))
+        processed.append(result)
+        if not result.completed:
+            return ForceFlowRunResult(False, processed, result.task_id)
+
+
 def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool = False) -> str:
     pieces = ["Working directory: /workspace (ForceSandbox isolated copy)" if sandboxed else f"Working directory: {root}"]
     if sandboxed:
@@ -5386,6 +6253,7 @@ def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool
 
 SYSTEM_PROMPT = """You are ForgeCode, a careful senior software engineering agent operating in the user's project.
 Inspect relevant files before changing them. Use tools to make requested changes and run focused verification.
+For coordinated edits to existing files, prefer apply_edits so every exact replacement is validated before any write. Use verify_artifacts for compact existence, UTF-8, required-text, and hash evidence; it complements rather than replaces real tests.
 Use read_file for project file contents; do not invoke cat, type, Get-Content, head, or tail through run_command merely to read a file. If one inspection tool fails, diagnose its returned error instead of cycling through equivalent shell commands.
 After changing code, use test_project when the repository exposes a trustworthy test/build configuration. For a CLI program that asks questions, either pass newline-separated stdin to run_command/test_project or start it interactively, read each prompt with process_status, answer it with process_input, and continue until an exit code is observed. Never leave an interactive process waiting for ForgeCode's own terminal input; stop it when finished.
 Never claim a file was changed or a command passed unless the corresponding tool result confirms it.
@@ -5393,7 +6261,7 @@ Text emitted before tool calls is temporary progress commentary, not the user-fa
 When the user asks why ForgeCode produced an error, asks to fix a recurring runtime problem, or refers to “that/last error”, call get_diagnostics and base the explanation on its recorded evidence instead of guessing. When the user asks to optimize ForgeCode for speed, quality, tokens, context, retries, or behavior, inspect diagnostics and use set_forgecode_setting for appropriate allowlisted changes. Report exact before/after settings. Never claim that configuration changed without a successful tool result.
 For build, create, implement, fix, or edit requests, you MUST use file/command tools and produce real project artifacts before answering. A text-only "done" is a failure.
 write_file automatically creates parent directories; do not run mkdir as a substitute for creating the requested files.
-For a serious website, landing page, or HTML demo, do not put the entire project in one giant HTML file unless the user explicitly requests a single file. Create a maintainable structure such as index.html, assets/css/styles.css, assets/js/main.js, and additional pages/assets when justified. Use write_files when available; otherwise make separate complete write_file calls, one file per call. Use semantic HTML, responsive CSS, accessible navigation and controls, clear visual hierarchy, reusable design tokens, useful interactions, and polished empty/loading/error states where relevant. Verify relative links and avoid placeholder-only output.
+For a serious website, landing page, or HTML demo, do not put the entire project in one giant HTML file unless the user explicitly requests a single file. Preserve an existing frontend framework; otherwise create a maintainable structure such as index.html, assets/css/styles.css, assets/js/main.js, and additional pages/assets when justified. Use write_files when available; otherwise make separate complete write_file calls, one file per call. Use semantic HTML, responsive CSS, accessible navigation and controls, clear visual hierarchy, reusable design tokens, useful interactions, and polished empty/loading/error states where relevant. Verify relative links and avoid placeholder-only output. Run web_quality_check with require_multifile=true for framework-free static sites; run the native test/build for React, Next, Vue, Svelte, or another detected framework.
 When thinking mode is medium or high, raise implementation quality: inspect first, plan the information architecture, create a coherent multi-file structure, cover mobile and desktop, and perform a focused review before declaring completion. Do not inflate the project with meaningless files.
 ForgeCode's orchestrator may already attach reports from up to three AI-chosen, non-overlapping read-only specialists. Use delegate_task autonomously only when another focused investigation still adds value; choose the most relevant specialist role and never merely suggest delegation.
 Keep changes scoped, preserve existing work, and explain the outcome concisely in the user's language.
@@ -5412,7 +6280,7 @@ For implementation requests, use the supplied tools and create real files before
 After edits, use test_project when a real check is available. For programs that request input, pass stdin or use start_process, process_status, process_input, and stop_process stage by stage until exit_code is known.
 Use RELATIVE file paths only (for example index.html or assets/css/styles.css). Never use /tmp, /workspace, or another absolute path.
 write_file creates parent folders automatically. For websites create separate HTML, CSS, and JavaScript files with one complete write_file call per file; connect their relative links.
-Keep code polished, responsive, accessible, and functional. Inspect or test the result when useful. Stay inside the project and keep the final answer concise.
+Keep code polished, responsive, accessible, and functional. For framework-free static sites, run web_quality_check with require_multifile=true and repair every blocker; for an existing frontend framework, preserve it and run its native test/build. Stay inside the project and keep the final answer concise.
 Goals:
 {goals}
 
@@ -6237,14 +7105,16 @@ class ExecutionKernel:
             state.errors.append(finding)
             return finding
         state.successful_tools.append(name)
-        if name in {"write_file", "write_files", "replace_text"}:
+        if name in {"write_file", "write_files", "replace_text", "apply_edits"}:
             state.mutations.append(name)
             # WorkspaceTools verifies the complete UTF-8 target after its
             # atomic replace, so a successful mutation is also one integrity
             # inspection. Semantic tests remain a separate evidence class.
             state.inspections_after_mutation += 1
-        elif state.mutations and name in {"read_file", "search"}:
+        elif state.mutations and name in {"read_file", "search", "verify_artifacts", "web_quality_check"}:
             state.inspections_after_mutation += 1
+            if name in {"verify_artifacts", "web_quality_check"} and result.startswith("OK:"):
+                state.successful_checks += 1
         elif state.mutations and name in {"run_command", "test_project"} and (
             result.startswith("exit_code=0") or result.startswith("OK:")
         ):
@@ -6265,6 +7135,9 @@ class ExecutionKernel:
                   "token_budget": state.plan.token_budget, "confidence": round(score, 3),
                   "confidence_level": level, "verification_passed": not missing,
                   "confidence_breakdown": breakdown, "missing_evidence": missing,
+                  "successful_tools": state.successful_tools[-100:],
+                  "successful_checks": state.successful_checks,
+                  "mutations": state.mutations[-100:],
                   "changed_files": changed_files[:100],
                    "errors": [finding.__dict__ for finding in state.errors[-20:]],
                    "force_graph": {
@@ -6294,6 +7167,7 @@ class Agent:
         self.history_store = HistoryStore(self.root)
         self.session_name = safe_session_name(session_name or str(cfg.data.get("session_name", "main")))
         self.session_store = SessionStore(self.root, self.session_name, cfg)
+        self.task_queue = TaskQueueStore(self.root)
         self.force_context = ForceContext(self.root)
         self.execution_kernel = ExecutionKernel(self.root, cfg)
         self.last_execution_report: dict[str, Any] = load_json(self.root / ".forgecode" / "last-run.json", {})
@@ -6860,10 +7734,10 @@ class Agent:
         if is_simple_conversation(prompt):
             return []
         if self.read_only:
-            return [tool for tool in TOOL_SCHEMAS if tool["name"] in {"list_files", "read_file", "search", "graph_context"}]
+            return [tool for tool in TOOL_SCHEMAS if tool["name"] in {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context"}]
         delegation_blocked = {"delegate_task"} if self._forbids_subagents(prompt) or not self.cfg.data.get("auto_subagents", True) else set()
         if self.cfg.data.get("work_mode") == "plan":
-            return [tool for tool in TOOL_SCHEMAS if tool["name"] in {"list_files", "read_file", "search", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"} - delegation_blocked]
+            return [tool for tool in TOOL_SCHEMAS if tool["name"] in {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"} - delegation_blocked]
         # Main-agent reliability takes priority over shaving a few schema
         # tokens. Auto/Build must always receive mutating tools; otherwise a
         # harmless wording difference can make a capable model believe the
@@ -7655,7 +8529,7 @@ class Agent:
                         f"ERROR: Eksik/kesilmiş {resolved_name} çağrısı: {validation_error} "
                         "Dosya oluşturulmadı. Çağrıyı tüm zorunlu alanlarla yeniden gönder."
                     )
-                    incomplete_write_call = incomplete_write_call or resolved_name in {"write_file", "write_files"}
+                    incomplete_write_call = incomplete_write_call or resolved_name in {"write_file", "write_files", "apply_edits"}
                 elif resolved_name == "delegate_task":
                     result = self.delegate(str(resolved_arguments.get("role", "explore")), str(resolved_arguments.get("task", "")))
                 else:
@@ -7690,10 +8564,10 @@ class Agent:
                         self._system_cache = ""
                         configuration_changed = True
                         self.session_store.log_event("settings", result[:1000], {"source": "ai_tool"})
-                    if resolved_name in {"write_file", "write_files", "replace_text"}:
+                    if resolved_name in {"write_file", "write_files", "replace_text", "apply_edits"}:
                         mutation_seen = True
                         verification_after_mutation = False
-                    elif mutation_seen and resolved_name in {"read_file", "search"}:
+                    elif mutation_seen and resolved_name in {"read_file", "search", "verify_artifacts"}:
                         verification_after_mutation = True
                     elif mutation_seen and resolved_name in {"run_command", "test_project"} and (
                         result.startswith("exit_code=0") or result.startswith("OK:")
@@ -7834,7 +8708,6 @@ HELP = """Komutlar
   /team <görev>          Uzman subagent ekibini paralel çalıştır
   /teamroles [roller]    Elle /team çağrısının varsayılan rolleri
   /agentconfig <...>     Role bağlantı profili/model ata
-  /batch <a> || <b>      Birden fazla işi güvenli sırayla uygula
   /resume [id|sira]      Aktif hedefi kaldigi yerden surdur
   /route <secim>         Custom API: auto, off, exact veya ozel istek yolu
   /providers             Sağlayıcıları otomatik hız ölçümleriyle listele
@@ -7913,7 +8786,6 @@ HELP_EN = """Commands
   /team <task>           Run a parallel specialist team
   /teamroles [roles]     Set default roles for manual /team calls
   /agentconfig <...>     Assign a connection profile/model to a role
-  /batch <a> || <b>      Run multiple tasks safely in sequence
   /providers             List providers with measured response times
   /provider <name|no>    Change provider
   /connect <base-url>    Connect a custom OpenAI/Anthropic-compatible API
@@ -7965,7 +8837,7 @@ Use Tab/arrow keys for command suggestions. While the model works, type and pres
 
 
 COMMANDS = [
-    "/goal", "/goals", "/graph", "/language", "/init", "/dashboard", "/sandbox", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/team", "/teamroles", "/agentconfig", "/batch",
+    "/goal", "/goals", "/graph", "/language", "/init", "/dashboard", "/sandbox", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/team", "/teamroles", "/agentconfig",
     "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/watchdog", "/resume", "/done", "/status",
     "/usage", "/history", "/settings", "/set", "/key", "/test",
     "/models", "/model", "/stream", "/queue", "/free", "/web", "/search", "/thinking", "/temperature", "/mode", "/autopilot",
@@ -9027,6 +9899,9 @@ def show_dashboard(agent: Agent, cfg: Config, goals: GoalStore) -> None:
         if assignments:
             print(" Uzman bağlantıları: " + " · ".join(assignments))
     print(f" Aktif hedef: {sum(not goal['done'] for goal in goals.goals)} · başlangıç promptu: {'ayarlı' if str(cfg.data.get('startup_prompt', '')).strip() else 'boş'}")
+    flow_counts = agent.task_queue.counts()
+    flow_open = flow_counts["pending"] + flow_counts["running"] + flow_counts["paused"] + flow_counts["failed"]
+    print(f" ForceFlow otomatik: {flow_open} açık · {flow_counts['completed']} tamamlandı")
     show_usage("Bu pencere", agent.session_usage, cfg, agent.session_cost_usd)
     print("Kısayollar: /sandbox · /memory · /sessions · /team · /models · /context · /logs")
 
@@ -9181,6 +10056,19 @@ def build_portable_handoff(agent: Agent, cfg: Config, goals: GoalStore, extra_no
     else:
         lines.append("- Kayıtlı hedef yok.")
 
+    lines.extend(["", "## ForceFlow görev zinciri", ""])
+    if agent.task_queue.tasks:
+        for task in agent.task_queue.tasks[-50:]:
+            status = str(task.get("status", "pending")).upper()
+            title = compact_handoff_text(task.get("title", ""), 2400)
+            acceptance = compact_handoff_text(task.get("acceptance", ""), 1200)
+            row = f"- [{status}] `{task.get('id', '?')}` — {title}"
+            if acceptance:
+                row += f" · Bitiş ölçütü: {acceptance}"
+            lines.append(row)
+    else:
+        lines.append("- Kayıtlı sıralı görev yok.")
+
     lines.extend(["", "## Kullanıcı istek geçmişi", ""])
     if instruction_rows:
         for index, row in enumerate(instruction_rows, 1):
@@ -9226,6 +10114,7 @@ def build_portable_handoff(agent: Agent, cfg: Config, goals: GoalStore, extra_no
         "instructions": len(instruction_rows),
         "memories": len(memories),
         "files": len(project_files),
+        "tasks": len(agent.task_queue.tasks),
     }
     return "\n".join(lines), stats
 
@@ -9243,6 +10132,130 @@ Before modifying this project, read [`AI_HANDOFF.md`](AI_HANDOFF.md). It contain
             changed.append(name)
     agent.session_store.log_event("init", "Taşınabilir AI devir paketi güncellendi", {**stats, "files": changed})
     return changed, stats
+
+
+def should_auto_forceflow(agent: Agent, prompt: str) -> bool:
+    """Use the AI planner for real project work, never for small chat or explicit Plan mode."""
+    if agent.read_only or agent.cfg.data.get("work_mode") == "plan":
+        return False
+    if agent.task_queue.first_unresolved() is not None:
+        return True
+    if is_simple_conversation(prompt):
+        return False
+    if agent._requires_artifacts(prompt):
+        return True
+    lowered = str(prompt).casefold()
+    sequence_markers = (" sonra ", " ardından ", " then ", " after that ", "||", "\n1.", "\n- ")
+    return len(prompt) >= 120 and any(marker in lowered for marker in sequence_markers)
+
+
+def run_automatic_forceflow(
+    agent: Agent,
+    prompt: str,
+    on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    force_web: bool = False,
+) -> str:
+    """Plan and execute a verified task chain without exposing queue commands."""
+    store = agent.task_queue
+    current = store.first_unresolved()
+    if current is not None and current.get("status") == "running":
+        return (
+            "Bu proje için başka bir ForceCode işlemi hâlâ görev yürütüyor. "
+            "Aynı zincirin iki kez çalışmasını önlemek için bu istek başlatılmadı."
+        )
+    if current is not None:
+        flow_objective = str(current.get("objective") or current.get("title") or prompt)
+        guidance = redact_sensitive(prompt.strip())[:1800]
+        acceptance = str(current.get("acceptance", "")).strip()
+        if guidance and guidance.casefold() not in acceptance.casefold():
+            acceptance = (acceptance + "\nLatest user guidance: " + guidance).strip()[:2500]
+        store.update(current, "pending", acceptance=acceptance, error="", missing_evidence=[], finished_at="")
+        agent._emit_activity(f"ForceFlow: yarım görev otomatik sürdürülüyor · {current['id']}")
+    else:
+        flow_objective = prompt
+        maximum = int(agent.cfg.data.get("flow_max_tasks", 12))
+        agent._emit_activity("ForceFlow: AI görev planı hazırlanıyor")
+        try:
+            planned = create_forceflow_plan(agent, prompt, maximum)
+        except ApiError as exc:
+            agent.record_runtime_error("api_error", exc, {"source": "forceflow_planner"})
+            agent._emit_activity("ForceFlow planlayıcı kullanılamadı · güvenli tek görev planına geçildi")
+            planned = [{"title": prompt, "acceptance": "The requested outcome is implemented and verified."}]
+        added = store.add_many(planned, objective=flow_objective)
+        agent._emit_activity(f"ForceFlow: AI {len(added)} sıralı görev oluşturdu")
+    repair_rounds = int(agent.cfg.data.get("flow_repair_rounds", 3))
+    result = run_forceflow_queue(
+        agent,
+        store,
+        int(agent.cfg.data.get("flow_max_rounds", 3)),
+        on_tool,
+        force_web=force_web,
+        repair_rounds=repair_rounds,
+    )
+    is_web, require_multifile, _ = forceflow_web_policy(agent, flow_objective)
+    if result.completed and is_web and not forceflow_framework_project(agent) and bool(agent.cfg.data.get("flow_quality_gate", True)):
+        quality_report = agent.tools.web_quality_report(require_multifile)
+        agent.session_store.log_event(
+            "forceflow_quality",
+            "Final website quality gate",
+            {"score": quality_report.score, "passed": quality_report.passed,
+             "blockers": quality_report.blockers[:20]},
+        )
+        if quality_report.passed:
+            agent._emit_activity(f"ForceFlow: site kalite kapısı geçti · {quality_report.score}/100")
+        else:
+            agent._emit_activity(
+                f"ForceFlow: site kalite kapısı {len(quality_report.blockers)} sorun buldu · otomatik onarım başlıyor"
+            )
+            flow_id = next(
+                (str(item.get("flow_id")) for item in reversed(store.tasks) if item.get("objective") == flow_objective),
+                uuid.uuid4().hex[:8],
+            )
+            repair_task = store.add(
+                "Repair every deterministic website quality failure and revalidate the complete site",
+                quality_report.render()[:2500],
+                flow_id,
+                flow_objective,
+                "quality_repair",
+            )
+            repair_result = run_forceflow_queue(
+                agent,
+                store,
+                int(agent.cfg.data.get("flow_max_rounds", 3)),
+                on_tool,
+                force_web=force_web,
+                repair_rounds=repair_rounds,
+            )
+            result.processed.extend(repair_result.processed)
+            result.completed = repair_result.completed
+            result.blocked_task_id = repair_result.blocked_task_id or ("" if repair_result.completed else str(repair_task["id"]))
+    if not result.processed and not result.completed:
+        blocked = store.find(result.blocked_task_id)
+        reason = str(blocked.get("error", "")) if blocked else "başka bir yürütme etkin"
+        return "ForceFlow görevi başlatılamadı: " + reason[:1000]
+    if not result.completed:
+        blocked = store.find(result.blocked_task_id)
+        reason = str(blocked.get("error", "")) if blocked else "doğrulama tamamlanmadı"
+        partial = result.processed[-1].answer.strip() if result.processed else ""
+        return (
+            f"ForceFlow {len(result.processed)} görev işledikten sonra doğrulama kapısında durdu: {reason[:1000]}"
+            + ("\n\nSon model sonucu:\n" + partial[-1600:] if partial else "")
+        )
+    completed = [item for item in result.processed if item.completed]
+    changed = list(dict.fromkeys(name for item in completed for name in item.changed_files))
+    last_answer = completed[-1].answer.strip() if completed else ""
+    task_lines = []
+    for item in completed:
+        task = store.find(item.task_id)
+        task_lines.append("- ✓ " + str(task.get("title", item.task_id))[:220])
+    answer = f"ForceFlow {len(completed)} görevi sırasıyla tamamladı ve doğruladı."
+    if task_lines:
+        answer += "\n" + "\n".join(task_lines)
+    if last_answer:
+        answer += "\n\n" + last_answer
+    if changed:
+        answer += "\n\nDeğişen dosyalar: " + ", ".join(changed[:40])
+    return answer
 
 
 def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bool:
@@ -9632,25 +10645,6 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                         cfg.data["team_roles"] = [*cfg.data.get("team_roles", []), role]
                     cfg.save()
                     print(f"{C.GREEN}Uzman atandı:{C.RESET} {role} · {profile} · {mappings[role]['model'] or 'varsayılan model'}")
-    elif cmd == "/batch":
-        raw = line[len(parts[0]):].strip()
-        tasks = [task.strip() for task in raw.split("||") if task.strip()]
-        if not tasks:
-            print("Kullanım: /batch <iş 1> || <iş 2> [|| <iş 3>]")
-        elif len(tasks) > 5:
-            print("Tek batch için en fazla 5 iş kullanın.")
-        elif cfg.requires_key() and not cfg.key():
-            print("Önce /key ile API anahtarını girin.")
-        else:
-            print(f"{C.CYAN}{len(tasks)} iş güvenli sırayla uygulanıyor…{C.RESET}")
-            for index, task in enumerate(tasks, 1):
-                try:
-                    print(f"\n{C.BOLD}[{index}/{len(tasks)}] {task}{C.RESET}")
-                    result = agent.ask(task)
-                    print(result)
-                except ApiError as exc:
-                    print(f"{C.RED}İş {index} başarısız: {exc}{C.RESET}")
-                    break
     elif cmd == "/providers":
         print_providers(cfg)
     elif cmd == "/provider":
@@ -10083,6 +11077,9 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             protocol = "Anthropic/Claude Code" if cfg.mode() == "anthropic" else "OpenAI"
             protocol_line = f"\nProtokol: {protocol} · auth: {cfg.data.get('custom_auth_mode', 'auto')}"
         print(f"Proje: {agent.root}\nOturum: {agent.session_name}\nSağlayıcı: {cfg.data['provider']}\nModel: {cfg.data['model']}{protocol_line}\n{stream_status_text(cfg)}\n{request_watchdog_status_text(cfg)}\nOtomatik: {autopilot_state(cfg)} · Mod: {cfg.data['work_mode']} · Güç: {cfg.data.get('power_mode', 'auto')} · Web: {cfg.data['web_search_mode']} · Thinking: {cfg.data['thinking_mode']} · Temperature: {float(cfg.data['temperature']):g} · Kalite: {cfg.data['web_project_mode']} · Verimlilik: {cfg.data['efficiency_mode']}\nAktif hedef: {sum(not g['done'] for g in goals.goals)}")
+        flow_counts = agent.task_queue.counts()
+        flow_open = flow_counts["pending"] + flow_counts["running"] + flow_counts["paused"] + flow_counts["failed"]
+        print(f"ForceFlow: {flow_open} açık · {flow_counts['completed']} tamamlandı · {flow_counts['failed']} başarısız")
         route = endpoint_plan(cfg)
         print(f"API: {route['request']} (kaynak: {route['source']})")
         backup_state, backup_target = backup_status(cfg)
@@ -10446,7 +11443,10 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
                 renderer.activity(f"Araç: {name} {str(detail)[:100]}")
             agent.activity_callback = show_request_activity
             with spinner:
-                answer = agent.ask(line, on_tool, force_web=force_web)
+                if should_auto_forceflow(agent, line):
+                    answer = run_automatic_forceflow(agent, line, on_tool, force_web=force_web)
+                else:
+                    answer = agent.ask(line, on_tool, force_web=force_web)
             prompt_queue.live_mode = False
             renderer.finish()
             agent.activity_callback = show_activity
@@ -10563,7 +11563,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         agent = Agent(root, cfg, GoalStore(root), lambda q: False, session_name=session_name, auto_graph_runtime=True)
         try:
-            print(agent.ask(args.prompt))
+            if should_auto_forceflow(agent, args.prompt):
+                print(run_automatic_forceflow(agent, args.prompt))
+            else:
+                print(agent.ask(args.prompt))
             return 0
         except ApiError as exc:
             agent.record_runtime_error("api_error", exc, {"source": "one_shot_request"})

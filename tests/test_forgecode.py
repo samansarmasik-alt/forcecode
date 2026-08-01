@@ -178,11 +178,16 @@ class ConfigTests(unittest.TestCase):
             cfg.set_value("thinking_mode", "medium")
             cfg.set_value("efficiency_mode", "max")
             cfg.set_value("power_mode", "on")
+            cfg.set_value("flow_max_tasks", "20")
+            cfg.set_value("flow_max_rounds", "5")
             self.assertEqual((cfg.data["web_search_mode"], cfg.data["thinking_mode"], cfg.data["efficiency_mode"], cfg.data["power_mode"]), ("on", "medium", "max", "on"))
+            self.assertEqual((cfg.data["flow_max_tasks"], cfg.data["flow_max_rounds"]), (20, 5))
             with self.assertRaises(ValueError):
                 cfg.set_value("efficiency_mode", "turbo")
             with self.assertRaises(ValueError):
                 cfg.set_value("power_mode", "turbo")
+            with self.assertRaises(ValueError):
+                cfg.set_value("flow_max_tasks", "51")
 
     def test_power_mode_defaults_to_auto(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,6 +325,15 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("missing.css", result)
         self.assertIn("photo.png", result)
 
+    def test_frontend_project_uses_native_build_when_no_test_script_exists(self):
+        (self.root / "package.json").write_text(
+            '{"scripts":{"build":"vite build"},"devDependencies":{"vite":"latest"}}', encoding="utf-8"
+        )
+        with mock.patch.object(self.tools, "tool_run_command", return_value="exit_code=0\nbuild ok") as run:
+            result = self.tools.tool_test_project()
+        self.assertTrue(result.startswith("exit_code=0"))
+        run.assert_called_once_with("npm run build", 100, None)
+
     def test_rejects_ambiguous_replace(self):
         (self.root / "x.txt").write_text("a a")
         with self.assertRaises(ValueError):
@@ -431,6 +445,50 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(result, "exit_code=0\ntwo\nthree")
         run.assert_not_called()
 
+    def test_apply_edits_updates_multiple_files_after_full_validation(self):
+        first = self.root / "first.txt"
+        second = self.root / "second.txt"
+        first.write_text("alpha old omega", encoding="utf-8")
+        second.write_text("one old two", encoding="utf-8")
+        self.cfg.data["auto_approve_writes"] = True
+
+        result = self.tools.tool_apply_edits([
+            {"path": "first.txt", "old_text": "old", "new_text": "new"},
+            {"path": "second.txt", "old_text": "old", "new_text": "changed"},
+        ])
+
+        self.assertTrue(result.startswith("OK:"))
+        self.assertEqual(first.read_text(encoding="utf-8"), "alpha new omega")
+        self.assertEqual(second.read_text(encoding="utf-8"), "one changed two")
+
+    def test_apply_edits_writes_nothing_if_any_edit_is_invalid(self):
+        first = self.root / "first.txt"
+        second = self.root / "second.txt"
+        first.write_text("alpha old omega", encoding="utf-8")
+        second.write_text("one old two", encoding="utf-8")
+        self.cfg.data["auto_approve_writes"] = True
+
+        with self.assertRaises(ValueError):
+            self.tools.tool_apply_edits([
+                {"path": "first.txt", "old_text": "old", "new_text": "new"},
+                {"path": "second.txt", "old_text": "missing", "new_text": "changed"},
+            ])
+
+        self.assertEqual(first.read_text(encoding="utf-8"), "alpha old omega")
+        self.assertEqual(second.read_text(encoding="utf-8"), "one old two")
+
+    def test_verify_artifacts_returns_compact_hash_evidence(self):
+        target = self.root / "app.py"
+        target.write_text("print('ready')\n", encoding="utf-8")
+
+        result = self.tools.tool_verify_artifacts(["app.py"], {"app.py": "ready"})
+
+        self.assertTrue(result.startswith("OK: Artifact"))
+        self.assertIn("sha256:", result)
+        self.assertIn("app.py", result)
+        with self.assertRaises(ValueError):
+            self.tools.tool_verify_artifacts(["app.py"], {"app.py": "absent"})
+
     def test_agent_safety_classifier_uses_no_tools_and_parses_json(self):
         agent = forgecode.Agent(self.root, self.cfg, forgecode.GoalStore(self.root), lambda _: False)
         provider = mock.MagicMock()
@@ -502,6 +560,322 @@ class GoalAndHistoryTests(unittest.TestCase):
             self.assertEqual(result.rounds, 3)
             self.assertEqual(ask.call_count, 3)
             self.assertFalse(goals.goals[0]["done"])
+
+    def test_forceflow_store_persists_order_and_recovers_interrupted_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            store = forgecode.TaskQueueStore(root)
+            first, second = store.add_many(["Create first file", "Create second file"], flow_id="demo")
+            store.update(first, "running", attempts=1)
+
+            with mock.patch.object(forgecode.TaskQueueStore, "_pid_alive", return_value=False):
+                recovered = forgecode.TaskQueueStore(root)
+
+            self.assertEqual([task["id"] for task in recovered.tasks], [first["id"], second["id"]])
+            self.assertEqual(recovered.tasks[0]["status"], "paused")
+            self.assertEqual(recovered.first_unresolved()["id"], first["id"])
+            self.assertIn("kesildi", recovered.tasks[0]["error"])
+
+    def test_forceflow_state_redacts_accidentally_pasted_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            secret = "sk-forceflow-example-secret-1234567890"
+            store = forgecode.TaskQueueStore(root)
+            task = store.add("Use " + secret + " while testing")
+
+            persisted = (root / ".forgecode" / "tasks.json").read_text(encoding="utf-8")
+            self.assertNotIn(secret, persisted)
+            self.assertIn("[REDACTED]", task["title"])
+
+    def test_live_forceflow_task_is_not_recovered_by_a_subagent_constructor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            self.assertTrue(forgecode.TaskQueueStore._pid_alive(os.getpid()))
+            parent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            task = parent.task_queue.add("Create API")
+            parent.task_queue.update(task, "running")
+
+            forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False, read_only=True)
+
+            self.assertEqual(forgecode.TaskQueueStore(root).find(task["id"])["status"], "running")
+
+    def test_forceflow_parser_accepts_json_and_numbered_fallback(self):
+        structured = forgecode.parse_forceflow_plan(
+            '{"tasks":[{"title":"Build API","acceptance":"tests pass"},{"title":"Build UI"}]}', 5
+        )
+        fallback = forgecode.parse_forceflow_plan("1. Inspect project\n2. Implement feature\n3. Run tests", 2)
+
+        self.assertEqual(structured[0], {"title": "Build API", "acceptance": "tests pass"})
+        self.assertEqual([item["title"] for item in fallback], ["Inspect project", "Implement feature"])
+
+    def test_forceflow_runs_tasks_strictly_in_order_after_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["auto_approve_writes"] = True
+            cfg.data["auto_subagents"] = False
+            goals = forgecode.GoalStore(root)
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            store = agent.task_queue
+            first, second = store.add_many(["Create first.txt", "Create second.txt"])
+            seen = []
+
+            def fake_ask(prompt, on_tool=None):
+                if "TASK: Create first.txt" in prompt:
+                    seen.append("first")
+                    agent.tools.tool_write_file("first.txt", "one")
+                else:
+                    self.assertEqual(store.find(first["id"])["status"], "completed")
+                    seen.append("second")
+                    agent.tools.tool_write_file("second.txt", "two")
+                agent.last_execution_report = {"missing_evidence": [], "confidence": 0.92}
+                return "Implemented and verified."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                result = forgecode.run_forceflow_queue(agent, store, 2)
+
+            self.assertTrue(result.completed)
+            self.assertEqual(seen, ["first", "second"])
+            self.assertEqual(store.find(first["id"])["status"], "completed")
+            self.assertEqual(store.find(second["id"])["status"], "completed")
+            self.assertEqual((root / "first.txt").read_text(encoding="utf-8"), "one")
+
+    def test_forceflow_preserves_root_objective_and_repairs_without_user_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            objective = "Build a professional restaurant website"
+            task = agent.task_queue.add_many(
+                [{"title": "Create the home page", "acceptance": "home page exists"}],
+                objective=objective,
+            )[0]
+            prompts = []
+
+            def fake_ask(prompt, on_tool=None):
+                prompts.append(prompt)
+                if len(prompts) == 1:
+                    agent.last_execution_report = {
+                        "missing_evidence": ["no project artifact was created or changed"],
+                        "successful_tools": [], "confidence": 0.2,
+                    }
+                    return "Could not create the page."
+                agent.tools.tool_write_file("index.html", "verified recovery")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 0.93,
+                }
+                return "Recovered and verified."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                result = forgecode.run_forceflow_queue(agent, agent.task_queue, 1, repair_rounds=2)
+
+            self.assertTrue(result.completed)
+            self.assertEqual(len(prompts), 2)
+            self.assertIn("ROOT OBJECTIVE: " + objective, prompts[0])
+            self.assertIn("AUTONOMOUS REPAIR", prompts[1])
+            self.assertIn("WEBSITE QUALITY CONTRACT", prompts[1])
+            self.assertEqual(agent.task_queue.find(task["id"])["repair_attempts"], 1)
+
+    def test_forceflow_retries_transient_api_error_inside_recovery_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False, "retry_backoff_seconds": 0})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            agent.task_queue.add("Create result.txt")
+            calls = []
+
+            def fake_ask(prompt, on_tool=None):
+                calls.append(prompt)
+                if len(calls) == 1:
+                    raise forgecode.ApiError("temporary upstream timeout")
+                agent.tools.tool_write_file("result.txt", "ok")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 0.9,
+                }
+                return "Verified."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                result = forgecode.run_forceflow_queue(agent, agent.task_queue, 1, repair_rounds=1)
+
+            self.assertTrue(result.completed)
+            self.assertEqual(len(calls), 2)
+            self.assertTrue((root / "result.txt").is_file())
+
+    def test_forceflow_failure_blocks_later_tasks_until_retry_or_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["auto_subagents"] = False
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            first, second = agent.task_queue.add_many(["Create missing.txt", "Create later.txt"])
+
+            def fake_ask(prompt, on_tool=None):
+                agent.last_execution_report = {
+                    "missing_evidence": ["no project artifact was created or changed"],
+                    "confidence": 0.2,
+                }
+                return "Görev tamamlanmadı: dosya oluşturulamadı."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask) as ask:
+                result = forgecode.run_forceflow_queue(agent, agent.task_queue, 1)
+
+            self.assertFalse(result.completed)
+            self.assertEqual(result.blocked_task_id, first["id"])
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(agent.task_queue.find(first["id"])["status"], "failed")
+            self.assertEqual(agent.task_queue.find(second["id"])["status"], "pending")
+            self.assertIsNotNone(agent.task_queue.retry(first["id"]))
+            self.assertEqual(agent.task_queue.find(first["id"])["status"], "pending")
+
+    def test_forceflow_read_only_task_needs_tool_backed_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["auto_subagents"] = False
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            task = agent.task_queue.add("Inspect the architecture")
+
+            def fake_ask(prompt, on_tool=None):
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": [], "confidence": 0.5,
+                }
+                return "Architecture inspected."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                result = forgecode.run_forceflow_queue(agent, agent.task_queue, 1)
+
+            self.assertFalse(result.completed)
+            self.assertEqual(agent.task_queue.find(task["id"])["status"], "failed")
+            self.assertIn("tool-backed", agent.task_queue.find(task["id"])["error"])
+
+    def test_forceflow_live_steering_pauses_task_and_propagates_instruction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            task = agent.task_queue.add("Create dashboard")
+            with mock.patch.object(agent, "ask", side_effect=forgecode.SteeringInterrupt("Use a blue theme")):
+                with self.assertRaises(forgecode.SteeringInterrupt) as raised:
+                    forgecode.run_forceflow_queue(agent, agent.task_queue, 2)
+            self.assertEqual(raised.exception.prompt, "Use a blue theme")
+            self.assertEqual(agent.task_queue.find(task["id"])["status"], "paused")
+
+    def test_forceflow_is_automatic_and_has_no_manual_queue_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            planned = [
+                {"title": "Create first.txt", "acceptance": "first.txt exists"},
+                {"title": "Create second.txt", "acceptance": "second.txt exists"},
+            ]
+
+            def fake_ask(prompt, on_tool=None):
+                name = "first.txt" if "TASK: Create first.txt" in prompt else "second.txt"
+                agent.tools.tool_write_file(name, name)
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 0.95,
+                }
+                return name + " verified"
+
+            with mock.patch.object(forgecode, "create_forceflow_plan", return_value=planned) as planner, mock.patch.object(
+                agent, "ask", side_effect=fake_ask
+            ):
+                answer = forgecode.run_automatic_forceflow(agent, "Build both project files")
+
+            planner.assert_called_once()
+            self.assertIn("2 görevi", answer)
+            self.assertEqual([task["status"] for task in agent.task_queue.tasks], ["completed", "completed"])
+            for command in ("/flow", "/task", "/tasks", "/batch"):
+                self.assertNotIn(command, forgecode.COMMANDS)
+
+    def test_simple_chat_skips_automatic_forceflow_but_build_request_uses_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            self.assertFalse(forgecode.should_auto_forceflow(agent, "selam"))
+            self.assertTrue(forgecode.should_auto_forceflow(agent, "Projeye gelişmiş bir ayar ekranı ekle"))
+
+    def test_forceflow_preserves_frontend_framework_instead_of_static_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"scripts":{"build":"next build"},"dependencies":{"next":"latest","react":"latest"}}', encoding="utf-8"
+            )
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            is_web, require_multifile, contract = forgecode.forceflow_web_policy(
+                agent, "Create a professional website"
+            )
+            self.assertTrue(is_web)
+            self.assertFalse(require_multifile)
+            self.assertIn("Preserve the detected frontend framework", contract)
+
+    def test_web_quality_gate_rejects_broken_site_and_accepts_complete_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            tools = forgecode.WorkspaceTools(root, cfg, lambda _: True)
+            (root / "index.html").write_text("<html><body><h1>Lorem ipsum</h1></body></html>", encoding="utf-8")
+            broken = tools.web_quality_report(require_multifile=True)
+            self.assertFalse(broken.passed)
+            self.assertTrue(any("viewport" in item for item in broken.blockers))
+            self.assertTrue(any("CSS" in item for item in broken.blockers))
+
+            (root / "assets" / "css").mkdir(parents=True)
+            (root / "assets" / "js").mkdir(parents=True)
+            html = """<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lokanta</title><link rel="stylesheet" href="assets/css/styles.css"></head><body><header><nav aria-label="Ana menü"><a href="#menu">Menü</a></nav></header><main><section><h1>İyi yemek, sıcak bir masa</h1><p>Mevsim ürünleriyle hazırlanan özgün tabakları keşfedin.</p><button id="reserve" type="button">Rezervasyon yap</button></section><section id="menu"><h2>Günün menüsü</h2><p>Yerel üreticilerden seçilen malzemelerle her gün yenilenir.</p></section></main><footer><p>Her gün 12.00–23.00 arasında açığız.</p></footer><script src="assets/js/main.js"></script></body></html>"""
+            css = ":root{--bg:#111;--text:#fff;--accent:#d8a25e}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui;line-height:1.6}header,main,footer{width:min(1100px,92%);margin:auto}nav{display:flex;justify-content:flex-end;padding:1rem}section{min-height:40vh;padding:4rem 0}button{padding:1rem 1.4rem;border:0;border-radius:2rem;background:var(--accent)}@media(max-width:700px){section{padding:2rem 0}h1{font-size:clamp(2rem,10vw,4rem)}}"
+            js = "const button=document.querySelector('#reserve');button.addEventListener('click',()=>button.textContent='Talebiniz alındı');"
+            (root / "index.html").write_text(html, encoding="utf-8")
+            (root / "assets" / "css" / "styles.css").write_text(css, encoding="utf-8")
+            (root / "assets" / "js" / "main.js").write_text(js, encoding="utf-8")
+
+            complete = tools.web_quality_report(require_multifile=True)
+            self.assertTrue(complete.passed, complete.render())
+            self.assertGreaterEqual(complete.score, 75)
+
+    def test_automatic_forceflow_repairs_final_site_quality_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False, "flow_max_rounds": 1, "flow_repair_rounds": 1})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            objective = "Create a professional restaurant website"
+            planned = [{"title": "Create the restaurant home page", "acceptance": "site exists"}]
+
+            valid_html = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ember Table</title><link rel="stylesheet" href="assets/css/styles.css"></head><body><header><nav aria-label="Main navigation"><a href="#menu">Menu</a></nav></header><main><section><h1>Season-led dining, made memorable</h1><p>Thoughtful plates and warm hospitality in the heart of the city.</p><button id="reserve" type="button">Reserve a table</button></section><section id="menu"><h2>Tonight's menu</h2><p>Local ingredients shaped by fire, craft, and the season.</p></section></main><footer><p>Open Tuesday through Sunday.</p></footer><script src="assets/js/main.js"></script></body></html>"""
+            valid_css = ":root{--ink:#f5efe6;--bg:#17110e;--accent:#c68b55}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui;line-height:1.6}header,main,footer{width:min(1120px,92%);margin:auto}nav{display:flex;justify-content:flex-end;padding:1.2rem}section{padding:5rem 0;min-height:40vh}button{border:0;border-radius:99px;padding:1rem 1.5rem;background:var(--accent)}@media(max-width:720px){section{padding:2.5rem 0}h1{font-size:clamp(2.4rem,12vw,4.5rem)}}"
+            valid_js = "const reserve=document.querySelector('#reserve');reserve.addEventListener('click',()=>reserve.textContent='Reservation requested');"
+
+            def fake_ask(prompt, on_tool=None):
+                if "TASK: Repair every deterministic website quality failure" in prompt:
+                    agent.tools.tool_write_files([
+                        {"path": "index.html", "content": valid_html},
+                        {"path": "assets/css/styles.css", "content": valid_css},
+                        {"path": "assets/js/main.js", "content": valid_js},
+                    ])
+                else:
+                    agent.tools.tool_write_file("index.html", "<html><body><h1>Lorem ipsum</h1></body></html>")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 0.9,
+                }
+                return "Implemented."
+
+            with mock.patch.object(forgecode, "create_forceflow_plan", return_value=planned), mock.patch.object(
+                agent, "ask", side_effect=fake_ask
+            ):
+                answer = forgecode.run_automatic_forceflow(agent, objective)
+
+            self.assertIn("2 görevi", answer)
+            self.assertEqual(agent.task_queue.tasks[-1]["kind"], "quality_repair")
+            self.assertEqual(agent.task_queue.tasks[-1]["status"], "completed")
+            self.assertTrue(agent.tools.web_quality_report(True).passed)
 
     def test_history_recent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1508,7 +1882,7 @@ class CommandAssistTests(unittest.TestCase):
             cfg.set_value("work_mode", "plan")
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
             names = {tool["name"] for tool in agent._effective_tools("site oluştur")}
-            self.assertEqual(names, {"list_files", "read_file", "search", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"})
+            self.assertEqual(names, {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"})
 
     def test_status_footer_shows_modes_and_fixed_session_cost(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1578,7 +1952,7 @@ class CommandAssistTests(unittest.TestCase):
             cfg = forgecode.Config(root / "home")
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False, read_only=True, role="review")
             names = {tool["name"] for tool in agent._effective_tools("fix everything")}
-            self.assertEqual(names, {"list_files", "read_file", "search", "graph_context"})
+            self.assertEqual(names, {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context"})
 
     def test_proxy_cannot_force_bash_into_read_only_subagent(self):
         with tempfile.TemporaryDirectory() as tmp:

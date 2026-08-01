@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current release: **v7.6.5**. `/watchdog off` removes API first-response, idle-stream, total-call, socket, retry-budget, helper, and subagent time limits while preserving responsive Ctrl+C cancellation.
+Current release: **v7.7.0**. Automatic ForceFlow turns normal project requests into a persistent, ordered task chain, diagnoses failures without waiting for another prompt, and advances only after deterministic verification—no queue command required.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -17,8 +17,11 @@ The terminal interface supports both English and Turkish. New installations ask 
 - First-class FreeModel support through `https://api.freemodel.dev/v1` with the `auto` router and standard Bearer authentication.
 - Model discovery, connection tests, response-latency history, token accounting, and configurable pricing.
 - Project-scoped file inspection, verified UTF-8 writes, text replacement, search, and command execution.
+- Transactional multi-file exact edits plus compact SHA-256/UTF-8 artifact verification tools.
 - Default-on ForceSandbox isolation with a native Windows AppContainer engine, per-project identities, snapshots, conflict detection, rollback, and controlled transfer.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
+- Automatic ForceFlow AI task decomposition, crash-safe sequential execution, evidence-guided unattended repair, and verification-gated progression without manual queue commands.
+- A model-independent web quality gate that rejects broken assets, placeholders, weak one-file scaffolds, missing responsive behavior, and basic accessibility failures before a site can be reported complete.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
 - Optional ForceGraph structural code intelligence for impact analysis, test-gap discovery, and graph-assisted review.
@@ -111,11 +114,29 @@ Force -p "Review the current changes and run the relevant tests"
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
 | Execution engine | `/plan`, `/debug`, `/confidence`, `/engine` |
-| Parallel work | `/agents`, `/agent`, `/delegate`, `/team`, `/batch` |
+| Sequential work | Automatic ForceFlow on normal project requests; no command required |
+| Parallel work | `/agents`, `/agent`, `/delegate`, `/team` |
 | Usage | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+## ForceFlow sequential tasks
+
+ForceFlow is for work that must happen in order. Write the request normally. For real project work, ForceCode asks the selected model for a compact task plan, stores it locally, and executes one item at a time. If splitting adds no value, the AI returns one task; greetings and simple conversation bypass the planner. Every task receives its own acceptance criterion and Execution Kernel receipt. Later tasks stay blocked until the current task has a visible final result, verified project artifacts, and any required focused test evidence.
+
+```text
+you › add authentication, then build the settings UI, then test the complete flow
+
+ForceFlow › AI created 3 ordered tasks
+ForceFlow › task 1 verified → task 2 started
+ForceFlow › task 2 verified → task 3 started
+forge › all tasks completed and verified
+```
+
+Each subtask keeps the original user objective, so quality requirements are not lost when a large request is divided. If normal attempts fail, ForceFlow enters bounded autonomous repair rounds: it carries forward missing evidence and API/tool diagnostics, asks for a different root-cause-driven approach, reruns focused checks, and continues without waiting for another prompt. It still stops safely when repair evidence never passes or an existing approval policy requires user confirmation.
+
+Framework-free website work receives a final deterministic quality gate independent of the selected model. Serious static sites must have linked HTML, responsive CSS, and functional JavaScript, plus semantic structure, mobile metadata, valid local assets, accessible basics, and non-placeholder content. React, Next, Vue, Svelte, and similar projects keep their framework and use its native test/build gate instead. A failed gate creates its own internal repair task and is rechecked before completion. Ctrl+C marks the running item as paused; the next normal prompt resumes it with fresh guidance. State is stored in `.forgecode/tasks.json` and is excluded from Git. See [docs/FORCEFLOW.md](docs/FORCEFLOW.md) for the state model and verification rules.
 
 ## ForceSandbox
 
