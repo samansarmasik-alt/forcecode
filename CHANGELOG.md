@@ -2,6 +2,14 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.7.2] - 2026-08-02
+
+### Changed
+
+- Removed ForceSandbox's default 200 MB aggregate project and verified-transfer ceiling. `sandbox_max_transfer_mb: 0` now means unlimited while a positive value still enables an optional user-defined cap.
+- Existing configurations that still contain the former 200 MB default are migrated automatically to unlimited mode; deliberately customized limits are preserved.
+- Kept the independent per-file size guard, secret exclusions, path isolation, snapshots, conflict detection, verification gates, and atomic rollback unchanged.
+
 ## [7.7.1] - 2026-08-01
 
 ### Performance

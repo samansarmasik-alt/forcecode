@@ -54,7 +54,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.7.1"
+VERSION = "7.7.2"
 
 _UI_LANGUAGE = "tr"
 
@@ -264,7 +264,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 23,
+    "config_version": 24,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -348,7 +348,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sandbox_auto_transfer": True,
     "sandbox_snapshot_enabled": True,
     "sandbox_max_file_mb": 20,
-    "sandbox_max_transfer_mb": 200,
+    # Zero disables the aggregate project/transfer size cap. The per-file
+    # limit remains independently configurable to avoid copying huge binary
+    # artifacts accidentally.
+    "sandbox_max_transfer_mb": 0,
 }
 
 
@@ -463,7 +466,11 @@ class Config:
                 # protocol probe. Re-detect authentication once with the
                 # corrected wire format.
                 saved["custom_auth_mode"] = "auto"
-        saved["config_version"] = 23
+        # v7.7.2 removes the old aggregate 200 MB ForceSandbox default. Only
+        # migrate the legacy default; deliberately customized limits remain.
+        if saved.get("config_version", 1) < 24 and saved.get("sandbox_max_transfer_mb", 200) == 200:
+            saved["sandbox_max_transfer_mb"] = 0
+        saved["config_version"] = 24
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -575,7 +582,8 @@ class Config:
             value = 0
         elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
             value: Any = int(raw)
-            if value < 0 or (value == 0 and name != "flow_repair_rounds"):
+            zero_allowed = {"flow_repair_rounds", "sandbox_max_transfer_mb"}
+            if value < 0 or (value == 0 and name not in zero_allowed):
                 raise ValueError("Değer sıfırdan büyük olmalı")
             if name == "retry_attempts" and value > 5:
                 raise ValueError("retry_attempts 1 ile 5 arasında olmalı")
@@ -4063,7 +4071,8 @@ class ForceSandboxManager:
         if not root.exists():
             return {}
         maximum_file = max(1, int(self.cfg.data.get("sandbox_max_file_mb", 20))) * 1024 * 1024
-        maximum_total = max(1, int(self.cfg.data.get("sandbox_max_transfer_mb", 200))) * 1024 * 1024
+        configured_total_mb = int(self.cfg.data.get("sandbox_max_transfer_mb", 0))
+        maximum_total = configured_total_mb * 1024 * 1024 if configured_total_mb > 0 else None
         total = 0
         result: dict[str, dict[str, Any]] = {}
         for directory, names, files in os.walk(root, topdown=True, followlinks=False):
@@ -4085,10 +4094,10 @@ class ForceSandboxManager:
                     if size > maximum_file:
                         continue
                     total += size
-                    if total > maximum_total:
+                    if maximum_total is not None and total > maximum_total:
                         raise ValueError(
                             f"ForceSandbox proje sınırı aşıldı: en fazla {maximum_total // (1024 * 1024)} MB. "
-                            "sandbox_max_transfer_mb ayarını yükseltebilirsiniz."
+                            "sandbox_max_transfer_mb ayarını yükseltin veya sınırsız kullanım için 0 yapın."
                         )
                     result[relative.as_posix()] = {"sha256": self._digest(path), "size": size}
                 except OSError:
@@ -4422,8 +4431,9 @@ class ForceSandboxManager:
                 self._log("transfer_conflict", {"conflicts": conflicts[:100]})
                 return SandboxTransferResult("conflict", changed, conflicts, message="Gerçek proje görev sırasında değişti; otomatik aktarım durduruldu")
             transfer_bytes = sum(int(current.get(name, {}).get("size", 0)) for name in changed)
-            maximum = max(1, int(self.cfg.data.get("sandbox_max_transfer_mb", 200))) * 1024 * 1024
-            if transfer_bytes > maximum:
+            configured_maximum_mb = int(self.cfg.data.get("sandbox_max_transfer_mb", 0))
+            maximum = configured_maximum_mb * 1024 * 1024 if configured_maximum_mb > 0 else None
+            if maximum is not None and transfer_bytes > maximum:
                 return SandboxTransferResult("held", changed, message=f"Aktarım {maximum // (1024 * 1024)} MB güvenlik sınırını aşıyor")
             snapshot_path = pathlib.Path()
             if self.cfg.data.get("sandbox_snapshot_enabled", True):
