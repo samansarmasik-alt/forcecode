@@ -54,7 +54,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.7.0"
+VERSION = "7.7.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -284,6 +284,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stream_idle_timeout_seconds": 75,
     "request_total_timeout_seconds": 180,
     "retry_budget_seconds": 120,
+    "preflight_timeout_seconds": 12,
     "max_agent_steps": 0,
     "goal_max_rounds": 3,
     "flow_max_tasks": 12,
@@ -572,7 +573,7 @@ class Config:
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
+        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
             value: Any = int(raw)
             if value < 0 or (value == 0 and name != "flow_repair_rounds"):
                 raise ValueError("Değer sıfırdan büyük olmalı")
@@ -587,6 +588,7 @@ class Config:
                 "stream_idle_timeout_seconds": 300,
                 "request_total_timeout_seconds": 600,
                 "retry_budget_seconds": 300,
+                "preflight_timeout_seconds": 60,
             }
             if name in watchdog_maximums and value > watchdog_maximums[name]:
                 raise ValueError(f"{name} en fazla {watchdog_maximums[name]} olabilir")
@@ -4519,6 +4521,7 @@ AI_EDITABLE_SETTINGS = {
     "max_tokens", "temperature", "timeout_seconds", "streaming_enabled",
     "first_response_timeout_seconds", "stream_idle_timeout_seconds",
     "request_total_timeout_seconds", "retry_budget_seconds",
+    "preflight_timeout_seconds",
     "retry_attempts", "retry_backoff_seconds", "max_tool_output_chars",
     "web_search_mode", "web_max_results", "thinking_mode", "thinking_budget_tokens",
     "efficiency_mode", "power_mode", "web_project_mode", "work_mode",
@@ -4668,6 +4671,13 @@ class WorkspaceTools:
         floor = hard_operation_risk(operation, details)
         if floor:
             return False, "ERROR: Smart Autopilot güvenlik engeli: " + floor[1]
+        # File mutations already target ForceSandbox's private project copy.
+        # They cannot reach host files, credentials, or another project, and
+        # transfer still happens only after verification/conflict checks. An
+        # extra remote safety-model call here adds latency without increasing
+        # the effective boundary.
+        if operation == "write" and self.sandbox is not None and self.sandbox.active():
+            return True, ""
         if operation == "command":
             # Authorization metadata may follow the command on later lines (for
             # example stdin=closed).  Only the command itself belongs in the
@@ -5530,6 +5540,7 @@ class WorkspaceTools:
             "max_tokens": (256, 65536), "temperature": (0, 1), "timeout_seconds": (5, 600),
             "first_response_timeout_seconds": (5, 180), "stream_idle_timeout_seconds": (5, 300),
             "request_total_timeout_seconds": (15, 600), "retry_budget_seconds": (5, 300),
+            "preflight_timeout_seconds": (1, 60),
             "retry_attempts": (1, 5), "retry_backoff_seconds": (0, 10),
             "max_tool_output_chars": (1000, 100000), "web_max_results": (1, 20),
             "thinking_budget_tokens": (1024, 32000), "subagent_timeout_seconds": (5, 300),
@@ -5802,6 +5813,30 @@ class TaskQueueStore:
             self.save()
         return removed
 
+    def collapse_unresolved_flow(self, current: dict[str, Any], objective: str) -> int:
+        """Collapse an over-planned cohesive objective without losing completed work."""
+        flow_id = str(current.get("flow_id", ""))
+        removable = [
+            task for task in self.tasks
+            if task is not current
+            and str(task.get("flow_id", "")) == flow_id
+            and task.get("status") not in FLOW_FINAL_STATES
+        ]
+        if not removable:
+            return 0
+        self.tasks = [task for task in self.tasks if task not in removable]
+        current["title"] = redact_sensitive(str(objective).strip())[:4000]
+        current["acceptance"] = (
+            "The complete root objective is implemented as one cohesive change and deterministic verification passes."
+        )
+        current["objective"] = redact_sensitive(str(objective).strip())[:4000]
+        current["status"] = "pending"
+        current["owner_pid"] = 0
+        current["error"] = ""
+        current["missing_evidence"] = []
+        self.save()
+        return len(removable)
+
     def counts(self) -> dict[str, int]:
         counts = collections.Counter(str(task.get("status", "pending")) for task in self.tasks)
         return {name: int(counts.get(name, 0)) for name in ("pending", "running", "paused", "failed", "completed", "skipped")}
@@ -6056,6 +6091,8 @@ def run_forceflow_task(
                 + (web_contract + "\n" if web_contract else "") +
                 "Inspect what already changed, fix only what remains, and obtain the missing verification. Do not restart the project."
             )
+        previous_forceflow_state = agent._forceflow_active
+        agent._forceflow_active = True
         try:
             if force_web:
                 last_answer = agent.ask(prompt, on_tool=on_tool, force_web=True)
@@ -6079,6 +6116,8 @@ def run_forceflow_task(
                 time.sleep(min(2.0, max(0.0, float(agent.cfg.data.get("retry_backoff_seconds", 0.5)))))
                 continue
             break
+        finally:
+            agent._forceflow_active = previous_forceflow_state
         changed_files = agent.tools.changed_since(baseline)
         report = dict(agent.last_execution_report or {})
         missing = [str(item) for item in report.get("missing_evidence", [])]
@@ -7193,6 +7232,7 @@ class Agent:
         self._current_prompt = ""
         self._current_baseline: dict[str, tuple[int, int]] = {}
         self._power_active = False
+        self._forceflow_active = False
 
     def _emit_activity(self, message: str) -> None:
         """Expose concise operational progress, never private chain-of-thought."""
@@ -7864,11 +7904,12 @@ class Agent:
         next_heartbeat = started + 5
         future = self._daemon_future(self.provider.request, system, messages, [], max_tokens, False)
         first_limit, _, total_limit = request_watchdog_limits(self.cfg, True)
-        unbounded_request = not watchdog_enabled(self.cfg)
-        helper_limit = (
-            float("inf") if unbounded_request
-            else min(first_limit, total_limit, max(5.0, float(self.cfg.data.get("subagent_timeout_seconds", 30))))
-        )
+        # Planner, orchestrator, and safety classification are optional
+        # preflights. `/watchdog off` deliberately leaves the main generation
+        # unbounded, but must not let an optional helper block it for minutes.
+        helper_limit = max(0.05, float(self.cfg.data.get("preflight_timeout_seconds", 12)))
+        if watchdog_enabled(self.cfg):
+            helper_limit = min(first_limit, total_limit, helper_limit)
         try:
             while True:
                 try:
@@ -7885,11 +7926,8 @@ class Agent:
                         self._emit_activity(f"{label}: gözetmen kesti · {elapsed:.1f} sn")
                         raise ApiError(f"{label} {helper_limit:g} saniye içinde yanıt vermedi; ana işin takılmaması için durduruldu.")
                     if now >= next_heartbeat:
-                        if unbounded_request:
-                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · zaman aşımı yok")
-                        else:
-                            remaining = max(0, int(helper_limit - elapsed))
-                            self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · bütçe {remaining} sn")
+                        remaining = max(0, int(helper_limit - elapsed))
+                        self._emit_activity(f"{label}: yanıt bekleniyor · {int(elapsed)} sn · hızlı ön kontrol {remaining} sn")
                         next_heartbeat = now + 5
         finally:
             if not future.done():
@@ -8041,15 +8079,19 @@ class Agent:
                 child_cfg.data["base_url_origin"] = "profile"
             if role_spec.get("model"):
                 child_cfg.data["model"] = str(role_spec["model"])
-        if watchdog_enabled(child_cfg):
-            child_cfg.data["timeout_seconds"] = min(
-                int(self.cfg.data.get("timeout_seconds", 120)),
-                int(self.cfg.data.get("subagent_timeout_seconds", 30)),
-            )
+        # Subagents are optional accelerators. Keep them bounded even when the
+        # user disables the main-request watchdog; a slow specialist must
+        # never hold the actual coding task indefinitely.
+        subagent_limit = max(5, int(self.cfg.data.get("subagent_timeout_seconds", 30)))
+        child_cfg.data["watchdog_enabled"] = True
+        child_cfg.data["timeout_seconds"] = subagent_limit
+        child_cfg.data["first_response_timeout_seconds"] = subagent_limit
+        child_cfg.data["stream_idle_timeout_seconds"] = subagent_limit
+        child_cfg.data["request_total_timeout_seconds"] = subagent_limit
         child_cfg.data["auto_subagents"] = False
         child = Agent(self.root, child_cfg, self.goals, lambda _: False, read_only=True, role=role, record_history=False, session_name=self.session_name, sandbox=self.sandbox)
         child.activity_callback = self.activity_callback
-        timeout_label = f"zaman aşımı {child_cfg.data['timeout_seconds']} sn" if watchdog_enabled(child_cfg) else "zaman aşımı yok"
+        timeout_label = f"zaman aşımı {child_cfg.data['timeout_seconds']} sn"
         self._emit_activity(f"{role} alt ajan: başladı · {timeout_label}")
         role_focus = {
             "design": "Focus on UX, visual system, accessibility, responsive behavior, and information architecture.",
@@ -8196,7 +8238,15 @@ class Agent:
         if subagents_forbidden:
             prompt = working_prompt + "\n\nHARD USER CONSTRAINT: Do not start, use, or delegate to any subagent for this turn. Complete the task only as the main agent."
             self._emit_activity("Kullanıcı tercihi: bu tur subagent kullanılmayacak")
-        wants_orchestration = not self.read_only and self._should_orchestrate(original_prompt)
+        # ForceFlow already decomposes the objective. Running another remote
+        # orchestrator before every small queue item duplicates planning and
+        # can multiply one task into dozens of API calls. The main model keeps
+        # `delegate_task`, so it may still start a specialist when useful.
+        wants_orchestration = (
+            not self.read_only
+            and not self._forceflow_active
+            and self._should_orchestrate(original_prompt)
+        )
         if wants_orchestration and not subagents_forbidden and self.cfg.data.get("auto_subagents", True):
             assignments = self.plan_delegations(original_prompt)
             if self._connection_switched:
@@ -10149,6 +10199,32 @@ def should_auto_forceflow(agent: Agent, prompt: str) -> bool:
     return len(prompt) >= 120 and any(marker in lowered for marker in sequence_markers)
 
 
+def forceflow_needs_decomposition(prompt: str) -> bool:
+    """Use a remote planner only when splitting is likely to save work."""
+    text = str(prompt).strip()
+    lowered = f" {text.casefold()} "
+    if len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*•])\s+", text)) >= 2:
+        return True
+    sequence_markers = (
+        " sonra ", " ardından ", " daha sonra ", " önce ", " then ", " after that ",
+        " first ", " both ", " ikisini ", " iki ayrı ", " sırasıyla ", " sirasiyla ", "||",
+    )
+    if any(marker in lowered for marker in sequence_markers):
+        return True
+    if len(text) >= 700:
+        return True
+    domains = (
+        ("frontend", "arayüz", "ui", "site"),
+        ("backend", "api", "sunucu", "server"),
+        ("test", "doğrula", "dogrula", "verification"),
+        ("database", "veritaban", "migration"),
+        ("documentation", "dokümantasyon", "readme"),
+        ("deploy", "yayınla", "release"),
+    )
+    touched_domains = sum(any(marker in lowered for marker in group) for group in domains)
+    return len(text) >= 260 and touched_domains >= 3
+
+
 def run_automatic_forceflow(
     agent: Agent,
     prompt: str,
@@ -10165,6 +10241,12 @@ def run_automatic_forceflow(
         )
     if current is not None:
         flow_objective = str(current.get("objective") or current.get("title") or prompt)
+        if not forceflow_needs_decomposition(flow_objective):
+            removed = store.collapse_unresolved_flow(current, flow_objective)
+            if removed:
+                agent._emit_activity(
+                    f"ForceFlow: eski aşırı plan sadeleştirildi · {removed} gereksiz bekleyen görev kaldırıldı"
+                )
         guidance = redact_sensitive(prompt.strip())[:1800]
         acceptance = str(current.get("acceptance", "")).strip()
         if guidance and guidance.casefold() not in acceptance.casefold():
@@ -10173,16 +10255,24 @@ def run_automatic_forceflow(
         agent._emit_activity(f"ForceFlow: yarım görev otomatik sürdürülüyor · {current['id']}")
     else:
         flow_objective = prompt
-        maximum = int(agent.cfg.data.get("flow_max_tasks", 12))
-        agent._emit_activity("ForceFlow: AI görev planı hazırlanıyor")
-        try:
-            planned = create_forceflow_plan(agent, prompt, maximum)
-        except ApiError as exc:
-            agent.record_runtime_error("api_error", exc, {"source": "forceflow_planner"})
-            agent._emit_activity("ForceFlow planlayıcı kullanılamadı · güvenli tek görev planına geçildi")
-            planned = [{"title": prompt, "acceptance": "The requested outcome is implemented and verified."}]
+        configured_maximum = int(agent.cfg.data.get("flow_max_tasks", 12))
+        maximum = min(configured_maximum, 8 if len(prompt) >= 1200 else 6)
+        if forceflow_needs_decomposition(prompt):
+            agent._emit_activity("ForceFlow: AI görev planı hazırlanıyor")
+            try:
+                planned = create_forceflow_plan(agent, prompt, maximum)
+            except ApiError as exc:
+                agent.record_runtime_error("api_error", exc, {"source": "forceflow_planner"})
+                agent._emit_activity("ForceFlow planlayıcı kullanılamadı · hızlı tek görev planına geçildi")
+                planned = [{"title": prompt, "acceptance": "The requested outcome is implemented and verified."}]
+        else:
+            agent._emit_activity("ForceFlow: tek ve bütün iş algılandı · planlayıcı çağrısı atlandı")
+            planned = [{
+                "title": prompt,
+                "acceptance": "The complete user objective is implemented as one cohesive change and deterministic verification passes.",
+            }]
         added = store.add_many(planned, objective=flow_objective)
-        agent._emit_activity(f"ForceFlow: AI {len(added)} sıralı görev oluşturdu")
+        agent._emit_activity(f"ForceFlow: {len(added)} sıralı görev hazır")
     repair_rounds = int(agent.cfg.data.get("flow_repair_rounds", 3))
     result = run_forceflow_queue(
         agent,

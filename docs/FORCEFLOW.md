@@ -4,7 +4,7 @@ ForceFlow is ForceCode's persistent sequential execution engine. It converts a l
 
 ## Lifecycle
 
-1. A normal project request automatically asks the selected AI for a compact JSON task plan without tools or hidden reasoning. Simple chat and explicit Plan mode bypass ForceFlow.
+1. A normal cohesive project request becomes one local task immediately. Explicit sequences, multi-domain requests, structured lists, and very large objectives ask the selected AI for a compact JSON plan. Simple chat and explicit Plan mode bypass ForceFlow.
 2. Tasks are stored in `.forgecode/tasks.json` with an ID, the root objective, acceptance criterion, status, attempts, repair attempts, changed files, confidence, and missing evidence.
 3. The active item runs through the normal Agent and Execution Kernel. Later items are included only as queue state, never as permission to start early.
 4. ForceFlow verifies changed paths as non-empty UTF-8 artifacts and records compact hashes. When the only missing evidence is a focused check, it invokes project test auto-detection.
@@ -28,3 +28,5 @@ Both tools stay inside the existing WorkspaceTools and ForceSandbox boundaries. 
 ## Limits
 
 `flow_max_tasks` defaults to 12 (maximum 50), `flow_max_rounds` defaults to 3 (maximum 10), and `flow_repair_rounds` defaults to 3 (maximum 10; zero disables in-run repair). `flow_quality_gate` is enabled by default. These limits prevent infinite retry loops while allowing ForceCode to be left working unattended.
+
+Remote plans are adaptively capped at six tasks for normal requests and eight for very large requests. `preflight_timeout_seconds` defaults to 12 and bounds optional planner/orchestrator/safety calls even when the main request watchdog is disabled. ForceFlow suppresses duplicate automatic orchestration per queue item, but the active model can still call `delegate_task` deliberately.
