@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.0**. This checkout includes the **v7.7.1 performance hotfix**: ForceFlow uses a zero-wait local plan for cohesive work, reserves remote decomposition for genuinely multi-stage objectives, repairs failures automatically, and advances only after deterministic verification.
+Current stable release: **v7.7.2**. ForceFlow uses a zero-wait local plan for cohesive work, reserves remote decomposition for genuinely multi-stage objectives, repairs failures automatically, and advances only after deterministic verification. ForceSandbox no longer imposes the old 200 MB aggregate project/transfer ceiling.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -143,7 +143,7 @@ Framework-free website work receives a final deterministic quality gate independ
 
 ## ForceSandbox
 
-No per-task sandbox command is required. Each request works in a ForceCode-owned copy and keeps internet access enabled by default. Windows commands run in a native AppContainer process tree with a separate identity per project, a private home/temp area, a process and memory limit, sanitized environment variables, and no inherited API key. A compact shared Python runtime contains the standard library but excludes host `site-packages` and user packages. Open `/sandbox` to view status and the workspace, toggle network or automatic transfer, create/restore snapshots, inspect redacted logs, select `auto`, `native`, Docker, or Podman, or clean the isolated copy. Set `sandbox_enabled` to `false` only if you intentionally want the legacy direct-workspace behavior; restart ForceCode after changing it.
+No per-task sandbox command is required. Each request works in a ForceCode-owned copy and keeps internet access enabled by default. Windows commands run in a native AppContainer process tree with a separate identity per project, a private home/temp area, a process and memory limit, sanitized environment variables, and no inherited API key. A compact shared Python runtime contains the standard library but excludes host `site-packages` and user packages. The aggregate project and verified-transfer size is unlimited by default (`sandbox_max_transfer_mb: 0`); set a positive MB value only when you intentionally want a cap. The separate per-file guard remains configurable with `sandbox_max_file_mb`. Open `/sandbox` to view status and the workspace, toggle network or automatic transfer, create/restore snapshots, inspect redacted logs, select `auto`, `native`, Docker, or Podman, or clean the isolated copy. Set `sandbox_enabled` to `false` only if you intentionally want the legacy direct-workspace behavior; restart ForceCode after changing it.
 
 ## Execution Kernel
 

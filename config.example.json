@@ -1,5 +1,5 @@
 {
-  "config_version": 23,
+  "config_version": 24,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",
@@ -87,5 +87,5 @@
   "sandbox_auto_transfer": true,
   "sandbox_snapshot_enabled": true,
   "sandbox_max_file_mb": 20,
-  "sandbox_max_transfer_mb": 200
+  "sandbox_max_transfer_mb": 0
 }

@@ -1577,9 +1577,35 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 23)
+            self.assertEqual(cfg.data["config_version"], 24)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
+
+    def test_legacy_sandbox_default_is_migrated_to_unlimited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            (home / "config.json").write_text(json.dumps({
+                "config_version": 23,
+                "sandbox_max_transfer_mb": 200,
+            }), encoding="utf-8")
+
+            cfg = forgecode.Config(home)
+
+            self.assertEqual(cfg.data["config_version"], 24)
+            self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
+            cfg.set_value("sandbox_max_transfer_mb", "0")
+            self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            (home / "config.json").write_text(json.dumps({
+                "config_version": 23,
+                "sandbox_max_transfer_mb": 512,
+            }), encoding="utf-8")
+
+            cfg = forgecode.Config(home)
+
+            self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 512)
 
     def test_prompt_and_memory_commands_persist_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1697,7 +1723,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 23)
+        self.assertEqual(cfg.data["config_version"], 24)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -4018,6 +4044,22 @@ class ForceSandboxTests(unittest.TestCase):
             unreadable.write_text("blocked", encoding="utf-8")
             with mock.patch.object(sandbox, "_digest", side_effect=PermissionError(13, "Permission denied", str(unreadable))):
                 self.assertEqual(sandbox.manifest(project), {})
+
+    def test_zero_transfer_limit_allows_large_aggregate_project_and_transfer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, sandbox = self.make_manager(pathlib.Path(tmp))
+            cfg.data["sandbox_max_file_mb"] = 2
+            cfg.data["sandbox_max_transfer_mb"] = 0
+            sandbox.prepare()
+            payload = b"x" * (700 * 1024)
+            (sandbox.workspace / "first.bin").write_bytes(payload)
+            (sandbox.workspace / "second.bin").write_bytes(payload)
+
+            result = sandbox.transfer(verified=True)
+
+            self.assertEqual(result.status, "applied")
+            self.assertEqual((project / "first.bin").stat().st_size, len(payload))
+            self.assertEqual((project / "second.bin").stat().st_size, len(payload))
 
     def test_windows_auto_engine_prefers_native_without_docker(self):
         with tempfile.TemporaryDirectory() as tmp:
