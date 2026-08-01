@@ -116,6 +116,18 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(reloaded.data["auto_approve_writes"])
             self.assertEqual(reloaded.data["temperature"], 0.4)
 
+    def test_auto_model_switch_defaults_off_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            cfg = forgecode.Config(home)
+            self.assertFalse(cfg.data["auto_model_switch"])
+
+            cfg.set_value("auto_model_switch", "true")
+            self.assertTrue(forgecode.Config(home).data["auto_model_switch"])
+
+            cfg.set_value("auto_model_switch", "false")
+            self.assertFalse(forgecode.Config(home).data["auto_model_switch"])
+
     def test_rejects_invalid_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
@@ -1355,6 +1367,7 @@ class ProviderTests(unittest.TestCase):
                 "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer",
                 "retry_attempts": 1,
+                "auto_model_switch": True,
                 "model_cache": {"custom": {"models": ["3.5", "opus-4.8", "sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1374,6 +1387,7 @@ class ProviderTests(unittest.TestCase):
                 "base_url": "https://proxy.test/v1", "model": "3.5", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "auto_subagents": False, "retry_attempts": 1,
                 "streaming_enabled": False,
+                "auto_model_switch": True,
                 "model_cache": {"custom": {"models": ["3.5", "sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1412,6 +1426,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "model-a", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer",
+                "auto_model_switch": True,
                 "model_cache": {"custom": {"models": ["model-a", "model-b"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1421,6 +1436,24 @@ class ProviderTests(unittest.TestCase):
                 with self.assertRaisesRegex(forgecode.ApiError, "otomatik denenmedi"):
                     agent.test_api()
             self.assertEqual(post.call_count, 1)
+
+    def test_model_unavailable_preserves_selected_model_when_auto_switch_is_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("custom")
+            cfg.data.update({
+                "model": "gpt-5.6-sol",
+                "auto_model_switch": False,
+                "model_cache": {"custom": {"models": ["gpt-5.6-sol", "claude-opus-4-7"], "catalog": []}},
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            result = agent._recover_custom_model(forgecode.ApiError("model unavailable"), retry_original=True)
+
+            self.assertIsNone(result)
+            self.assertEqual(cfg.data["model"], "gpt-5.6-sol")
+            self.assertTrue(any("seçili model korunuyor" in line for line in agent.activity_lines))
 
     def test_rate_limit_stops_custom_model_probe_fanout(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1448,6 +1481,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "claude-sonnet-5", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "custom_protocol": "openai",
+                "auto_model_switch": True,
                 "model_cache": {"custom": {"models": ["claude-opus-4.8", "claude-sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1577,7 +1611,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 24)
+            self.assertEqual(cfg.data["config_version"], 25)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1591,7 +1625,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 24)
+            self.assertEqual(cfg.data["config_version"], 25)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1723,7 +1757,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 24)
+        self.assertEqual(cfg.data["config_version"], 25)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))

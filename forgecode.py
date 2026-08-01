@@ -54,7 +54,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.7.2"
+VERSION = "7.7.3"
 
 _UI_LANGUAGE = "tr"
 
@@ -264,7 +264,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 24,
+    "config_version": 25,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -319,6 +319,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "custom_model_hints": [],
     "custom_rejected_models": [],
     "custom_no_tool_models": [],
+    "auto_model_switch": False,
     "custom_protocol": "auto",
     "custom_endpoint_path": "auto",
     "last_model_endpoint": "",
@@ -470,7 +471,7 @@ class Config:
         # migrate the legacy default; deliberately customized limits remain.
         if saved.get("config_version", 1) < 24 and saved.get("sandbox_max_transfer_mb", 200) == 200:
             saved["sandbox_max_transfer_mb"] = 0
-        saved["config_version"] = 24
+        saved["config_version"] = 25
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -611,7 +612,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -7558,6 +7559,11 @@ class Agent:
 
     def _recover_custom_model(self, cause: ApiError, retry_original: bool = False) -> ModelReply | None:
         if self.cfg.data.get("provider") not in {"custom", "kimchi"} or not self._is_model_unavailable_error(cause):
+            return None
+        if not self.cfg.data.get("auto_model_switch", False):
+            self._emit_activity(
+                f"Otomatik model değiştirme kapalı · seçili model korunuyor: {self.cfg.data.get('model', '')}"
+            )
             return None
         if custom_probe_should_stop(cause):
             if "305" in str(cause):

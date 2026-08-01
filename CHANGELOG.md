@@ -2,6 +2,14 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.7.3] - 2026-08-02
+
+### Changed
+
+- Automatic model switching is now disabled by default. Provider, tool, route, model-unavailable, and transient API errors preserve the model explicitly selected by the user.
+- Added the typed `auto_model_switch` setting. Users can opt in with `/set auto_model_switch true` and turn it off again without reconnecting.
+- When switching is disabled, diagnostics state that the selected model was preserved instead of silently probing alternatives.
+
 ## [7.7.2] - 2026-08-02
 
 ### Changed

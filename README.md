@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. ForceFlow uses a zero-wait local plan for cohesive work, reserves remote decomposition for genuinely multi-stage objectives, repairs failures automatically, and advances only after deterministic verification. ForceSandbox no longer imposes the old 200 MB aggregate project/transfer ceiling.
+Current stable release: **v7.7.2**. This checkout includes **v7.7.3**, where the selected model is pinned by default instead of silently changing after an API error. ForceFlow uses a zero-wait local plan for cohesive work, and ForceSandbox has no aggregate project/transfer ceiling.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -121,6 +121,14 @@ Force -p "Review the current changes and run the relevant tests"
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+The selected model remains pinned when a provider reports it as unavailable. To explicitly allow ForceCode to probe and permanently select another model from the same custom/Kimchi service, enable the optional setting:
+
+```text
+/set auto_model_switch true
+```
+
+Disable it again with `/set auto_model_switch false`.
 
 ## ForceFlow sequential tasks
 
