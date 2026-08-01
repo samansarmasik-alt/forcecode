@@ -1,5 +1,5 @@
 {
-  "config_version": 25,
+  "config_version": 26,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",
@@ -54,6 +54,8 @@
   "custom_rejected_models": [],
   "custom_no_tool_models": [],
   "auto_model_switch": false,
+  "skills_enabled": true,
+  "skill_auto_select": true,
   "custom_protocol": "auto",
   "custom_endpoint_path": "auto",
   "last_model_endpoint": "",

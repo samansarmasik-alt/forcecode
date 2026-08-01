@@ -2,6 +2,21 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.8.0] - 2026-08-02
+
+### Added
+
+- Added a dependency-free, local-first Agent Skills engine compatible with the portable `SKILL.md` directory format and YAML frontmatter.
+- Added progressive disclosure: ForgeCode scores enabled skills against each user request and injects only the one to three most relevant instruction bodies according to the efficiency mode.
+- Added four built-in skills for root-cause debugging, frontend quality, evidence-driven project audits, and release readiness.
+- Added `/skills` plus `/skill show|discover|install|update|enable|disable|remove`, along with `list_skills` and guarded `manage_skill` AI tools.
+- Added safe GitHub installation from repository, tree/blob, raw `SKILL.md`, and `owner/repo` sources. Imports accept only bounded UTF-8 instructions; scripts and binaries are never downloaded or executed.
+- Added user-wide and project-scoped skills, deterministic precedence, persistent enable/disable state, and natural-language skill management authorization.
+
+### Security
+
+- Remote skill mutation requires an explicit skill-management request. Skill instructions are labeled lower-priority and cannot override user intent, sandbox boundaries, approvals, or system safety.
+
 ## [7.7.3] - 2026-08-02
 
 ### Changed

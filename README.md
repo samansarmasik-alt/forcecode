@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. This checkout includes **v7.7.3**, where the selected model is pinned by default instead of silently changing after an API error. ForceFlow uses a zero-wait local plan for cohesive work, and ForceSandbox has no aggregate project/transfer ceiling.
+Current stable release: **v7.7.2**. This checkout includes **v7.8.0** with a local-first Agent Skills engine, automatic task-matched skill loading, safe GitHub installation, and AI/CLI skill management. The selected model remains pinned by default, ForceFlow uses a zero-wait local plan for cohesive work, and ForceSandbox has no aggregate project/transfer ceiling.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -111,6 +111,7 @@ Force -p "Review the current changes and run the relevant tests"
 | Request reliability | `/watchdog off\|fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
 | Sandbox | `/sandbox` (arrow-key settings, pending transfer, snapshots, logs, cleanup) |
+| Skills | `/skills`, `/skill show\|discover\|install\|update\|enable\|disable\|remove` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
@@ -121,6 +122,31 @@ Force -p "Review the current changes and run the relevant tests"
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+## Agent Skills
+
+ForgeCode supports the portable `SKILL.md` directory format with YAML frontmatter (`name`, `description`, and optional `version`/`triggers`). Skill metadata stays local, and only the instructions selected for the current task are added to model context. This progressive-disclosure design avoids sending every installed skill on every request.
+
+Four dependency-free skills are built in and enabled by default: `debug-root-cause`, `frontend-quality`, `project-audit`, and `release-readiness`. List or inspect them with:
+
+```text
+/skills
+/skill show frontend-quality
+/skill discover vercel-labs/agent-skills
+```
+
+Install a skill for all projects or only the current project from an HTTPS GitHub repository, `tree`/`blob` URL, raw `SKILL.md` URL, or `owner/repo` shorthand:
+
+```text
+/skill install owner/repo user
+/skill install owner/repo@skill-name user
+/skill install https://github.com/owner/repo/tree/main/skills/frontend project
+/skill update frontend
+/skill disable frontend
+/skill remove frontend
+```
+
+Natural-language requests such as “install this GitHub skill” expose the same operations to the selected AI. Remote changes are rejected unless the current user request explicitly asks for skill management. GitHub imports are limited to a UTF-8 `SKILL.md` file (128 KB maximum); scripts, binaries, hooks, and executable dependencies are never imported or run automatically. Public repositories work without setup; private repository discovery can use a user-supplied `GITHUB_TOKEN` environment variable, which ForgeCode never stores in skill metadata. User skills live in `%LOCALAPPDATA%\ForgeCode\skills`; project skills live in `.forgecode\skills`. Project skills override user skills, which override built-ins with the same name. Set `skill_auto_select` to `false` to keep skills installed but require explicit `$skill-name` selection, or set `skills_enabled` to `false` to disable the engine.
 
 The selected model remains pinned when a provider reports it as unavailable. To explicitly allow ForceCode to probe and permanently select another model from the same custom/Kimchi service, enable the optional setting:
 
@@ -243,6 +269,7 @@ Global user settings remain outside the repository:
 | Global launcher | `%LOCALAPPDATA%\ForgeCode\bin\Force.cmd` |
 | User-level ForceContext preferences | `%LOCALAPPDATA%\ForgeCode\memory\user.json` |
 | ForceSandbox workspaces, snapshots, and logs | `%LOCALAPPDATA%\ForgeCode\sandboxes\<project-id>` |
+| User-wide Agent Skills and enable/disable state | `%LOCALAPPDATA%\ForgeCode\skills` |
 
 `FORGECODE_HOME` can override the global settings directory. On first launch after upgrading, legacy Windows settings from `%USERPROFILE%\.forgecode` are copied to AppData when no AppData configuration exists; the legacy files are not deleted automatically.
 

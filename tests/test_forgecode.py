@@ -1611,7 +1611,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 25)
+            self.assertEqual(cfg.data["config_version"], 26)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1625,7 +1625,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 25)
+            self.assertEqual(cfg.data["config_version"], 26)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1757,7 +1757,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 25)
+        self.assertEqual(cfg.data["config_version"], 26)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -2026,7 +2026,7 @@ class CommandAssistTests(unittest.TestCase):
             cfg.set_value("work_mode", "plan")
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
             names = {tool["name"] for tool in agent._effective_tools("site oluştur")}
-            self.assertEqual(names, {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context", "get_diagnostics", "set_forgecode_setting", "delegate_task"})
+            self.assertEqual(names, {"list_files", "read_file", "search", "verify_artifacts", "web_quality_check", "graph_context", "get_diagnostics", "set_forgecode_setting", "list_skills", "delegate_task"})
 
     def test_status_footer_shows_modes_and_fixed_session_cost(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4293,6 +4293,129 @@ class ForceSandboxTests(unittest.TestCase):
             self.assertEqual(sandbox.pending_changes(), [])
             self.assertTrue(agent.last_execution_report["verification_passed"])
             self.assertEqual(provider.request.call_count, 3)
+
+
+class SkillEngineTests(unittest.TestCase):
+    def make_manager(self, base: pathlib.Path):
+        project = base / "project"
+        project.mkdir()
+        cfg = forgecode.Config(base / "home")
+        return project, cfg, forgecode.SkillManager(project, cfg)
+
+    def test_portable_skill_document_parses_frontmatter(self):
+        record = forgecode.parse_skill_document(
+            "---\nname: API Review\ndescription: Review API contracts safely\nversion: 2.1\n"
+            "triggers: [api, endpoint, contract]\n---\n\n# Workflow\nInspect routes and tests.\n"
+        )
+        self.assertEqual(record.name, "api-review")
+        self.assertEqual(record.version, "2.1")
+        self.assertEqual(record.triggers, ("api", "endpoint", "contract"))
+        self.assertIn("Inspect routes", record.instructions)
+
+    def test_builtins_are_enabled_and_selection_is_progressive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, cfg, skills = self.make_manager(pathlib.Path(tmp))
+            names = {record.name for record in skills.catalog(include_disabled=False)}
+            self.assertTrue({
+                "debug-root-cause", "frontend-quality", "project-audit", "release-readiness"
+            }.issubset(names))
+
+            selected = skills.select("Restoran web sitesinin tasarımını ve animasyonlarını iyileştir", "balanced")
+            self.assertIn("frontend-quality", [record.name for record in selected])
+            self.assertLessEqual(len(selected), 2)
+            self.assertNotIn("release-readiness", [record.name for record in selected])
+
+            cfg.data["skill_auto_select"] = False
+            self.assertEqual(skills.select("web sitesi tasarımı", "balanced"), [])
+            explicit = skills.select("$frontend-quality kullanarak incele", "balanced")
+            self.assertEqual([record.name for record in explicit], ["frontend-quality"])
+
+    def test_project_skill_overrides_builtin_and_disable_persists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, skills = self.make_manager(pathlib.Path(tmp))
+            created = skills.create(
+                "frontend-quality", "Project-specific frontend rules", "Always preserve the local design tokens.",
+                "project", user_initiated=True,
+            )
+            self.assertEqual(created.scope, "project")
+            self.assertEqual(skills.get("frontend-quality").description, "Project-specific frontend rules")
+
+            skills.set_enabled("frontend-quality", False, user_initiated=True)
+            self.assertNotIn("frontend-quality", [record.name for record in skills.catalog(include_disabled=False)])
+            reloaded = forgecode.SkillManager(skills.root, skills.cfg)
+            self.assertNotIn("frontend-quality", [record.name for record in reloaded.catalog(include_disabled=False)])
+            skills.set_enabled("frontend-quality", True, user_initiated=True)
+            self.assertIn("frontend-quality", [record.name for record in skills.catalog(include_disabled=False)])
+
+    def test_skill_mutation_requires_explicit_user_intent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg, skills = self.make_manager(pathlib.Path(tmp))
+            tools = forgecode.WorkspaceTools(project, cfg, lambda _: False, skill_manager=skills)
+            blocked = tools.execute("manage_skill", {
+                "action": "create", "name": "team-rule", "description": "Team workflow",
+                "instructions": "Run focused tests.", "scope": "project",
+            })
+            self.assertIn("PermissionError", blocked)
+
+            skills.set_request("team-rule diye bir skill oluştur")
+            allowed = tools.execute("manage_skill", {
+                "action": "create", "name": "team-rule", "description": "Team workflow",
+                "instructions": "Run focused tests.", "scope": "project",
+            })
+            self.assertTrue(allowed.startswith("OK:"), allowed)
+            self.assertTrue((project / ".forgecode" / "skills" / "team-rule" / "SKILL.md").is_file())
+
+    def test_github_install_accepts_skill_md_only_and_rejects_other_hosts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, skills = self.make_manager(pathlib.Path(tmp))
+            document = (
+                "---\nname: api-review\ndescription: Review API changes\ntriggers: [api]\n---\n\n"
+                "Inspect the API contract and run tests.\n"
+            )
+            source = "https://github.com/example/skills/tree/main/api-review"
+            with mock.patch.object(forgecode.SkillManager, "_download_skill", return_value=(document, source)):
+                record = skills.install(source, "user", user_initiated=True)
+            self.assertEqual(record.name, "api-review")
+            self.assertEqual(
+                sorted(path.name for path in (skills.user_dir / "api-review").iterdir()),
+                ["SKILL.md", "source.json"],
+            )
+            api, _ = skills._github_target(source)
+            self.assertIn("/contents/api-review/SKILL.md?ref=main", api)
+            with self.assertRaisesRegex(ValueError, "GitHub"):
+                skills._github_target("https://evil.example/SKILL.md")
+            with self.assertRaisesRegex(ValueError, "sorgu"):
+                skills._github_target("https://github.com/example/skills?token=secret")
+
+            discovered_url = "https://github.com/example/catalog/blob/main/skills/api-review/SKILL.md"
+            with mock.patch.object(forgecode.SkillManager, "discover_github", return_value=[{
+                "name": "api-review", "path": "skills/api-review/SKILL.md", "url": discovered_url,
+            }]), mock.patch.object(
+                forgecode.SkillManager, "_download_skill", return_value=(document, discovered_url)
+            ) as download:
+                shorthand = skills.install("example/catalog@api-review", "project", user_initiated=True)
+            self.assertEqual(shorthand.scope, "project")
+            download.assert_called_once_with(discovered_url)
+
+    def test_active_skill_is_injected_without_loading_unrelated_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_subagents": False, "power_mode": "off", "forcegraph_auto_enabled": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            provider = mock.MagicMock()
+            provider.request.return_value = forgecode.ModelReply(
+                "Erişilebilirlik sorunlarını listeledim.", [], forgecode.Usage(),
+                [{"type": "text", "text": "Erişilebilirlik sorunlarını listeledim."}],
+            )
+            agent.provider = provider
+
+            answer = agent.ask("Bu web sitesindeki erişilebilirlik sorunları nelerdir?")
+
+            self.assertIn("Erişilebilirlik", answer)
+            system_prompt = provider.request.call_args.args[0]
+            self.assertIn("## frontend-quality", system_prompt)
+            self.assertNotIn("## release-readiness", system_prompt)
 
 
 if __name__ == "__main__":
