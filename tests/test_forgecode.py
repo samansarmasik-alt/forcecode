@@ -180,14 +180,18 @@ class ConfigTests(unittest.TestCase):
             cfg.set_value("power_mode", "on")
             cfg.set_value("flow_max_tasks", "20")
             cfg.set_value("flow_max_rounds", "5")
+            cfg.set_value("preflight_timeout_seconds", "9")
             self.assertEqual((cfg.data["web_search_mode"], cfg.data["thinking_mode"], cfg.data["efficiency_mode"], cfg.data["power_mode"]), ("on", "medium", "max", "on"))
             self.assertEqual((cfg.data["flow_max_tasks"], cfg.data["flow_max_rounds"]), (20, 5))
+            self.assertEqual(cfg.data["preflight_timeout_seconds"], 9)
             with self.assertRaises(ValueError):
                 cfg.set_value("efficiency_mode", "turbo")
             with self.assertRaises(ValueError):
                 cfg.set_value("power_mode", "turbo")
             with self.assertRaises(ValueError):
                 cfg.set_value("flow_max_tasks", "51")
+            with self.assertRaises(ValueError):
+                cfg.set_value("preflight_timeout_seconds", "61")
 
     def test_power_mode_defaults_to_auto(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,6 +355,21 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("OK", result)
         self.assertEqual(confirmations, [])
         self.assertEqual(assessments[0][0], "write")
+
+    def test_sandboxed_smart_autopilot_write_skips_remote_safety_preflight(self):
+        self.cfg.data["smart_autopilot_mode"] = True
+        sandbox = mock.Mock()
+        sandbox.active.return_value = True
+        assessor = mock.Mock(return_value=("ask", "should not run"))
+        confirmations = []
+        tools = forgecode.WorkspaceTools(
+            self.root, self.cfg, lambda question: confirmations.append(question) or False,
+            assessor, sandbox=sandbox,
+        )
+        result = tools.tool_write_file("site/index.html", "<h1>Safe sandbox write</h1>")
+        self.assertIn("OK", result)
+        assessor.assert_not_called()
+        self.assertEqual(confirmations, [])
 
     def test_smart_autopilot_asks_only_when_ai_finds_risk(self):
         self.cfg.data["smart_autopilot_mode"] = True
@@ -792,6 +811,69 @@ class GoalAndHistoryTests(unittest.TestCase):
             self.assertEqual([task["status"] for task in agent.task_queue.tasks], ["completed", "completed"])
             for command in ("/flow", "/task", "/tasks", "/batch"):
                 self.assertNotIn(command, forgecode.COMMANDS)
+
+    def test_forceflow_fast_path_skips_remote_planner_for_one_cohesive_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False, "flow_quality_gate": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            def fake_ask(prompt, on_tool=None):
+                agent.tools.tool_write_file("index.html", "site")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 0.9,
+                }
+                return "Verified."
+
+            with mock.patch.object(forgecode, "create_forceflow_plan") as planner, mock.patch.object(
+                agent, "ask", side_effect=fake_ask
+            ):
+                answer = forgecode.run_automatic_forceflow(agent, "Bana çok iyi bir Minecraft client sitesi yap")
+
+            planner.assert_not_called()
+            self.assertIn("1 görevi", answer)
+            self.assertEqual(len(agent.task_queue.tasks), 1)
+
+    def test_forceflow_decomposition_heuristic_avoids_overplanning(self):
+        self.assertFalse(forgecode.forceflow_needs_decomposition("Bana çok iyi bir Minecraft client sitesi yap"))
+        self.assertTrue(forgecode.forceflow_needs_decomposition("Önce API oluştur, sonra arayüzü yap, ardından test et"))
+        self.assertTrue(forgecode.forceflow_needs_decomposition("Build both project files"))
+
+    def test_forceflow_collapses_old_excessive_cohesive_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            store = forgecode.TaskQueueStore(root)
+            tasks = store.add_many(
+                [f"Website step {number}" for number in range(1, 12)],
+                flow_id="old-plan",
+                objective="Bana çok iyi bir Minecraft client sitesi yap",
+            )
+            store.update(tasks[0], "paused")
+            removed = store.collapse_unresolved_flow(tasks[0], tasks[0]["objective"])
+            self.assertEqual(removed, 10)
+            self.assertEqual(len(store.tasks), 1)
+            self.assertIn("Minecraft", store.tasks[0]["title"])
+
+    def test_forceflow_task_skips_duplicate_auto_orchestrator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_subagents": True, "power_mode": "off"})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            provider = mock.MagicMock()
+            provider.request.return_value = forgecode.ModelReply(
+                "Architecture explained.", [], forgecode.Usage(),
+                {"role": "assistant", "content": "Architecture explained."},
+            )
+            agent.provider = provider
+            agent._forceflow_active = True
+            with mock.patch.object(agent, "plan_delegations") as planner, mock.patch.object(
+                agent, "_should_orchestrate", return_value=True
+            ):
+                answer = agent.ask("Explain the project architecture")
+            self.assertIn("Architecture", answer)
+            planner.assert_not_called()
 
     def test_simple_chat_skips_automatic_forceflow_but_build_request_uses_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1480,11 +1562,13 @@ class CommandAssistTests(unittest.TestCase):
 
             def fake_ask(child, *args, **kwargs):
                 seen["timeout"] = child.cfg.data["timeout_seconds"]
+                seen["watchdog"] = child.cfg.data["watchdog_enabled"]
                 return "ok"
 
             with mock.patch.object(forgecode.Agent, "ask", fake_ask):
                 report = agent.delegate("plan", "inspect")
             self.assertEqual(seen["timeout"], 17)
+            self.assertTrue(seen["watchdog"])
             self.assertIn("SUBAGENT (plan)", report)
 
     def test_legacy_silent_timeout_is_migrated(self):
@@ -3144,6 +3228,24 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 agent._standalone_request("Yardımcı", "system", "user", 32).text,
                 "geç ama başarılı",
             )
+
+    def test_watchdog_off_keeps_optional_preflight_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"watchdog_enabled": False, "preflight_timeout_seconds": 0.05})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            class SlowProvider:
+                def request(self, *args):
+                    forgecode.time.sleep(0.25)
+                    return forgecode.ModelReply("too late", [], forgecode.Usage(), [])
+
+            agent.provider = SlowProvider()
+            started = forgecode.time.monotonic()
+            with self.assertRaises(forgecode.ApiError):
+                agent._standalone_request("Optional planner", "system", "user", 32)
+            self.assertLess(forgecode.time.monotonic() - started, 0.2)
 
     def test_watchdog_off_passes_no_timeout_to_chat_transport(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))

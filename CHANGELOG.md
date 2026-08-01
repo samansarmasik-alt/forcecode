@@ -2,6 +2,21 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.7.1] - 2026-08-01
+
+### Performance
+
+- Cohesive one-part project requests now use an immediate local one-task ForceFlow plan instead of waiting for a separate remote planner. Remote decomposition is reserved for genuinely sequential, multi-domain, bulleted, or very large objectives.
+- AI-generated plans are capped adaptively at six tasks for normal objectives and eight for very large objectives, preventing simple site requests from expanding into 10-12 API-heavy steps.
+- ForceFlow tasks no longer run a second automatic remote orchestrator before every item. The main model retains `delegate_task` and can still start a specialist when it provides real value.
+- Optional planner, orchestrator, and safety preflights now have a separate 12-second budget even when `/watchdog off` keeps the main generation unlimited. Optional subagents also remain bounded by `subagent_timeout_seconds`.
+- Smart Autopilot no longer calls a remote safety model for ordinary writes already isolated inside ForceSandbox; deterministic safety checks and verified transfer gates remain active.
+
+### Fixed
+
+- Existing over-planned cohesive ForceFlow chains are collapsed on resume, so v7.7.0 queues with many untouched website subtasks do not keep wasting requests after upgrading.
+- Frontend quality and automatic recovery remain enabled on the fast path; the performance fix removes duplicate coordination rather than verification.
+
 ## [7.7.0] - 2026-08-01
 
 ### Added

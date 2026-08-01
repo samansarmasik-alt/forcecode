@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current release: **v7.7.0**. Automatic ForceFlow turns normal project requests into a persistent, ordered task chain, diagnoses failures without waiting for another prompt, and advances only after deterministic verification—no queue command required.
+Current stable release: **v7.7.0**. This checkout includes the **v7.7.1 performance hotfix**: ForceFlow uses a zero-wait local plan for cohesive work, reserves remote decomposition for genuinely multi-stage objectives, repairs failures automatically, and advances only after deterministic verification.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -21,6 +21,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Default-on ForceSandbox isolation with a native Windows AppContainer engine, per-project identities, snapshots, conflict detection, rollback, and controlled transfer.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
 - Automatic ForceFlow AI task decomposition, crash-safe sequential execution, evidence-guided unattended repair, and verification-gated progression without manual queue commands.
+- Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and the main model remains unlimited when `/watchdog off` is selected.
 - A model-independent web quality gate that rejects broken assets, placeholders, weak one-file scaffolds, missing responsive behavior, and basic accessibility failures before a site can be reported complete.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
@@ -123,7 +124,9 @@ Run `/help` for the complete command list and usage syntax.
 
 ## ForceFlow sequential tasks
 
-ForceFlow is for work that must happen in order. Write the request normally. For real project work, ForceCode asks the selected model for a compact task plan, stores it locally, and executes one item at a time. If splitting adds no value, the AI returns one task; greetings and simple conversation bypass the planner. Every task receives its own acceptance criterion and Execution Kernel receipt. Later tasks stay blocked until the current task has a visible final result, verified project artifacts, and any required focused test evidence.
+ForceFlow is for work that must happen in order. Write the request normally. Cohesive requests such as creating one website or fixing one bug become one local task instantly. Only explicit sequences, multi-domain objectives, structured lists, and very large requests call the selected model for decomposition. ForceCode stores the resulting plan locally and executes one item at a time. Every task receives its own acceptance criterion and Execution Kernel receipt. Later tasks stay blocked until the current task has a visible final result, verified project artifacts, and any required focused test evidence.
+
+ForceFlow itself is already an orchestrator, so it does not launch another remote orchestration preflight for every subtask. The main model still has the `delegate_task` tool and may start a focused specialist when useful. Planner/orchestrator/safety preflights use `preflight_timeout_seconds` (12 seconds by default); `/watchdog off` continues to apply to the main generation, not optional helpers.
 
 ```text
 you › add authentication, then build the settings UI, then test the complete flow
