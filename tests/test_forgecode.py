@@ -4418,5 +4418,147 @@ class SkillEngineTests(unittest.TestCase):
             self.assertNotIn("## release-readiness", system_prompt)
 
 
+class UniversalProjectToolchainTests(unittest.TestCase):
+    def make_tools(self, root: pathlib.Path):
+        cfg = forgecode.Config(root / "home")
+        cfg.data.update({
+            "auto_approve_writes": True,
+            "auto_approve_commands": True,
+            "sandbox_enabled": False,
+        })
+        project = root / "project"
+        project.mkdir()
+        return project, cfg, forgecode.WorkspaceTools(project, cfg, lambda _: True)
+
+    def test_proxy_arguments_normalize_general_tool_aliases(self):
+        self.assertEqual(forgecode.normalize_tool_name("ProjectToolchain"), "project_toolchain")
+        args = forgecode.normalize_tool_arguments("project_toolchain", {
+            "operation": "scaffold",
+            "project_type": "minecraft",
+            "project_name": "Welcome Tools",
+            "package": "io.github.example.welcome",
+            "minecraft_version": "26.2",
+            "java_version": "25",
+        })
+        self.assertEqual(args["action"], "scaffold")
+        self.assertEqual(args["target"], "paper-plugin")
+        self.assertEqual(args["name"], "Welcome Tools")
+        self.assertEqual(args["platform_version"], "26.2")
+
+    def test_cpp_scaffold_is_multifile_verified_and_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, tools = self.make_tools(pathlib.Path(tmp))
+            result = tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "cpp-cmake", "name": "Native App",
+            })
+            self.assertTrue(result.startswith("OK: scaffold created"), result)
+            self.assertTrue((project / "CMakeLists.txt").is_file())
+            self.assertTrue((project / "include/native_app/greeting.hpp").is_file())
+            self.assertTrue((project / "tests/greeting_test.cpp").is_file())
+            inspection = tools.execute("project_toolchain", {"action": "inspect"})
+            self.assertIn('"type": "cpp-cmake"', inspection)
+            refused = tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "cpp-cmake", "name": "Native App",
+            })
+            self.assertIn("Refusing to overwrite", refused)
+
+    def test_dotnet_scaffold_and_single_file_package_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, tools = self.make_tools(pathlib.Path(tmp))
+            result = tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "dotnet-exe", "name": "Desk Runner",
+                "package_name": "Example.DeskRunner", "language_version": "net8.0",
+            })
+            self.assertTrue(result.startswith("OK:"), result)
+            self.assertIn("<OutputType>Exe</OutputType>", (project / "DeskRunner.csproj").read_text(encoding="utf-8"))
+            published = project / "bin" / "Release" / "net8.0" / "win-x64" / "publish" / "DeskRunner.exe"
+            published.parent.mkdir(parents=True)
+            published.write_bytes(b"MZ-test")
+            with mock.patch.object(tools, "tool_run_command", return_value="exit_code=0\npublished") as run:
+                packaged = tools.execute("project_toolchain", {
+                    "action": "package", "runtime": "win-x64", "self_contained": True,
+                })
+            self.assertTrue(packaged.startswith("OK: toolchain package passed"), packaged)
+            command = run.call_args.args[0]
+            self.assertIn("dotnet publish", command)
+            self.assertIn("-p:PublishSingleFile=true", command)
+            self.assertIn("--self-contained true", command)
+
+    def test_java_scaffold_has_executable_jar_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, tools = self.make_tools(pathlib.Path(tmp))
+            result = tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "java-jar", "name": "Archive Worker",
+                "package_name": "io.github.example.archive", "language_version": "21",
+            })
+            self.assertTrue(result.startswith("OK:"), result)
+            pom = (project / "pom.xml").read_text(encoding="utf-8")
+            self.assertIn("maven-jar-plugin", pom)
+            self.assertIn("<mainClass>io.github.example.archive.ArchiveWorkerApplication</mainClass>", pom)
+            self.assertTrue(
+                (project / "src/main/java/io/github/example/archive/ArchiveWorkerApplication.java").is_file()
+            )
+            artifact = project / "target" / "archive-worker-1.0.0.jar"
+            artifact.parent.mkdir()
+            artifact.write_bytes(b"PK-test")
+            with mock.patch.object(tools, "tool_run_command", return_value="exit_code=0\nBUILD SUCCESS") as run:
+                packaged = tools.execute("project_toolchain", {"action": "package"})
+            self.assertIn("artifacts=target/archive-worker-1.0.0.jar", packaged)
+            self.assertEqual(run.call_args.args[0], "mvn -B -ntp package")
+
+    def test_paper_scaffold_matches_current_gradle_plugin_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, tools = self.make_tools(pathlib.Path(tmp))
+            result = tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "paper-plugin", "name": "Welcome Guard",
+                "package_name": "io.github.example.welcomeguard",
+                "platform_version": "26.2", "language_version": "25",
+            })
+            self.assertTrue(result.startswith("OK:"), result)
+            gradle = (project / "build.gradle.kts").read_text(encoding="utf-8")
+            plugin_yml = (project / "src/main/resources/plugin.yml").read_text(encoding="utf-8")
+            main = project / "src/main/java/io/github/example/welcomeguard/WelcomeGuardPlugin.java"
+            self.assertIn("io.papermc.paper:paper-api:26.2.build.+", gradle)
+            self.assertIn("JavaLanguageVersion.of(25)", gradle)
+            self.assertIn("main: io.github.example.welcomeguard.WelcomeGuardPlugin", plugin_yml)
+            self.assertIn("api-version: '26.2'", plugin_yml)
+            self.assertIn("extends JavaPlugin", main.read_text(encoding="utf-8"))
+            inspection = tools.execute("project_toolchain", {"action": "inspect"})
+            self.assertIn('"type": "paper-plugin"', inspection)
+
+    def test_toolchain_results_feed_execution_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            kernel = forgecode.ExecutionKernel(root, cfg)
+            state = kernel.begin("create cpp app", True, False, False, {})
+            kernel.observe_tool(state, "project_toolchain", "OK: scaffold created · target=cpp-cmake")
+            kernel.observe_tool(state, "project_toolchain", "OK: toolchain test passed\nexit_code=0")
+            self.assertEqual(state.mutations, ["project_toolchain"])
+            self.assertEqual(state.successful_checks, 1)
+
+    def test_successful_command_without_binary_is_not_reported_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, tools = self.make_tools(pathlib.Path(tmp))
+            tools.execute("project_toolchain", {
+                "action": "scaffold", "target": "dotnet-exe", "name": "Missing Artifact",
+            })
+            with mock.patch.object(tools, "tool_run_command", return_value="exit_code=0\nfalse positive"):
+                result = tools.execute("project_toolchain", {"action": "package", "runtime": "win-x64"})
+            self.assertIn("no non-empty build artifact was found", result)
+
+    def test_compiled_language_skills_are_auto_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, cfg, skills = SkillEngineTests().make_manager(pathlib.Path(tmp))
+            names = {record.name for record in skills.catalog(include_disabled=False)}
+            self.assertTrue({
+                "native-cpp", "dotnet-application", "java-jar", "minecraft-paper-plugin"
+            }.issubset(names))
+            selected = skills.select("Minecraft Paper plugin yap ve JAR olarak paketle", "balanced")
+            selected_names = [record.name for record in selected]
+            self.assertIn("minecraft-paper-plugin", selected_names)
+            self.assertIn("java-jar", selected_names)
+
+
 if __name__ == "__main__":
     unittest.main()

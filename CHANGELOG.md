@@ -2,6 +2,21 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.9.0] - 2026-08-03
+
+### Added
+
+- Added the guarded `project_toolchain` model tool for project inspection, deterministic multi-file scaffolding, native builds, focused tests, and packaging.
+- Added first-class C++/CMake executable, .NET single-file executable, Java executable JAR, and Minecraft Paper plugin scaffolds.
+- Added automatic toolchain detection and native command selection for CMake, .NET, Maven/Gradle (including wrappers), Cargo, Go, Node, and Python.
+- Added built-in `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin` skills with progressive task matching.
+
+### Reliability
+
+- Compiled build/package operations now require a real non-empty executable or JAR artifact after a successful command; a zero exit code alone is no longer sufficient evidence.
+- CMake and system-Gradle projects are now included in automatic project testing.
+- Scaffold writes use one approval, UTF-8 verification, overwrite protection, and rollback if any file fails.
+
 ## [7.8.0] - 2026-08-02
 
 ### Added

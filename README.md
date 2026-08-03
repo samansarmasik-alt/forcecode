@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. This checkout includes **v7.8.0** with a local-first Agent Skills engine, automatic task-matched skill loading, safe GitHub installation, and AI/CLI skill management. The selected model remains pinned by default, ForceFlow uses a zero-wait local plan for cohesive work, and ForceSandbox has no aggregate project/transfer ceiling.
+Current stable release: **v7.7.2**. This checkout includes **v7.9.0** with a language-independent project toolchain, verified C++/.NET/Java/Paper scaffolds, native build/test/package execution, and task-matched compiled-project skills. The local-first Agent Skills engine, pinned-model default, zero-wait ForceFlow path, and unlimited ForceSandbox project/transfer mode remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -29,6 +29,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Evidence-oriented Execution Kernel with local planning, structured debugging, verification gates, and confidence receipts.
 - AI-selected read-only subagents for research, design, backend, frontend, testing, review, and security tasks.
 - Project-aware verification and interactive program testing: ForceCode can follow terminal prompts, provide staged input, and show live process output in the activity area.
+- A general project toolchain that detects CMake, .NET, Maven, Gradle, Cargo, Go, Node, and Python projects; creates verified multi-file C++ executables, .NET apps, Java JARs, and Minecraft Paper plugins; and refuses to report a binary build without artifact evidence.
 - Explicit approval controls plus Smart Autopilot risk assessment for project mutations.
 
 ## Safety model
@@ -127,7 +128,7 @@ Run `/help` for the complete command list and usage syntax.
 
 ForgeCode supports the portable `SKILL.md` directory format with YAML frontmatter (`name`, `description`, and optional `version`/`triggers`). Skill metadata stays local, and only the instructions selected for the current task are added to model context. This progressive-disclosure design avoids sending every installed skill on every request.
 
-Four dependency-free skills are built in and enabled by default: `debug-root-cause`, `frontend-quality`, `project-audit`, and `release-readiness`. List or inspect them with:
+Eight dependency-free skills are built in and enabled by default: `debug-root-cause`, `frontend-quality`, `project-audit`, `release-readiness`, `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin`. List or inspect them with:
 
 ```text
 /skills
@@ -147,6 +148,17 @@ Install a skill for all projects or only the current project from an HTTPS GitHu
 ```
 
 Natural-language requests such as “install this GitHub skill” expose the same operations to the selected AI. Remote changes are rejected unless the current user request explicitly asks for skill management. GitHub imports are limited to a UTF-8 `SKILL.md` file (128 KB maximum); scripts, binaries, hooks, and executable dependencies are never imported or run automatically. Public repositories work without setup; private repository discovery can use a user-supplied `GITHUB_TOKEN` environment variable, which ForgeCode never stores in skill metadata. User skills live in `%LOCALAPPDATA%\ForgeCode\skills`; project skills live in `.forgecode\skills`. Project skills override user skills, which override built-ins with the same name. Set `skill_auto_select` to `false` to keep skills installed but require explicit `$skill-name` selection, or set `skills_enabled` to `false` to disable the engine.
+
+## General project toolchain
+
+The model receives one guarded `project_toolchain` tool instead of HTML-only assumptions. It can inspect an existing repository, select its native build system, and run `build`, `test`, or `package` through the same approvals, ForceSandbox isolation, timeout controls, activity logs, and UTF-8 handling as other ForceCode tools. New-project scaffolding supports:
+
+- `cpp-cmake`: modern CMake library/executable separation plus CTest.
+- `dotnet-exe`: nullable C# console app and platform-specific single-file publish.
+- `java-jar`: standard Maven layout with an executable JAR manifest.
+- `paper-plugin`: Gradle Kotlin DSL, Paper API, `JavaPlugin`, commands, and `plugin.yml`.
+
+Existing Maven/Gradle wrappers are preferred automatically. CMake, .NET, Java/Paper, Rust, and packaged Go work is not marked successful unless a non-empty executable or JAR artifact is found after the command. The AI chooses and uses this tool from ordinary requests such as “build a C++ app”, “package this as an EXE”, or “create a Paper plugin”; no extra slash command is required.
 
 The selected model remains pinned when a provider reports it as unavailable. To explicitly allow ForceCode to probe and permanently select another model from the same custom/Kimchi service, enable the optional setting:
 
