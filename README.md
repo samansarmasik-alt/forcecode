@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. This checkout includes **v7.10.0** with VibeCode: checkpointed overnight autonomy that plans a broad product objective, implements and tests tasks in sequence, recovers from transient failures, and requires deterministic plus independent quality review before completion. The language-independent project toolchain, local-first Agent Skills engine, pinned-model default, and ForceSandbox isolation remain intact.
+Current stable release: **v7.7.2**. This checkout includes **v7.10.1** with VibeCode: checkpointed overnight autonomy that plans a broad product objective, implements and tests tasks in sequence, recovers from transient failures, and requires deterministic plus independent quality review before completion. The language-independent project toolchain, local-first Agent Skills engine, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 

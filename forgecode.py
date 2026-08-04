@@ -55,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.10.0"
+VERSION = "7.10.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -2432,7 +2432,7 @@ TOOL_SCHEMAS = [
     {"name": "write_files", "description": "Create or replace multiple related project files in one atomic-looking batch with one user approval. Prefer this for multi-file websites and scaffolds.", "input_schema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}}}, "required": ["files"], "additionalProperties": False}},
     {"name": "replace_text", "description": "Replace exact text in one project file. Fails if old_text is absent or ambiguous.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False}},
     {"name": "apply_edits", "description": "Apply 1-30 exact text edits across one or more files as one validated transaction. Every old_text is checked before any file changes; if one edit is missing or ambiguous, nothing is written. Prefer this over repeated replace_text calls for coordinated refactors.", "input_schema": {"type": "object", "properties": {"edits": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False}}}, "required": ["edits"], "additionalProperties": False}},
-    {"name": "verify_artifacts", "description": "Deterministically verify that project files exist, are non-empty UTF-8 text, and optionally contain required text. Returns size, line count, and SHA-256 evidence without exposing full contents.", "input_schema": {"type": "object", "properties": {"paths": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "string"}}, "required_text": {"type": "object", "additionalProperties": {"type": "string"}}}, "required": ["paths"], "additionalProperties": False}},
+    {"name": "verify_artifacts", "description": "Deterministically verify that project files exist and are non-empty. UTF-8 text receives line-count evidence and optional required-text checks; compiled/binary files receive size and SHA-256 evidence. Never use required_text for a binary path.", "input_schema": {"type": "object", "properties": {"paths": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "string"}}, "required_text": {"type": "object", "additionalProperties": {"type": "string"}}}, "required": ["paths"], "additionalProperties": False}},
     {"name": "web_quality_check", "description": "Run ForceCode's deterministic static-site quality gate. It checks project structure, responsive CSS, accessibility basics, placeholders, duplicate IDs, and local asset integrity. Set require_multifile for a production-quality HTML/CSS/JS structure.", "input_schema": {"type": "object", "properties": {"require_multifile": {"type": "boolean"}}, "additionalProperties": False}},
     {"name": "run_command", "description": "Run a non-interactive shell command in the project. For programs that call input() or prompt for answers, pass newline-separated responses in stdin; otherwise stdin is closed so the process cannot block waiting for terminal input. Requires approval unless enabled in settings.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated input sent to the process, for example: Alice\n42\ny\n"}}, "required": ["command"], "additionalProperties": False}},
     {"name": "test_project", "description": "Run the project's most relevant available test or validation. Auto-detects Python, Node, Go, Rust, .NET, Maven, Gradle, or static web projects when command is omitted. Pass stdin for scripted input, or set interactive=true to keep the process open and continue with process_input/process_status. Returns SKIP instead of inventing a test.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_seconds": {"type": "integer"}, "stdin": {"type": "string", "description": "Optional newline-separated answers for a non-interactive test command."}, "interactive": {"type": "boolean"}}, "additionalProperties": False}},
@@ -3191,7 +3191,14 @@ def is_known_safe_read_command(command: str) -> bool:
 IGNORE_DIRS = {
     ".git", ".forgecode", ".force", ".code-review-graph", "node_modules",
     ".venv", "venv", "__pycache__", "dist", "build", ".ssh", ".aws",
-    ".azure", ".gnupg", ".kube",
+    ".azure", ".gnupg", ".kube", ".forceclient-check",
+}
+
+BINARY_ARTIFACT_SUFFIXES = {
+    ".class", ".jar", ".war", ".exe", ".dll", ".so", ".dylib", ".o", ".obj",
+    ".a", ".lib", ".pdb", ".pyc", ".wasm", ".zip", ".gz", ".7z", ".tar",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".db", ".sqlite",
+    ".woff", ".woff2", ".ttf", ".otf", ".mp3", ".mp4", ".wav",
 }
 
 SANDBOX_SECRET_NAMES = {
@@ -5648,15 +5655,31 @@ class WorkspaceTools:
             payload = target.read_bytes()
             if not payload:
                 raise ValueError(f"Doğrulama başarısız; dosya boş: {raw_path}")
-            try:
-                text = payload.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise ValueError(f"Doğrulama başarısız; UTF-8 değil: {raw_path}") from exc
             relative = target.relative_to(self.root).as_posix()
             expected = str(requirements.get(str(raw_path), requirements.get(relative, "")))
+            digest = hashlib.sha256(payload).hexdigest()[:16]
+            known_binary = target.suffix.casefold() in BINARY_ARTIFACT_SUFFIXES
+            text = ""
+            if not known_binary:
+                try:
+                    text = payload.decode("utf-8")
+                except UnicodeDecodeError:
+                    known_binary = True
+                else:
+                    # Some binary formats happen to decode but contain NUL or
+                    # dense control bytes. Treat them as binary evidence too.
+                    sample = text[:4096]
+                    controls = sum(ord(char) < 32 and char not in "\t\r\n" for char in sample)
+                    known_binary = "\x00" in sample or controls > max(8, len(sample) // 20)
+            if known_binary:
+                if expected:
+                    raise ValueError(
+                        f"Doğrulama başarısız; binary dosyada required_text aranamaz: {relative}"
+                    )
+                rows.append(f"{relative} · {len(payload)} bayt · binary · sha256:{digest}")
+                continue
             if expected and expected not in text:
                 raise ValueError(f"Doğrulama başarısız; beklenen metin bulunamadı: {relative}")
-            digest = hashlib.sha256(payload).hexdigest()[:16]
             line_count = len(text.splitlines())
             rows.append(f"{relative} · {len(payload)} bayt · {line_count} satır · sha256:{digest}")
         return "OK: Artifact doğrulaması geçti\n" + "\n".join(rows)
@@ -7352,14 +7375,21 @@ def _forceflow_artifact_check(agent: "Agent", changed_files: list[str]) -> tuple
         else:
             removed.append(name)
     if existing:
-        result = agent.tools.tool_verify_artifacts(existing)
-        if not result.startswith("OK:"):
-            return False, result
+        # Tool calls are intentionally bounded to 50 paths. Builds can create
+        # hundreds of binary artifacts, so verify in bounded batches rather
+        # than crashing the complete ForceFlow task.
+        for offset in range(0, len(existing), 50):
+            try:
+                result = agent.tools.tool_verify_artifacts(existing[offset:offset + 50])
+            except (OSError, ValueError) as exc:
+                return False, f"Artifact verification failed: {exc}"
+            if not result.startswith("OK:"):
+                return False, result
     if not existing and not removed:
         return False, "No changed artifact could be verified."
     evidence = []
     if existing:
-        evidence.append(f"{len(existing)} non-empty UTF-8 artifact")
+        evidence.append(f"{len(existing)} non-empty text/binary artifact")
     if removed:
         evidence.append(f"{len(removed)} removed path")
     return True, ", ".join(evidence)
@@ -7692,7 +7722,7 @@ def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool
 
 SYSTEM_PROMPT = """You are ForgeCode, a careful senior software engineering agent operating in the user's project.
 Inspect relevant files before changing them. Use tools to make requested changes and run focused verification.
-For coordinated edits to existing files, prefer apply_edits so every exact replacement is validated before any write. Use verify_artifacts for compact existence, UTF-8, required-text, and hash evidence; it complements rather than replaces real tests.
+For coordinated edits to existing files, prefer apply_edits so every exact replacement is validated before any write. Use verify_artifacts for compact existence and hash evidence; UTF-8 sources can also use required-text checks, while compiled/binary artifacts are verified by non-empty size and hash. It complements rather than replaces real tests.
 Use read_file for project file contents; do not invoke cat, type, Get-Content, head, or tail through run_command merely to read a file. If one inspection tool fails, diagnose its returned error instead of cycling through equivalent shell commands.
 After changing code, use test_project when the repository exposes a trustworthy test/build configuration. For a CLI program that asks questions, either pass newline-separated stdin to run_command/test_project or start it interactively, read each prompt with process_status, answer it with process_input, and continue until an exit code is observed. Never leave an interactive process waiting for ForgeCode's own terminal input; stop it when finished.
 Never claim a file was changed or a command passed unless the corresponding tool result confirms it.

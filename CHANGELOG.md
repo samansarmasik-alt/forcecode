@@ -2,6 +2,15 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.10.1] - 2026-08-04
+
+### Fixed
+
+- ForceFlow artifact verification now accepts non-empty compiled and media artifacts such as `.class`, JAR, EXE, DLL, image, font, and database files as binary hash evidence instead of incorrectly requiring UTF-8 text.
+- Large compiler output sets are verified in bounded batches rather than failing the 50-path tool limit.
+- Temporary `.forceclient-check` compiler output is excluded from project change tracking and verified sandbox transfer, while real source changes and final toolchain evidence remain checked.
+- Artifact verification failures now become normal ForceFlow evidence failures instead of escaping as an unhandled `ValueError`.
+
 ## [7.10.0] - 2026-08-04
 
 ### Added

@@ -520,6 +520,49 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.tools.tool_verify_artifacts(["app.py"], {"app.py": "absent"})
 
+    def test_verify_artifacts_accepts_nonempty_compiled_binary_evidence(self):
+        target = self.root / "classes" / "App.class"
+        target.parent.mkdir()
+        target.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00=compiled-bytecode")
+
+        result = self.tools.tool_verify_artifacts(["classes/App.class"])
+
+        self.assertTrue(result.startswith("OK: Artifact"))
+        self.assertIn("binary", result)
+        self.assertIn("sha256:", result)
+        with self.assertRaises(ValueError):
+            self.tools.tool_verify_artifacts(
+                ["classes/App.class"], {"classes/App.class": "main"}
+            )
+
+    def test_snapshot_ignores_forceclient_temporary_compiler_output(self):
+        source = self.root / "src" / "App.java"
+        generated = self.root / ".forceclient-check" / "classes" / "App.class"
+        source.parent.mkdir()
+        generated.parent.mkdir(parents=True)
+        source.write_text("class App {}\n", encoding="utf-8")
+        generated.write_bytes(b"\xca\xfe\xba\xbe")
+
+        snapshot = self.tools.snapshot()
+
+        self.assertIn("src/App.java", snapshot)
+        self.assertNotIn(".forceclient-check/classes/App.class", snapshot)
+
+    def test_forceflow_batches_large_binary_artifact_sets(self):
+        names = []
+        for index in range(55):
+            relative = f"classes/Generated{index}.class"
+            target = self.root / relative
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(b"\xca\xfe\xba\xbe" + bytes([index]))
+            names.append(relative)
+        agent = mock.Mock(tools=self.tools)
+
+        passed, evidence = forgecode._forceflow_artifact_check(agent, names)
+
+        self.assertTrue(passed, evidence)
+        self.assertIn("55 non-empty text/binary artifact", evidence)
+
     def test_agent_safety_classifier_uses_no_tools_and_parses_json(self):
         agent = forgecode.Agent(self.root, self.cfg, forgecode.GoalStore(self.root), lambda _: False)
         provider = mock.MagicMock()
