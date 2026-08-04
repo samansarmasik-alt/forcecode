@@ -8,136 +8,125 @@
 
 ### Bring your own model. Give it real tools. Demand proof.
 
-ForceCode is a local-first terminal coding agent that can inspect a project, plan work, edit files, run commands, test the result, recover from failures, and show the evidence behind its answer.
+A local-first terminal coding agent that can understand a project, edit real files, run commands, build, test, repair failures, and prove what it completed.
 
-It works with **22+ providers**, local models, and custom APIs—without locking your workflow to one company or one model.
+**22+ providers · local models · custom APIs · isolated execution · verified results**
 
 [![Version](https://img.shields.io/badge/version-7.11.1-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#requirements)
+[![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
 
-[Quick Start](#quick-start) · [Why ForceCode](#why-forcecode) · [How It Works](#how-it-works) · [Commands](#essential-commands) · [Security](SECURITY.md)
+[Quick Start](#quick-start) · [Workflow](#from-request-to-verified-result) · [Providers](#use-the-model-that-fits-the-job) · [Safety](#safety-is-part-of-the-architecture) · [Commands](#essential-commands)
 
 </div>
 
 > [!IMPORTANT]
-> ForceCode is an independent open-source project. It is not affiliated with, endorsed by, or distributed by OpenAI, Anthropic, Google, or any supported provider.
+> ForceCode is an independent open-source project. It is not affiliated with OpenAI, Anthropic, Google, or any supported provider.
 
 ---
 
-## Why ForceCode
+## Why ForceCode exists
 
-Most coding assistants can produce code. ForceCode is designed to complete the rest of the job too.
-
-| Typical coding assistant | ForceCode |
-| --- | --- |
-| Generates a plausible answer | Edits the real project and verifies the result |
-| Tied to one model or vendor | Connects to 22+ providers, local models, and custom APIs |
-| Forgets project decisions | Uses project-aware memory with visible context receipts |
-| Claims a task is complete | Requires file, test, build, or artifact evidence |
-| Runs tools directly on your machine | Uses an isolated sandbox with snapshots and controlled transfer |
-| Stops after the first failure | Debugs, repairs, retries, and reports what remains |
-
-### The core idea
-
-```text
-You describe the result.
-ForceCode studies the project.
-It creates a plan only when a plan is useful.
-It works inside an isolated copy.
-It edits, builds, tests, and repairs.
-It transfers verified changes back.
-It tells you what changed—and why you should trust it.
-```
-
----
-
-## What it can do
+Most coding assistants stop after producing plausible code. ForceCode is built around a stricter definition of completion.
 
 <table>
 <tr>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-### 🧠 Understand the project
+### Understand
 
 - Incremental project indexing
-- Project, session, and user memory
-- Token-budgeted context retrieval
-- Structural code intelligence with ForceGraph
+- Project-aware memory
+- Token-budgeted context
 - Architecture and impact analysis
 
 </td>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-### 🛠️ Do real engineering work
+### Execute
 
-- Read, search, create, and edit files
-- Run commands and interactive programs
-- Build and package native project types
-- Execute tests and inspect failures
-- Verify output artifacts before claiming success
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### 🔁 Keep going when work gets difficult
-
-- Automatic sequential task execution
-- Root-cause-guided repair cycles
-- Crash-safe checkpoints and resume
-- Slow API and stalled connection recovery
-- Optional specialist subagents
+- File creation and exact edits
+- Commands and interactive programs
+- Builds, tests, packaging
+- Automatic repair cycles
 
 </td>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-### 🛡️ Protect the machine
+### Prove
 
-- Default-on ForceSandbox isolation
-- Native Windows AppContainer support
-- Per-project identities and private workspaces
-- Snapshots, rollback, conflict detection
-- Smart approvals and deterministic command blocking
+- Test evidence
+- Build receipts
+- Artifact checks
+- Confidence reports
 
 </td>
 </tr>
 </table>
 
+| Ordinary assistant behavior | ForceCode behavior |
+| --- | --- |
+| Produces an answer | Changes the project |
+| Assumes the change works | Runs focused checks |
+| Uses one provider | Supports 22+ providers and custom APIs |
+| Forgets decisions | Retrieves relevant project memory |
+| Runs tools directly | Works inside an isolated project copy |
+| Stops at failure | Debugs, repairs, retries, and reports evidence |
+
 ---
 
-## How it works
+## From request to verified result
 
-<img src="docs/assets/forcecode-architecture.svg" alt="ForceCode architecture diagram" width="100%" />
+<img src="docs/assets/verified-workflow.svg" alt="ForceCode verified workflow" width="100%" />
 
-ForceCode separates model reasoning from execution safety and verification. The selected model decides what should happen; ForceCode controls what is allowed to happen and records evidence from the tools that actually ran.
+```text
+you › add authentication, build the settings UI, test the complete flow,
+      and do not report success without evidence
+
+forceflow › 3 ordered tasks created
+sandbox  › isolated workspace ready
+edit     › 8 files changed
+verify   › 47 tests passed · build artifact found
+transfer › snapshot created · conflict check passed
+forge    › completed with evidence
+```
 
 ### ForceFlow
-Breaks large or ordered requests into verifiable steps. A later step does not pass until the current one has the required evidence.
+
+Turns explicit multi-step work into ordered tasks. Later tasks remain blocked until earlier tasks satisfy their acceptance criteria.
 
 ### Execution Kernel
-Tracks the public plan, tool failures, debugging state, missing checks, and confidence. It does not expose or store private chain-of-thought.
+
+Tracks the public plan, tool failures, debugging state, missing verification, and confidence. It stores evidence—not private chain-of-thought.
 
 ### ForceContext
-Retrieves only the project facts and preferences relevant to the current task, under a strict token budget. A receipt shows what was included.
 
-### ForceSandbox
-Runs project work in an isolated copy. Verified, conflict-free changes are transferred back after a snapshot; failed or unsafe work stays inside the sandbox.
+Retrieves only the project facts, preferences, and session notes relevant to the current request under a strict token budget.
 
 ### ForceGraph
-Adds optional local structural intelligence for blast-radius analysis, test-gap discovery, architecture understanding, and review.
+
+Adds optional local structural intelligence for architecture understanding, blast-radius analysis, review, and test-gap discovery.
+
+### VibeCode
+
+Runs broad product goals as checkpointed, resumable, evidence-driven long sessions with repair cycles and an independent final review.
 
 ---
 
-## Providers: use the model that fits the job
+## Use the model that fits the job
+
+<img src="docs/assets/provider-network.svg" alt="ForceCode provider network" width="100%" />
 
 ForceCode includes presets for:
 
+<div align="center">
+
 **Anthropic · OpenAI · OpenRouter · Gemini · Groq · Mistral · DeepSeek · xAI · Together · Fireworks · Perplexity · Cerebras · SambaNova · NVIDIA NIM · Cohere · Kimchi · GitHub Models · Hugging Face · SiliconFlow · DashScope · Ollama · LM Studio**
 
-It also supports custom OpenAI-compatible and Anthropic-compatible endpoints.
+</div>
+
+Custom OpenAI-compatible and Anthropic-compatible APIs are supported too.
 
 ```text
 /provider custom
@@ -148,9 +137,30 @@ It also supports custom OpenAI-compatible and Anthropic-compatible endpoints.
 /test
 ```
 
-Model discovery, connection tests, response latency history, token accounting, configurable pricing, saved profiles, and optional backup-provider failover are built in.
+Built-in provider tooling includes model discovery, connection testing, response-latency history, token accounting, configurable pricing, saved profiles, and optional backup-provider failover.
 
-> Use only services and endpoints you are authorized to access. ForceCode does not bypass provider restrictions or access controls.
+> Use only endpoints you are authorized to access. ForceCode does not bypass provider restrictions or access controls.
+
+---
+
+## Safety is part of the architecture
+
+<img src="docs/assets/security-layers.svg" alt="ForceCode sandbox security layers" width="100%" />
+
+ForceSandbox is enabled by default.
+
+On Windows, generic commands run under a per-project AppContainer identity. The model works inside a private project copy with its own home and temporary directories, sanitized environment variables, process limits, and no inherited provider key.
+
+Verified changes return to the real project only after:
+
+1. A project snapshot is created.
+2. Required checks pass.
+3. The real files are checked for concurrent changes.
+4. Paths and transfer targets pass deterministic safety validation.
+
+Failed verification or a conflict leaves the work inside the sandbox. When no supported isolation engine is available, command execution fails closed rather than silently running without protection.
+
+Read [SECURITY.md](SECURITY.md) for the vulnerability-reporting and supported-version policy.
 
 ---
 
@@ -160,23 +170,22 @@ Model discovery, connection tests, response latency history, token accounting, c
 
 - Windows 10 or Windows 11
 - Python 3.10 or later
-- An API key for a hosted provider, or a local Ollama/LM Studio setup
+- A hosted provider key, or local Ollama / LM Studio
 
 ### Portable launch
 
-Clone or download the repository, open PowerShell inside it, and run:
-
 ```powershell
+git clone https://github.com/samansarmasik-alt/forcecode.git
+cd forcecode
 .\forgecode.bat .
 ```
 
-On first launch:
+On first launch, choose a language and provider, then run:
 
-1. Choose English or Turkish.
-2. Select a provider.
-3. Add the provider key with `/key`.
-4. Check the connection with `/test`.
-5. Start describing the work normally.
+```text
+/key
+/test
+```
 
 ### Install the global `Force` command
 
@@ -184,61 +193,95 @@ On first launch:
 .\install-force.ps1
 ```
 
-Open a new terminal in any project:
+Open a new terminal from any project:
 
 ```powershell
 cd C:\path\to\your-project
 Force
 ```
 
-One-shot usage is also available:
+One-shot mode:
 
 ```powershell
-Force -p "Review the current changes, fix the problem, and run the relevant tests"
-```
-
-To remove the global launcher while keeping your settings:
-
-```powershell
-.\uninstall-force.ps1
+Force -p "Review the current changes, fix the root cause, and run the relevant tests"
 ```
 
 ---
 
-## Use natural language
+## Describe work normally
 
-No special command is required for normal project work.
+No special command is needed for ordinary engineering tasks.
 
-```text
-you › inspect this project, find why the API tests fail, fix the root cause,
-      run the focused tests, and explain every changed file
-```
+<table>
+<tr>
+<td width="50%" valign="top">
 
-```text
-you › create a Paper plugin with configurable kits, build the JAR,
-      and do not report success unless the artifact exists
-```
+### Debug a project
 
 ```text
-you › redesign this website, keep the current framework, make it responsive,
-      test the main interactions, and repair anything the quality gate rejects
+inspect this repository, find why the API tests fail,
+fix the root cause, run focused tests, and explain
+every changed file
 ```
 
-While a request is running, a normal message can steer the active work. `/queue <message>` adds follow-up work without interrupting it. `Ctrl+C` stops the current request while preserving a compact progress summary for continuation.
+</td>
+<td width="50%" valign="top">
+
+### Build a product
+
+```text
+create a Paper plugin with configurable kits,
+build the JAR, and do not report success unless
+the artifact exists
+```
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Improve a website
+
+```text
+redesign this site, keep its framework, make it
+responsive, test the main flows, and repair anything
+the quality gate rejects
+```
+
+</td>
+<td width="50%" valign="top">
+
+### Review a release
+
+```text
+audit this project for release readiness, inspect
+tests and packaging, fix critical issues, and leave
+a verification report
+```
+
+</td>
+</tr>
+</table>
+
+While a request is active:
+
+- Send a normal message to steer the work.
+- Use `/queue <message>` to add follow-up work.
+- Press `Ctrl+C` to stop while preserving a compact continuation summary.
 
 ---
 
-## Autonomy without blind trust
+## Autonomy with controls
 
 ### Smart Autopilot
-
-Commands and file changes require approval by default. Smart Autopilot approves clearly safe project work while a deterministic safety layer blocks known destructive system operations.
 
 ```text
 /autopilot smart
 ```
 
-Full autopilot exists for disposable or version-controlled workspaces:
+Approves clearly safe project work while deterministic protections continue blocking known destructive system operations.
+
+Full autopilot is available for disposable or version-controlled workspaces:
 
 ```text
 /autopilot on
@@ -246,53 +289,55 @@ Full autopilot exists for disposable or version-controlled workspaces:
 
 ### VibeCode
 
-VibeCode turns a broad product goal into a checkpointed, evidence-driven long run.
-
 ```text
 /vibe hours 10
-/vibe Build a polished release-ready application from this project, test the important flows, and leave a report
+/vibe Build a polished release-ready application, test important flows, repair failures, and leave a final report
 ```
 
-It creates an architecture and acceptance plan, works one task at a time, compacts expensive context, retries temporary API failures, saves crash-safe checkpoints, and runs an independent read-only final review. The session can be resumed with `/vibe resume`.
+VibeCode creates an architecture and acceptance plan, executes one task at a time, compacts expensive context, retries temporary provider failures, stores crash-safe checkpoints, and performs an independent read-only final review.
 
-VibeCode does not disable ForceSandbox or weaken the project safety boundary.
+Resume an interrupted session with:
+
+```text
+/vibe resume
+```
+
+VibeCode never disables ForceSandbox or weakens the safety boundary.
 
 ---
 
 ## Built-in project toolchain
 
-ForceCode detects and works with common project systems rather than assuming every task is a website.
-
-| Ecosystem | Detection / output |
+| Ecosystem | Supported work |
 | --- | --- |
-| Python | Python projects, syntax checks, tests |
+| Python | Syntax checks, tests, project execution |
 | Node.js | npm-compatible builds and tests |
-| C / C++ | CMake projects, executables, CTest |
-| .NET | Build, test, and single-file application publishing |
-| Java | Maven and Gradle projects, executable JARs |
-| Minecraft | Paper plugin scaffolding and verified JAR output |
+| C / C++ | CMake, CTest, executable verification |
+| .NET | Build, test, single-file publishing |
+| Java | Maven, Gradle, executable JARs |
+| Minecraft | Paper plugin scaffolding and JAR verification |
 | Rust | Cargo build and test workflows |
-| Go | Build, test, and packaged binaries |
+| Go | Builds, tests, packaged binaries |
 
-For binary-producing work, ForceCode refuses to mark the task successful unless the expected non-empty artifact is found.
+For binary-producing tasks, ForceCode does not mark work complete unless the expected non-empty artifact exists.
 
 ---
 
 ## Agent Skills
 
-ForceCode supports the portable `SKILL.md` format. Only the skills selected for the current request are added to model context.
+ForceCode supports the portable `SKILL.md` format and adds only the selected skills to the current model context.
 
-Built-in skills include:
+Built-in skills cover:
 
-- Skill Scout
 - Root-cause debugging
 - Frontend quality
-- Project audit
+- Project audits
 - Release readiness
 - Native C++
 - .NET applications
 - Java JARs
 - Minecraft Paper plugins
+- Safe skill discovery
 
 ```text
 /skills
@@ -301,48 +346,31 @@ Built-in skills include:
 /skill update frontend
 ```
 
-Skill Scout can discover project-relevant skills from the public skills.sh catalog. It sends only generic project labels—not source code, file paths, prompts, keys, or user data. Candidates must pass both deterministic safety checks and score thresholds before automatic installation. Imported skills are limited to a UTF-8 `SKILL.md`; scripts and executable companions are never imported automatically.
+Skill Scout can search the public skills.sh catalog using generic project labels. Source code, prompts, paths, keys, and user data are not sent. Automatically accepted skills must pass deterministic security checks and score thresholds. Scripts and executable companion files are never imported automatically.
 
 ---
 
 ## Essential commands
 
-| Purpose | Commands |
+| Area | Commands |
 | --- | --- |
 | Provider setup | `/providers`, `/provider`, `/key`, `/models`, `/model`, `/test` |
 | Custom APIs | `/connect`, `/protocol`, `/route`, `/endpoint`, `/profiles` |
-| Language | `/language en`, `/language tr` |
 | Safety | `/autopilot smart\|on\|off`, `/sandbox`, `/doctor`, `/diagnostics` |
-| Planning and debugging | `/plan`, `/debug`, `/confidence`, `/engine` |
-| Memory and continuity | `/goal`, `/resume`, `/sessions`, `/memory`, `/remember`, `/init` |
+| Execution | `/plan`, `/debug`, `/confidence`, `/engine` |
+| Continuity | `/goal`, `/resume`, `/sessions`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
 | Skills and agents | `/skills`, `/skill`, `/agents`, `/delegate`, `/team` |
-| Long-running work | `/vibe`, `/watchdog`, `/retry`, `/queue` |
+| Long work | `/vibe`, `/watchdog`, `/retry`, `/queue` |
 | Visibility | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
-| Help | `/help`, `/clear`, `/exit` |
+| Interface | `/language en`, `/language tr`, `/help`, `/clear`, `/exit` |
 
-Run `/help` inside ForceCode for the complete command reference.
-
----
-
-## Safety model
-
-ForceSandbox is enabled by default.
-
-On Windows, generic commands run under a unique AppContainer identity in `C:\ForceCodeSandbox`. Kernel-level ACLs block access to Desktop, Documents, other projects, stored keys, and unrelated user data. Each project receives a private workspace, home directory, temporary area, process limits, sanitized environment, and no inherited provider key.
-
-The AI works on a private project copy. Before verified changes are transferred to the real project, ForceCode creates a snapshot and checks for conflicts. Invalid paths, traversal, links, reparse points, unsafe transfers, and known destructive operations are rejected.
-
-When no supported command-isolation engine is available, shell commands fail closed instead of silently running without protection. File tools remain available inside the private workspace.
-
-Read [SECURITY.md](SECURITY.md) for the supported-version and vulnerability-reporting policy.
+Run `/help` inside ForceCode for the full command reference.
 
 ---
 
 ## Local data and privacy
-
-Global settings stay outside the project:
 
 | Data | Default location |
 | --- | --- |
@@ -355,27 +383,9 @@ Global settings stay outside the project:
 | Sandboxes and snapshots | `%LOCALAPPDATA%\ForgeCode\sandboxes\<project-id>` |
 | User skills | `%LOCALAPPDATA%\ForgeCode\skills` |
 
-Project operational state is stored in `.forgecode`; ForceContext state is stored in `.force`; optional ForceGraph indexes are stored in `.code-review-graph`. These locations should not be committed.
+Project operational state stays in `.forgecode`, ForceContext data stays in `.force`, and optional ForceGraph indexes stay in `.code-review-graph`. These locations should not be committed.
 
-Selected prompts, project context, and tool results are sent to the provider you configure. Local memory is not the same as offline inference. Use a local Ollama or LM Studio model when the full model interaction must remain local.
-
----
-
-## Reliability for slow or unstable APIs
-
-`/watchdog off` removes the total deadline for an active main-model generation, while the stall guard can still detect a connection that produces no data and retry safely.
-
-```text
-/set stall_first_response_seconds 300
-/set stall_stream_idle_seconds 600
-/set stall_retry_attempts 2
-```
-
-The selected model stays pinned by default. Automatic same-provider model switching must be explicitly enabled:
-
-```text
-/set auto_model_switch true
-```
+The provider you configure receives the prompts and selected context required to answer the request. Use Ollama or LM Studio when model inference must remain local.
 
 ---
 
@@ -383,20 +393,11 @@ The selected model stays pinned by default. Automatic same-provider model switch
 
 ForceCode intentionally has no third-party runtime package dependencies.
 
-Run the full test suite:
-
 ```powershell
 python -m unittest discover -s tests -v
-```
-
-Check syntax and the CLI entry point:
-
-```powershell
 python -m py_compile forgecode.py
 python forgecode.py --version
 ```
-
-Repository layout:
 
 ```text
 .
@@ -414,15 +415,13 @@ Repository layout:
 └── LICENSE                  MIT License
 ```
 
-Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for behavior changes, and never place provider credentials in fixtures, logs, or commits.
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for behavior changes, and never commit provider credentials.
 
 ---
 
 ## Project status
 
 Current development version: **v7.11.1**
-
-This version includes adaptive stuck-connection recovery while preserving unlimited active generation with `/watchdog off`. Skill Scout, VibeCode checkpointed autonomy, the general project toolchain, pinned-model behavior, ForceContext, ForceGraph integration, and default-on ForceSandbox remain available.
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and technical details.
 
