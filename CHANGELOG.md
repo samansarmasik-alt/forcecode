@@ -2,6 +2,25 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.11.0] - 2026-08-04
+
+### Added
+
+- Added the built-in `skill-scout` meta skill and automatic project enrichment from the skills.sh catalog.
+- Added a privacy-preserving local project profiler: only generic technology and task labels are used for discovery; source code, paths, prompts, secrets, and user data are never sent to the catalog.
+- Added `/skill scout status|scan|on|off`, local decision receipts, configurable security/contribution gates, per-scan limits, project-wide limits, and scan cooldowns.
+
+### Security
+
+- Every automatic candidate now combines independent skills.sh audit-provider verdicts with deterministic local checks for prompt injection, credential collection/exfiltration, sandbox or approval bypass, destructive host commands, elevated privileges, and unsafe network execution.
+- Automatic installation requires a security score strictly above 80/100 and project contribution of at least 60/100. Any critical or partner-failed audit blocks the skill regardless of score.
+- Skill Scout installs only standalone UTF-8 `SKILL.md` text into the current project's `.forgecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are not imported or executed.
+- Catalog identity mismatches, collisions with existing skills, and skills that depend on unsupported companion files are rejected.
+
+### Efficiency
+
+- Successful scan profiles are cached for 24 hours, accepted skills gain local task triggers for progressive disclosure, and at most the relevant one to three skill bodies continue to enter model context.
+
 ## [7.10.1] - 2026-08-04
 
 ### Fixed

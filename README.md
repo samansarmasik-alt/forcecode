@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. This checkout includes **v7.10.1** with VibeCode: checkpointed overnight autonomy that plans a broad product objective, implements and tests tasks in sequence, recovers from transient failures, and requires deterministic plus independent quality review before completion. The language-independent project toolchain, local-first Agent Skills engine, pinned-model default, and ForceSandbox isolation remain intact.
+Current development version: **v7.11.0**. It includes Skill Scout, a privacy-preserving skills.sh discovery and security gate that adds only high-contribution skills to the current project. VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -113,7 +113,7 @@ Force -p "Review the current changes and run the relevant tests"
 | Request reliability | `/watchdog off\|fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
 | Sandbox | `/sandbox` (arrow-key settings, pending transfer, snapshots, logs, cleanup) |
-| Skills | `/skills`, `/skill show\|discover\|install\|update\|enable\|disable\|remove` |
+| Skills | `/skills`, `/skill scout status\|scan\|on\|off`, `/skill show\|install\|update\|enable\|disable\|remove` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
@@ -130,13 +130,21 @@ Run `/help` for the complete command list and usage syntax.
 
 ForgeCode supports the portable `SKILL.md` directory format with YAML frontmatter (`name`, `description`, and optional `version`/`triggers`). Skill metadata stays local, and only the instructions selected for the current task are added to model context. This progressive-disclosure design avoids sending every installed skill on every request.
 
-Eight dependency-free skills are built in and enabled by default: `debug-root-cause`, `frontend-quality`, `project-audit`, `release-readiness`, `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin`. List or inspect them with:
+Nine dependency-free skills are built in and enabled by default: `skill-scout`, `debug-root-cause`, `frontend-quality`, `project-audit`, `release-readiness`, `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin`. List or inspect them with:
 
 ```text
 /skills
+/skill scout status
+/skill scout scan
 /skill show frontend-quality
 /skill discover vercel-labs/agent-skills
 ```
+
+### Automatic skills.sh Skill Scout
+
+Skill Scout analyzes the current repository and active task locally, then sends only generic labels such as `python`, `react`, `testing`, or `frontend-design` to the public skills.sh catalog search. Source code, file paths, prompts, API keys, and user data are never sent. It downloads only candidates that match the detected project, combines independent skills.sh audit-provider verdicts with a deterministic local scan for prompt injection, credential access, sandbox bypass, destructive commands, host-level changes, and unsupported companion files, and assigns security and project-contribution scores.
+
+Automatic installation requires a security score strictly above 80/100 and a contribution score of at least 60/100. Critical findings always block installation regardless of score. At most two skills are added per scan and eight automatic skills per project by default. Accepted skills are written only to `.forgecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are never imported or executed. The decision receipt is stored locally in `.forgecode/skill-scout.json`. Use `/skill scout off` to disable discovery, `/skill scout on` to re-enable it, or adjust the typed `skill_scout_*` settings with `/set`.
 
 Install a skill for all projects or only the current project from an HTTPS GitHub repository, `tree`/`blob` URL, raw `SKILL.md` URL, or `owner/repo` shorthand:
 
@@ -149,7 +157,7 @@ Install a skill for all projects or only the current project from an HTTPS GitHu
 /skill remove frontend
 ```
 
-Natural-language requests such as “install this GitHub skill” expose the same operations to the selected AI. Remote changes are rejected unless the current user request explicitly asks for skill management. GitHub imports are limited to a UTF-8 `SKILL.md` file (128 KB maximum); scripts, binaries, hooks, and executable dependencies are never imported or run automatically. Public repositories work without setup; private repository discovery can use a user-supplied `GITHUB_TOKEN` environment variable, which ForgeCode never stores in skill metadata. User skills live in `%LOCALAPPDATA%\ForgeCode\skills`; project skills live in `.forgecode\skills`. Project skills override user skills, which override built-ins with the same name. Set `skill_auto_select` to `false` to keep skills installed but require explicit `$skill-name` selection, or set `skills_enabled` to `false` to disable the engine.
+Natural-language requests such as “install this GitHub skill” expose the existing manual operations to the selected AI. Remote manual changes are rejected unless the current user request explicitly asks for skill management. GitHub imports are limited to a UTF-8 `SKILL.md` file (128 KB maximum); scripts, binaries, hooks, and executable dependencies are never imported or run automatically. Public repositories work without setup; private repository discovery can use a user-supplied `GITHUB_TOKEN` environment variable, which ForgeCode never stores in skill metadata. User skills live in `%LOCALAPPDATA%\ForgeCode\skills`; project skills live in `.forgecode\skills`. Project skills override user skills, which override built-ins with the same name. Set `skill_auto_select` to `false` to keep skills installed but require explicit `$skill-name` selection, or set `skills_enabled` to `false` to disable the engine.
 
 ## General project toolchain
 
