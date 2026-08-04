@@ -24,6 +24,12 @@ htmlcov/
 venv/
 build/
 dist/
+target/
+bin/
+obj/
+.gradle/
+out/
+*.class
 *.egg-info/
 
 # Editors and operating systems

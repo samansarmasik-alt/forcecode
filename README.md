@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. ForceFlow uses a zero-wait local plan for cohesive work, reserves remote decomposition for genuinely multi-stage objectives, repairs failures automatically, and advances only after deterministic verification. ForceSandbox no longer imposes the old 200 MB aggregate project/transfer ceiling.
+Current development version: **v7.11.1**. It adds adaptive stuck-connection recovery while preserving unlimited active generation with `/watchdog off`. Skill Scout, VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -21,7 +21,8 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Default-on ForceSandbox isolation with a native Windows AppContainer engine, per-project identities, snapshots, conflict detection, rollback, and controlled transfer.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
 - Automatic ForceFlow AI task decomposition, crash-safe sequential execution, evidence-guided unattended repair, and verification-gated progression without manual queue commands.
-- Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and the main model remains unlimited when `/watchdog off` is selected.
+- VibeCode overnight product mode with architecture-first planning, per-task checkpoints, context compaction, long build budgets, API backoff, crash resume, repair cycles, and an independent read-only final reviewer.
+- Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and `/watchdog off` keeps active main-model generations unlimited while safely recovering connections that stop producing data.
 - A model-independent web quality gate that rejects broken assets, placeholders, weak one-file scaffolds, missing responsive behavior, and basic accessibility failures before a site can be reported complete.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
@@ -29,6 +30,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Evidence-oriented Execution Kernel with local planning, structured debugging, verification gates, and confidence receipts.
 - AI-selected read-only subagents for research, design, backend, frontend, testing, review, and security tasks.
 - Project-aware verification and interactive program testing: ForceCode can follow terminal prompts, provide staged input, and show live process output in the activity area.
+- A general project toolchain that detects CMake, .NET, Maven, Gradle, Cargo, Go, Node, and Python projects; creates verified multi-file C++ executables, .NET apps, Java JARs, and Minecraft Paper plugins; and refuses to report a binary build without artifact evidence.
 - Explicit approval controls plus Smart Autopilot risk assessment for project mutations.
 
 ## Safety model
@@ -111,16 +113,84 @@ Force -p "Review the current changes and run the relevant tests"
 | Request reliability | `/watchdog off\|fast\|balanced\|patient`, `/retry <count> [delay] [budget]` |
 | Safety | `/autopilot smart\|on\|off`, `/doctor`, `/diagnostics`, `/logs` |
 | Sandbox | `/sandbox` (arrow-key settings, pending transfer, snapshots, logs, cleanup) |
+| Skills | `/skills`, `/skill scout status\|scan\|on\|off`, `/skill show\|install\|update\|enable\|disable\|remove` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/session`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update`, `/force-memory-stats` |
 | ForceGraph | `/graph`, `/impact`, `/review` |
 | Execution engine | `/plan`, `/debug`, `/confidence`, `/engine` |
 | Sequential work | Automatic ForceFlow on normal project requests; no command required |
+| Overnight autonomy | `/vibe <goal>`, `/vibe on`, `/vibe status`, `/vibe resume`, `/vibe stop`, `/vibe hours <1-24>` |
 | Parallel work | `/agents`, `/agent`, `/delegate`, `/team` |
 | Usage | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+### Slow API and stall recovery
+
+`/watchdog off` removes the total main-model generation deadline; it does not leave a silent dead connection alive forever. By default, ForceCode detaches a connection after 120 seconds without first data or 180 seconds without streaming progress, then safely retries once against the same pinned model if no visible answer was emitted. Healthy slow-provider latency history automatically raises these limits. Active streams may run indefinitely.
+
+For unusually slow services, adjust the independent limits without restoring a total timeout:
+
+```text
+/set stall_first_response_seconds 300
+/set stall_stream_idle_seconds 600
+/set stall_retry_attempts 2
+```
+
+Set `stall_retry_attempts` to `0` to keep detection but disable automatic retry. The protection itself can be explicitly disabled with `/set stall_guard_enabled false`, though this permits genuinely dead connections to wait until Ctrl+C.
+
+## Agent Skills
+
+ForgeCode supports the portable `SKILL.md` directory format with YAML frontmatter (`name`, `description`, and optional `version`/`triggers`). Skill metadata stays local, and only the instructions selected for the current task are added to model context. This progressive-disclosure design avoids sending every installed skill on every request.
+
+Nine dependency-free skills are built in and enabled by default: `skill-scout`, `debug-root-cause`, `frontend-quality`, `project-audit`, `release-readiness`, `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin`. List or inspect them with:
+
+```text
+/skills
+/skill scout status
+/skill scout scan
+/skill show frontend-quality
+/skill discover vercel-labs/agent-skills
+```
+
+### Automatic skills.sh Skill Scout
+
+Skill Scout analyzes the current repository and active task locally, then sends only generic labels such as `python`, `react`, `testing`, or `frontend-design` to the public skills.sh catalog search. Source code, file paths, prompts, API keys, and user data are never sent. It downloads only candidates that match the detected project, combines independent skills.sh audit-provider verdicts with a deterministic local scan for prompt injection, credential access, sandbox bypass, destructive commands, host-level changes, and unsupported companion files, and assigns security and project-contribution scores.
+
+Automatic installation requires a security score strictly above 80/100 and a contribution score of at least 60/100. Critical findings always block installation regardless of score. At most two skills are added per scan and eight automatic skills per project by default. Accepted skills are written only to `.forgecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are never imported or executed. The decision receipt is stored locally in `.forgecode/skill-scout.json`. Use `/skill scout off` to disable discovery, `/skill scout on` to re-enable it, or adjust the typed `skill_scout_*` settings with `/set`.
+
+Install a skill for all projects or only the current project from an HTTPS GitHub repository, `tree`/`blob` URL, raw `SKILL.md` URL, or `owner/repo` shorthand:
+
+```text
+/skill install owner/repo user
+/skill install owner/repo@skill-name user
+/skill install https://github.com/owner/repo/tree/main/skills/frontend project
+/skill update frontend
+/skill disable frontend
+/skill remove frontend
+```
+
+Natural-language requests such as “install this GitHub skill” expose the existing manual operations to the selected AI. Remote manual changes are rejected unless the current user request explicitly asks for skill management. GitHub imports are limited to a UTF-8 `SKILL.md` file (128 KB maximum); scripts, binaries, hooks, and executable dependencies are never imported or run automatically. Public repositories work without setup; private repository discovery can use a user-supplied `GITHUB_TOKEN` environment variable, which ForgeCode never stores in skill metadata. User skills live in `%LOCALAPPDATA%\ForgeCode\skills`; project skills live in `.forgecode\skills`. Project skills override user skills, which override built-ins with the same name. Set `skill_auto_select` to `false` to keep skills installed but require explicit `$skill-name` selection, or set `skills_enabled` to `false` to disable the engine.
+
+## General project toolchain
+
+The model receives one guarded `project_toolchain` tool instead of HTML-only assumptions. It can inspect an existing repository, select its native build system, and run `build`, `test`, or `package` through the same approvals, ForceSandbox isolation, timeout controls, activity logs, and UTF-8 handling as other ForceCode tools. New-project scaffolding supports:
+
+- `cpp-cmake`: modern CMake library/executable separation plus CTest.
+- `dotnet-exe`: nullable C# console app and platform-specific single-file publish.
+- `java-jar`: standard Maven layout with an executable JAR manifest.
+- `paper-plugin`: Gradle Kotlin DSL, Paper API, `JavaPlugin`, commands, and `plugin.yml`.
+
+Existing Maven/Gradle wrappers are preferred automatically. CMake, .NET, Java/Paper, Rust, and packaged Go work is not marked successful unless a non-empty executable or JAR artifact is found after the command. The AI chooses and uses this tool from ordinary requests such as “build a C++ app”, “package this as an EXE”, or “create a Paper plugin”; no extra slash command is required.
+
+The selected model remains pinned when a provider reports it as unavailable. To explicitly allow ForceCode to probe and permanently select another model from the same custom/Kimchi service, enable the optional setting:
+
+```text
+/set auto_model_switch true
+```
+
+Disable it again with `/set auto_model_switch false`.
 
 ## ForceFlow sequential tasks
 
@@ -140,6 +210,19 @@ forge › all tasks completed and verified
 Each subtask keeps the original user objective, so quality requirements are not lost when a large request is divided. If normal attempts fail, ForceFlow enters bounded autonomous repair rounds: it carries forward missing evidence and API/tool diagnostics, asks for a different root-cause-driven approach, reruns focused checks, and continues without waiting for another prompt. It still stops safely when repair evidence never passes or an existing approval policy requires user confirmation.
 
 Framework-free website work receives a final deterministic quality gate independent of the selected model. Serious static sites must have linked HTML, responsive CSS, and functional JavaScript, plus semantic structure, mobile metadata, valid local assets, accessible basics, and non-placeholder content. React, Next, Vue, Svelte, and similar projects keep their framework and use its native test/build gate instead. A failed gate creates its own internal repair task and is rechecked before completion. Ctrl+C marks the running item as paused; the next normal prompt resumes it with fresh guidance. State is stored in `.forgecode/tasks.json` and is excluded from Git. See [docs/FORCEFLOW.md](docs/FORCEFLOW.md) for the state model and verification rules.
+
+## VibeCode overnight autonomy
+
+VibeCode turns one broad product goal into a supervised-by-evidence overnight run. Start it directly, or arm the next normal prompt:
+
+```text
+/vibe hours 10
+/vibe Build a polished desktop-ready application from this project, test every important flow, and leave it ready to release
+```
+
+The planner creates an ordered architecture and acceptance plan. ForceCode then completes one task at a time, saves a checkpoint, and clears expensive conversation context before continuing. Long compilers and test suites receive a separate command budget; temporary API failures use capped exponential backoff. A repeatedly blocked local task can be deferred so unrelated work continues, but the final result cannot pass while the independent reviewer still considers that gap important.
+
+VibeCode never silently weakens the safety boundary. It requires ForceSandbox, auto-approves only isolated project work, blocks known destructive commands, and transfers verified changes through the existing snapshot/conflict controls. A crash or Ctrl+C leaves `.forgecode/vibe-session.json` resumable with `/vibe resume`. The latest objective, task receipts, checks, changed files, and outcome are written to `.forgecode/vibe-report.md`. Use `/vibe status` at any time; `/vibe stop` abandons the saved run without deleting project changes.
 
 ## ForceSandbox
 
@@ -235,6 +318,7 @@ Global user settings remain outside the repository:
 | Global launcher | `%LOCALAPPDATA%\ForgeCode\bin\Force.cmd` |
 | User-level ForceContext preferences | `%LOCALAPPDATA%\ForgeCode\memory\user.json` |
 | ForceSandbox workspaces, snapshots, and logs | `%LOCALAPPDATA%\ForgeCode\sandboxes\<project-id>` |
+| User-wide Agent Skills and enable/disable state | `%LOCALAPPDATA%\ForgeCode\skills` |
 
 `FORGECODE_HOME` can override the global settings directory. On first launch after upgrading, legacy Windows settings from `%USERPROFILE%\.forgecode` are copied to AppData when no AppData configuration exists; the legacy files are not deleted automatically.
 

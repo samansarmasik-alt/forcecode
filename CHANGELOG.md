@@ -2,6 +2,104 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.11.1] - 2026-08-04
+
+### Fixed
+
+- `/watchdog off` no longer leaves a dead provider connection waiting forever. It still removes the total generation limit, but an independent stall guard now detaches requests that send no first data or stop making progress.
+- A stalled request with no visible streamed output is retried once against the same pinned model and unchanged conversation, avoiding an unintended model switch or duplicate visible output.
+- Stall thresholds adapt upward from healthy provider latency history, while active long-running streams continue without a total timeout.
+- Heartbeat and status text now distinguish unlimited generation time from stuck-connection recovery instead of reporting the misleading `zaman aşımı yok` message.
+
+### Configuration
+
+- Added `stall_guard_enabled`, `stall_first_response_seconds` (120 seconds), `stall_stream_idle_seconds` (180 seconds), and `stall_retry_attempts` (1 by default, 0 to disable retry). Users can raise the limits for unusually slow providers or explicitly disable the guard.
+
+## [7.11.0] - 2026-08-04
+
+### Added
+
+- Added the built-in `skill-scout` meta skill and automatic project enrichment from the skills.sh catalog.
+- Added a privacy-preserving local project profiler: only generic technology and task labels are used for discovery; source code, paths, prompts, secrets, and user data are never sent to the catalog.
+- Added `/skill scout status|scan|on|off`, local decision receipts, configurable security/contribution gates, per-scan limits, project-wide limits, and scan cooldowns.
+
+### Security
+
+- Every automatic candidate now combines independent skills.sh audit-provider verdicts with deterministic local checks for prompt injection, credential collection/exfiltration, sandbox or approval bypass, destructive host commands, elevated privileges, and unsafe network execution.
+- Automatic installation requires a security score strictly above 80/100 and project contribution of at least 60/100. Any critical or partner-failed audit blocks the skill regardless of score.
+- Skill Scout installs only standalone UTF-8 `SKILL.md` text into the current project's `.forgecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are not imported or executed.
+- Catalog identity mismatches, collisions with existing skills, and skills that depend on unsupported companion files are rejected.
+
+### Efficiency
+
+- Successful scan profiles are cached for 24 hours, accepted skills gain local task triggers for progressive disclosure, and at most the relevant one to three skill bodies continue to enter model context.
+
+## [7.10.1] - 2026-08-04
+
+### Fixed
+
+- ForceFlow artifact verification now accepts non-empty compiled and media artifacts such as `.class`, JAR, EXE, DLL, image, font, and database files as binary hash evidence instead of incorrectly requiring UTF-8 text.
+- Large compiler output sets are verified in bounded batches rather than failing the 50-path tool limit.
+- Temporary `.forceclient-check` compiler output is excluded from project change tracking and verified sandbox transfer, while real source changes and final toolchain evidence remain checked.
+- Artifact verification failures now become normal ForceFlow evidence failures instead of escaping as an unhandled `ValueError`.
+
+## [7.10.0] - 2026-08-04
+
+### Added
+
+- Added VibeCode, an opt-in overnight autonomy mode driven by one broad product objective through `/vibe <goal>` or an armed next prompt with `/vibe on`.
+- Added architecture-first task planning, task-by-task persistent checkpoints, transcript compaction between tasks, deterministic project-wide gates, and an independent read-only final acceptance review.
+- Added crash-safe `.forgecode/vibe-session.json` state, `/vibe status|resume|stop|hours`, and a human-readable `.forgecode/vibe-report.md` receipt.
+
+### Reliability
+
+- Long VibeCode builds receive an independent command budget of up to 1,200 seconds by default while model requests use patient first-response, idle, and total watchdog limits.
+- Transient API/reviewer failures use capped exponential backoff without consuming product-quality review cycles; repeated local task failures can be deferred so unrelated work continues.
+- Interrupted sessions recover as paused rather than completed, and no run reports success until both local verification and an independent score of at least 80/100 pass.
+
+### Security
+
+- Unattended mutation requires an active ForceSandbox. Safe isolated project actions need no overnight prompt, while deterministic destructive commands and credential-sensitive paths remain blocked.
+- Existing verified transfer, snapshot, conflict detection, secret exclusion, and rollback controls remain mandatory.
+
+## [7.9.0] - 2026-08-03
+
+### Added
+
+- Added the guarded `project_toolchain` model tool for project inspection, deterministic multi-file scaffolding, native builds, focused tests, and packaging.
+- Added first-class C++/CMake executable, .NET single-file executable, Java executable JAR, and Minecraft Paper plugin scaffolds.
+- Added automatic toolchain detection and native command selection for CMake, .NET, Maven/Gradle (including wrappers), Cargo, Go, Node, and Python.
+- Added built-in `native-cpp`, `dotnet-application`, `java-jar`, and `minecraft-paper-plugin` skills with progressive task matching.
+
+### Reliability
+
+- Compiled build/package operations now require a real non-empty executable or JAR artifact after a successful command; a zero exit code alone is no longer sufficient evidence.
+- CMake and system-Gradle projects are now included in automatic project testing.
+- Scaffold writes use one approval, UTF-8 verification, overwrite protection, and rollback if any file fails.
+
+## [7.8.0] - 2026-08-02
+
+### Added
+
+- Added a dependency-free, local-first Agent Skills engine compatible with the portable `SKILL.md` directory format and YAML frontmatter.
+- Added progressive disclosure: ForgeCode scores enabled skills against each user request and injects only the one to three most relevant instruction bodies according to the efficiency mode.
+- Added four built-in skills for root-cause debugging, frontend quality, evidence-driven project audits, and release readiness.
+- Added `/skills` plus `/skill show|discover|install|update|enable|disable|remove`, along with `list_skills` and guarded `manage_skill` AI tools.
+- Added safe GitHub installation from repository, tree/blob, raw `SKILL.md`, and `owner/repo` sources. Imports accept only bounded UTF-8 instructions; scripts and binaries are never downloaded or executed.
+- Added user-wide and project-scoped skills, deterministic precedence, persistent enable/disable state, and natural-language skill management authorization.
+
+### Security
+
+- Remote skill mutation requires an explicit skill-management request. Skill instructions are labeled lower-priority and cannot override user intent, sandbox boundaries, approvals, or system safety.
+
+## [7.7.3] - 2026-08-02
+
+### Changed
+
+- Automatic model switching is now disabled by default. Provider, tool, route, model-unavailable, and transient API errors preserve the model explicitly selected by the user.
+- Added the typed `auto_model_switch` setting. Users can opt in with `/set auto_model_switch true` and turn it off again without reconnecting.
+- When switching is disabled, diagnostics state that the selected model was preserved instead of silently probing alternatives.
+
 ## [7.7.2] - 2026-08-02
 
 ### Changed
