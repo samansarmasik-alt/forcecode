@@ -2,6 +2,25 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.10.0] - 2026-08-04
+
+### Added
+
+- Added VibeCode, an opt-in overnight autonomy mode driven by one broad product objective through `/vibe <goal>` or an armed next prompt with `/vibe on`.
+- Added architecture-first task planning, task-by-task persistent checkpoints, transcript compaction between tasks, deterministic project-wide gates, and an independent read-only final acceptance review.
+- Added crash-safe `.forgecode/vibe-session.json` state, `/vibe status|resume|stop|hours`, and a human-readable `.forgecode/vibe-report.md` receipt.
+
+### Reliability
+
+- Long VibeCode builds receive an independent command budget of up to 1,200 seconds by default while model requests use patient first-response, idle, and total watchdog limits.
+- Transient API/reviewer failures use capped exponential backoff without consuming product-quality review cycles; repeated local task failures can be deferred so unrelated work continues.
+- Interrupted sessions recover as paused rather than completed, and no run reports success until both local verification and an independent score of at least 80/100 pass.
+
+### Security
+
+- Unattended mutation requires an active ForceSandbox. Safe isolated project actions need no overnight prompt, while deterministic destructive commands and credential-sensitive paths remain blocked.
+- Existing verified transfer, snapshot, conflict detection, secret exclusion, and rollback controls remain mandatory.
+
 ## [7.9.0] - 2026-08-03
 
 ### Added

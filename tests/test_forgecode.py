@@ -1611,7 +1611,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 26)
+            self.assertEqual(cfg.data["config_version"], 27)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1625,7 +1625,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 26)
+            self.assertEqual(cfg.data["config_version"], 27)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1757,7 +1757,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 26)
+        self.assertEqual(cfg.data["config_version"], 27)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -4558,6 +4558,159 @@ class UniversalProjectToolchainTests(unittest.TestCase):
             selected_names = [record.name for record in selected]
             self.assertIn("minecraft-paper-plugin", selected_names)
             self.assertIn("java-jar", selected_names)
+
+
+class VibeCodeTests(unittest.TestCase):
+    def test_vibe_settings_are_typed_bounded_and_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            cfg = forgecode.Config(home)
+            cfg.set_value("vibe_mode", "true")
+            cfg.set_value("vibe_max_hours", "12")
+            cfg.set_value("vibe_command_timeout_seconds", "1800")
+
+            loaded = forgecode.Config(home)
+            self.assertTrue(loaded.data["vibe_mode"])
+            self.assertEqual(loaded.data["vibe_max_hours"], 12)
+            self.assertEqual(loaded.data["vibe_command_timeout_seconds"], 1800)
+            self.assertEqual(loaded.data["config_version"], 27)
+            with self.assertRaises(ValueError):
+                loaded.set_value("vibe_max_hours", "25")
+
+    def test_running_vibe_session_recovers_as_paused_after_process_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            store = forgecode.VibeSessionStore(root)
+            store.start("Build and verify a complete product", 8)
+            store.update(status="running", owner_pid=999999999, flow_id="night")
+
+            with mock.patch.object(forgecode.TaskQueueStore, "_pid_alive", return_value=False):
+                recovered = forgecode.VibeSessionStore(root)
+
+            self.assertEqual(recovered.state["status"], "paused")
+            self.assertEqual(recovered.state["owner_pid"], 0)
+            self.assertIn("checkpoint", recovered.state["last_error"])
+            self.assertTrue(recovered.resumable())
+
+            recovered.update(status="reviewing", owner_pid=999999999)
+            with mock.patch.object(forgecode.TaskQueueStore, "_pid_alive", return_value=False):
+                review_recovery = forgecode.VibeSessionStore(root)
+            self.assertEqual(review_recovery.state["status"], "paused")
+
+    def test_vibe_status_counts_only_the_active_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            queue = forgecode.TaskQueueStore(root)
+            active = queue.add("active", flow_id="night")
+            queue.add("unrelated", flow_id="other")
+            queue.update(active, "completed")
+            session = forgecode.VibeSessionStore(root)
+            session.start("Night build", 1)
+            session.update(flow_id="night", completed_tasks=1)
+
+            status = session.status_text(queue)
+
+            self.assertIn("1 completed · 0 pending", status)
+
+    def test_review_requires_high_score_explicit_pass_and_no_gaps(self):
+        passing = forgecode.parse_vibecode_review(
+            '{"passed":true,"score":91,"summary":"usable","gaps":[]}'
+        )
+        failing = forgecode.parse_vibecode_review(
+            '{"passed":true,"score":95,"summary":"missing tests",'
+            '"gaps":[{"title":"Add tests","acceptance":"Tests pass"}]}'
+        )
+
+        self.assertTrue(passing.passed)
+        self.assertFalse(failing.passed)
+        self.assertEqual(failing.gaps[0]["title"], "Add tests")
+
+    def test_unattended_mode_approves_isolated_work_but_blocks_destructive_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            sandbox = mock.Mock()
+            sandbox.active.return_value = True
+            confirmations = []
+            tools = forgecode.WorkspaceTools(
+                root, cfg, lambda question: confirmations.append(question) or True, sandbox=sandbox
+            )
+            tools.unattended_mode = True
+
+            safe = tools._authorize("write", "write app", "path=src/app.py", False)
+            blocked = tools._authorize(
+                "command", "reset repository", "command=git reset --hard", False
+            )
+
+            self.assertEqual(safe, (True, ""))
+            self.assertFalse(blocked[0])
+            self.assertIn("safety boundary", blocked[1])
+            self.assertEqual(confirmations, [])
+
+    def test_paused_vibe_flow_is_not_resumed_by_an_ordinary_prompt(self):
+        agent = mock.Mock()
+        agent.read_only = False
+        agent.cfg.data = {"work_mode": "auto"}
+        agent.task_queue.first_unresolved.return_value = {"flow_id": "night", "status": "paused"}
+        agent.vibe_session.state = {"flow_id": "night", "status": "paused"}
+
+        self.assertFalse(forgecode.should_auto_forceflow(agent, "fix another file"))
+
+    def test_vibecode_happy_path_checkpoints_reviews_and_restores_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            project = base / "project"
+            project.mkdir()
+            cfg = forgecode.Config(base / "home")
+            cfg.data["_runtime_enable_sandbox"] = True
+            original_mode = cfg.data["work_mode"]
+            sandbox = forgecode.ForceSandboxManager(project, cfg)
+            agent = forgecode.Agent(
+                project, cfg, forgecode.GoalStore(project), lambda _: False, sandbox=sandbox
+            )
+
+            def complete_one(_agent, store, _rounds, _on_tool=None, **kwargs):
+                task = store.first_unresolved()
+                self.assertIsNotNone(task)
+                store.update(
+                    task,
+                    "completed",
+                    finished_at="now",
+                    changed_files=["src/app.py"],
+                    summary="Implemented and tested",
+                )
+                result = forgecode.ForceFlowTaskResult(
+                    str(task["id"]), True, 1, "Implemented and tested", ["src/app.py"], []
+                )
+                callback = kwargs.get("after_task")
+                if callback:
+                    callback(result)
+                return forgecode.ForceFlowRunResult(True, [result])
+
+            with mock.patch.object(sandbox, "engine_status", return_value=("native", True)), mock.patch.object(
+                forgecode, "create_vibecode_plan", return_value=[{
+                    "title": "Implement the product", "acceptance": "Focused tests pass"
+                }]
+            ), mock.patch.object(forgecode, "run_forceflow_queue", side_effect=complete_one), mock.patch.object(
+                forgecode, "vibecode_local_gate", return_value=(True, "OK: local tests passed")
+            ), mock.patch.object(
+                forgecode, "run_vibecode_review",
+                return_value=forgecode.VibeReview(True, 93, "Ready for use", []),
+            ):
+                result = forgecode.run_vibecode(agent, "Build a polished application")
+                # Simulate a crash after the objective checkpoint but before
+                # the planner could persist a flow, then resume it.
+                agent.vibe_session.start("Recover the interrupted plan", 1)
+                resumed = forgecode.run_vibecode(agent, resume=True)
+
+            self.assertTrue(result.completed)
+            self.assertTrue(resumed.completed)
+            self.assertEqual(agent.vibe_session.state["status"], "completed")
+            self.assertEqual(agent.vibe_session.state["completed_tasks"], 1)
+            self.assertIn("src/app.py", result.changed_files)
+            self.assertTrue((project / ".forgecode" / "vibe-report.md").is_file())
+            self.assertFalse(agent.tools.unattended_mode)
+            self.assertEqual(cfg.data["work_mode"], original_mode)
 
 
 if __name__ == "__main__":

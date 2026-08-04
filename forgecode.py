@@ -55,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.9.0"
+VERSION = "7.10.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -265,7 +265,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 26,
+    "config_version": 27,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -292,6 +292,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "flow_max_rounds": 3,
     "flow_repair_rounds": 3,
     "flow_quality_gate": True,
+    "vibe_mode": False,
+    "vibe_max_hours": 10,
+    "vibe_review_cycles": 4,
+    "vibe_failure_retries": 6,
+    "vibe_retry_delay_seconds": 15,
+    "vibe_command_timeout_seconds": 1200,
     "retry_attempts": 2,
     "retry_backoff_seconds": 0.5,
     "max_tool_output_chars": 30000,
@@ -474,7 +480,7 @@ class Config:
         # migrate the legacy default; deliberately customized limits remain.
         if saved.get("config_version", 1) < 24 and saved.get("sandbox_max_transfer_mb", 200) == 200:
             saved["sandbox_max_transfer_mb"] = 0
-        saved["config_version"] = 26
+        saved["config_version"] = 27
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -584,7 +590,7 @@ class Config:
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb"}:
+        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb", "vibe_max_hours", "vibe_review_cycles", "vibe_failure_retries", "vibe_retry_delay_seconds", "vibe_command_timeout_seconds"}:
             value: Any = int(raw)
             zero_allowed = {"flow_repair_rounds", "sandbox_max_transfer_mb"}
             if value < 0 or (value == 0 and name not in zero_allowed):
@@ -595,6 +601,15 @@ class Config:
                 raise ValueError("flow_max_tasks 1 ile 50 arasında olmalı")
             if name in {"flow_max_rounds", "flow_repair_rounds"} and value > 10:
                 raise ValueError(f"{name} en fazla 10 olabilir")
+            vibe_maximums = {
+                "vibe_max_hours": 24,
+                "vibe_review_cycles": 10,
+                "vibe_failure_retries": 20,
+                "vibe_retry_delay_seconds": 300,
+                "vibe_command_timeout_seconds": 3600,
+            }
+            if name in vibe_maximums and value > vibe_maximums[name]:
+                raise ValueError(f"{name} en fazla {vibe_maximums[name]} olabilir")
             watchdog_maximums = {
                 "first_response_timeout_seconds": 180,
                 "stream_idle_timeout_seconds": 300,
@@ -615,7 +630,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "skills_enabled", "skill_auto_select"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "skills_enabled", "skill_auto_select", "vibe_mode"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -5265,6 +5280,7 @@ class WorkspaceTools:
         self._risk_cache: dict[str, tuple[str, str]] = {}
         self._processes: dict[str, InteractiveProcess] = {}
         self._process_lock = threading.RLock()
+        self.unattended_mode = False
         self.force_graph = ForceGraphBridge(self.root, cfg)
         atexit.register(self.close_processes)
 
@@ -5278,6 +5294,17 @@ class WorkspaceTools:
             pass
 
     def _authorize(self, operation: str, summary: str, details: str, legacy_auto: bool) -> tuple[bool, str]:
+        if self.unattended_mode:
+            floor = hard_operation_risk(operation, details)
+            if floor:
+                return False, "ERROR: VibeCode safety boundary: " + floor[1]
+            if self.sandbox is None or not self.sandbox.active():
+                return False, "ERROR: VibeCode unattended changes require ForceSandbox."
+            # The isolated workspace contains no user secrets and cannot reach
+            # host files. Safe project writes/commands therefore need no
+            # overnight prompt, while deterministic destructive patterns above
+            # remain blocked and transfer still requires verification.
+            return True, ""
         if self.cfg.data.get("autopilot_mode") or legacy_auto:
             return True, ""
         if not self.cfg.data.get("smart_autopilot_mode"):
@@ -5851,7 +5878,17 @@ class WorkspaceTools:
         )
         if not approved:
             return rejection
-        timeout = min(max(1, timeout_seconds), int(self.cfg.data["timeout_seconds"]))
+        requested_timeout = int(timeout_seconds)
+        if self.unattended_mode:
+            requested_timeout = max(
+                requested_timeout,
+                int(self.cfg.data.get("vibe_command_timeout_seconds", 1200)),
+            )
+        timeout = (
+            max(1, requested_timeout)
+            if self.unattended_mode
+            else min(max(1, requested_timeout), int(self.cfg.data["timeout_seconds"]))
+        )
         view = parse_file_view_command(command)
         if view:
             path, direction, count = view
@@ -7034,6 +7071,30 @@ class TaskQueueStore:
         counts = collections.Counter(str(task.get("status", "pending")) for task in self.tasks)
         return {name: int(counts.get(name, 0)) for name in ("pending", "running", "paused", "failed", "completed", "skipped")}
 
+    def skip_unresolved(self, reason: str, except_flow_id: str = "") -> int:
+        """Archive stale work before an explicitly requested autonomous objective."""
+        changed = 0
+        finished = dt.datetime.now().isoformat(timespec="seconds")
+        for task in self.tasks:
+            if task.get("status") in FLOW_FINAL_STATES:
+                continue
+            if except_flow_id and str(task.get("flow_id", "")) == except_flow_id:
+                continue
+            task.update({
+                "status": "skipped",
+                "owner_pid": 0,
+                "finished_at": finished,
+                "error": redact_sensitive(str(reason))[:1200],
+            })
+            changed += 1
+        if changed:
+            self.save()
+        return changed
+
+    def flow_tasks(self, flow_id: str) -> list[dict[str, Any]]:
+        selected = str(flow_id)
+        return [task for task in self.tasks if str(task.get("flow_id", "")) == selected]
+
     def completed_context(self, before_task: dict[str, Any], limit: int = 3) -> str:
         try:
             stop = self.tasks.index(before_task)
@@ -7047,6 +7108,130 @@ class TaskQueueStore:
             files = ", ".join(str(name) for name in task.get("changed_files", [])[:12]) or "none"
             rows.append(f"- {task.get('title', '')[:180]} | files: {files} | result: {summary}")
         return "\n".join(rows[-max(1, limit):]) or "- No earlier completed queue task."
+
+
+class VibeSessionStore:
+    """Crash-safe control plane for one long-running autonomous build."""
+
+    def __init__(self, root: pathlib.Path):
+        self.root = root.resolve()
+        self.path = self.root / ".forgecode" / "vibe-session.json"
+        raw = load_json(self.path, {})
+        self.state: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        if (
+            self.state.get("status") in {"planning", "running", "reviewing"}
+            and not TaskQueueStore._pid_alive(self.state.get("owner_pid"))
+        ):
+            self.state.update({
+                "status": "paused",
+                "owner_pid": 0,
+                "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+                "last_error": "ForgeCode stopped unexpectedly; the latest checkpoint is ready for /vibe resume.",
+            })
+            self.save()
+
+    def save(self) -> None:
+        if self.state:
+            atomic_json(self.path, self.state)
+
+    def start(self, objective: str, max_hours: int) -> dict[str, Any]:
+        clean = redact_sensitive(str(objective).strip())[:12000]
+        if not clean:
+            raise ValueError("VibeCode objective cannot be empty")
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        self.state = {
+            "version": 1,
+            "id": uuid.uuid4().hex[:10],
+            "flow_id": "",
+            "objective": clean,
+            "status": "planning",
+            "created_at": now,
+            "updated_at": now,
+            "started_at": now,
+            "finished_at": "",
+            "deadline_epoch": time.time() + max(1, int(max_hours)) * 3600,
+            "owner_pid": os.getpid(),
+            "review_cycle": 0,
+            "failure_streak": 0,
+            "retries": 0,
+            "completed_tasks": 0,
+            "deferred_tasks": [],
+            "changed_files": [],
+            "checks": [],
+            "last_error": "",
+            "last_summary": "",
+        }
+        self.save()
+        return self.state
+
+    def update(self, **fields: Any) -> None:
+        if not self.state:
+            raise ValueError("No VibeCode session exists")
+        self.state.update(fields)
+        self.state["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        self.save()
+
+    def mark_running(self) -> None:
+        self.update(status="running", owner_pid=os.getpid(), last_error="")
+
+    def pause(self, reason: str) -> None:
+        if self.state:
+            self.update(status="paused", owner_pid=0, last_error=redact_sensitive(str(reason))[:2000])
+
+    def complete(self, summary: str, changed_files: list[str], checks: list[str]) -> None:
+        self.update(
+            status="completed",
+            owner_pid=0,
+            finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+            last_summary=redact_sensitive(str(summary))[:8000],
+            changed_files=list(dict.fromkeys(str(item) for item in changed_files))[:500],
+            checks=[redact_sensitive(str(item))[:2000] for item in checks[-50:]],
+            last_error="",
+        )
+
+    def stop(self, reason: str = "Stopped by user") -> None:
+        if self.state:
+            self.update(
+                status="stopped",
+                owner_pid=0,
+                finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+                last_error=redact_sensitive(reason)[:2000],
+            )
+
+    def resumable(self) -> bool:
+        return bool(
+            self.state
+            and self.state.get("status") in {"planning", "running", "reviewing", "paused", "blocked"}
+        )
+
+    def remaining_seconds(self) -> float:
+        return max(0.0, float(self.state.get("deadline_epoch", 0.0)) - time.time())
+
+    def status_text(self, queue: TaskQueueStore | None = None) -> str:
+        if not self.state:
+            return "VibeCode: no session"
+        if queue is not None and self.state.get("flow_id"):
+            flow_tasks = queue.flow_tasks(str(self.state["flow_id"]))
+            raw_counts = collections.Counter(str(task.get("status", "pending")) for task in flow_tasks)
+            counts = {
+                name: int(raw_counts.get(name, 0))
+                for name in ("pending", "running", "paused", "failed", "completed", "skipped")
+            }
+        else:
+            counts = queue.counts() if queue is not None else {}
+        remaining = int(self.remaining_seconds())
+        hours, remainder = divmod(remaining, 3600)
+        minutes = remainder // 60
+        return (
+            f"VibeCode: {self.state.get('status', 'unknown')} · id {self.state.get('id', '-')}\n"
+            f"Objective: {str(self.state.get('objective', ''))[:500]}\n"
+            f"Progress: {self.state.get('completed_tasks', 0)} completed · "
+            f"{counts.get('pending', 0)} pending · {counts.get('failed', 0)} failed · "
+            f"review {self.state.get('review_cycle', 0)}\n"
+            f"Time remaining: {hours}h {minutes}m · retries {self.state.get('retries', 0)}\n"
+            f"Last checkpoint: {self.state.get('updated_at', '-')}"
+            + (f"\nLast issue: {self.state.get('last_error')}" if self.state.get("last_error") else "")
+        )
 
 
 @dataclass
@@ -7065,6 +7250,22 @@ class ForceFlowRunResult:
     completed: bool
     processed: list[ForceFlowTaskResult]
     blocked_task_id: str = ""
+
+
+@dataclass
+class VibeReview:
+    passed: bool
+    score: int
+    summary: str
+    gaps: list[dict[str, str]]
+
+
+@dataclass
+class VibeRunResult:
+    completed: bool
+    summary: str
+    changed_files: list[str]
+    checks: list[str]
 
 
 def parse_forceflow_plan(raw: str, max_tasks: int = 12) -> list[dict[str, str]]:
@@ -7408,6 +7609,8 @@ def run_forceflow_queue(
     on_tool: Callable[[str, dict[str, Any]], None] | None = None,
     force_web: bool = False,
     repair_rounds: int = 0,
+    max_tasks_to_process: int = 0,
+    after_task: Callable[[ForceFlowTaskResult], None] | None = None,
 ) -> ForceFlowRunResult:
     processed: list[ForceFlowTaskResult] = []
     while True:
@@ -7450,8 +7653,12 @@ def run_forceflow_queue(
                 agent.record_runtime_error("api_error", exc, {"source": "forceflow", "task_id": task.get("id")})
             return ForceFlowRunResult(False, processed, str(task.get("id", "")))
         processed.append(result)
+        if after_task is not None:
+            after_task(result)
         if not result.completed:
             return ForceFlowRunResult(False, processed, result.task_id)
+        if max_tasks_to_process > 0 and len(processed) >= max_tasks_to_process:
+            return ForceFlowRunResult(store.first_unresolved() is None, processed)
 
 
 def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool = False) -> str:
@@ -8407,6 +8614,7 @@ class Agent:
         self.session_name = safe_session_name(session_name or str(cfg.data.get("session_name", "main")))
         self.session_store = SessionStore(self.root, self.session_name, cfg)
         self.task_queue = TaskQueueStore(self.root)
+        self.vibe_session = VibeSessionStore(self.root)
         self.force_context = ForceContext(self.root)
         self.execution_kernel = ExecutionKernel(self.root, cfg)
         self.last_execution_report: dict[str, Any] = load_json(self.root / ".forgecode" / "last-run.json", {})
@@ -10003,6 +10211,7 @@ HELP = """Komutlar
   /backup <işlem>        Kota dolunca kullanılacak yedek API'yi yönet
   /retry [sayı] [sn]     Geçici API hatası tekrar politikası
   /watchdog [profil]     İstek süre sınırı: off, fast, balanced veya patient
+  /vibe [işlem|hedef]   Gece boyu checkpoint'li otonom ürün geliştirme
   /goal <hedef>          Hedefi ekle, uygula ve doğrulanana dek ilerle
   /goals                 Hedefleri listele
   /done <id|sıra>        Hedefi tamamla
@@ -10082,6 +10291,7 @@ HELP_EN = """Commands
   /backup <action>       Manage quota/rate-limit backup API failover
   /retry [count] [sec]   Configure transient API retry policy
   /watchdog [profile]    Request time limits: off, fast, balanced, or patient
+  /vibe [action|goal]    Run checkpointed overnight autonomous product work
   /goal <goal>           Add, execute, and verify a persistent goal
   /resume [id|no]        Resume an active goal
   /goals                 List goals
@@ -10123,7 +10333,7 @@ Use Tab/arrow keys for command suggestions. While the model works, type and pres
 
 COMMANDS = [
     "/goal", "/goals", "/graph", "/language", "/init", "/dashboard", "/sandbox", "/skills", "/skill", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/team", "/teamroles", "/agentconfig",
-    "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/watchdog", "/resume", "/done", "/status",
+    "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/watchdog", "/vibe", "/resume", "/done", "/status",
     "/usage", "/history", "/settings", "/set", "/key", "/test",
     "/models", "/model", "/stream", "/queue", "/free", "/web", "/search", "/thinking", "/temperature", "/mode", "/autopilot",
     "/efficiency", "/power", "/context", "/activity", "/agents", "/agent", "/delegate",
@@ -10178,18 +10388,19 @@ def autopilot_state(cfg: Config) -> str:
 def input_status_line(agent: Agent, cfg: Config) -> str:
     cost = agent.session_cost_usd
     backup_state, _ = backup_status(cfg)
+    vibe_state = "ready" if cfg.data.get("vibe_mode") else str(agent.vibe_session.state.get("status", "off"))
     if cfg.data.get("ui_language") == "en":
         autopilot = {"kapalı": "off", "akıllı": "smart", "tam": "full"}.get(autopilot_state(cfg), autopilot_state(cfg))
         backup = {"kapalı": "off", "açık": "on", "etkin": "active"}.get(backup_state, backup_state)
         return (
             f"◆ {cfg.data['provider']}/{cfg.data['model']} · {agent.session_name} · ${cost:.6f} · "
             f"BACKUP {backup} · AGENTS {'AI' if cfg.data.get('auto_subagents', True) else 'off'} · "
-            f"POWER {cfg.data.get('power_mode', 'auto')} · AUTO {autopilot}"
+            f"POWER {cfg.data.get('power_mode', 'auto')} · AUTO {autopilot} · VIBE {vibe_state}"
         )
     return (
         f"◆ {cfg.data['provider']}/{cfg.data['model']} · {agent.session_name} · ${cost:.6f} · "
         f"YEDEK {backup_state} · AJAN {'AI' if cfg.data.get('auto_subagents', True) else 'kapalı'} · "
-        f"GÜÇ {cfg.data.get('power_mode', 'auto')} · OTO {autopilot_state(cfg)}"
+        f"GÜÇ {cfg.data.get('power_mode', 'auto')} · OTO {autopilot_state(cfg)} · VIBE {vibe_state}"
     )
 
 
@@ -11423,7 +11634,15 @@ def should_auto_forceflow(agent: Agent, prompt: str) -> bool:
     """Use the AI planner for real project work, never for small chat or explicit Plan mode."""
     if agent.read_only or agent.cfg.data.get("work_mode") == "plan":
         return False
-    if agent.task_queue.first_unresolved() is not None:
+    unresolved = agent.task_queue.first_unresolved()
+    if unresolved is not None:
+        vibe = agent.vibe_session.state
+        belongs_to_paused_vibe = (
+            vibe.get("status") in {"planning", "paused", "blocked"}
+            and str(unresolved.get("flow_id", "")) == str(vibe.get("flow_id", ""))
+        )
+        if belongs_to_paused_vibe:
+            return False
         return True
     if is_simple_conversation(prompt):
         return False
@@ -11583,6 +11802,454 @@ def run_automatic_forceflow(
     return answer
 
 
+def create_vibecode_plan(agent: Agent, objective: str, max_tasks: int) -> list[dict[str, str]]:
+    """Create an architecture-first overnight plan with observable acceptance gates."""
+    system = (
+        "You are VibeCode's autonomous software architect. Turn the objective into a coherent ordered implementation plan "
+        "that another coding agent can execute unattended. Inspect the compact project map supplied by the controller. "
+        "Cover architecture, core behavior, UX when applicable, error handling, tests, packaging, and final integration, "
+        "but do not create filler or duplicate setup tasks. Each acceptance criterion must be objectively testable. "
+        "Do not reveal chain-of-thought. Return ONLY compact JSON: "
+        '{"tasks":[{"title":"imperative implementation task","acceptance":"observable evidence"}]}.'
+    )
+    project_map = "\n".join(sorted(agent.tools.snapshot())[:300])[:9000] or "(empty project)"
+    reply = agent._standalone_request(
+        "VibeCode architect",
+        system,
+        f"Maximum tasks: {max_tasks}\nProject map:\n{project_map}\n\nRoot objective:\n{objective}",
+        min(3200, max(1200, int(agent.cfg.data.get("max_tokens", 8192)))),
+    )
+    agent.session_usage.add(reply.usage)
+    agent.session_cost_usd += reply.usage.cost(agent.cfg)
+    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage)
+    tasks = parse_forceflow_plan(reply.text, max_tasks)
+    if tasks:
+        return tasks
+    return [{
+        "title": objective,
+        "acceptance": "The complete objective is implemented, tested, packaged when relevant, and independently reviewed.",
+    }]
+
+
+def parse_vibecode_review(raw: str) -> VibeReview:
+    text = str(raw).strip()
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+    parsed: dict[str, Any] | None = None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            parsed = value
+            break
+    if parsed is None:
+        raise ValueError("VibeCode reviewer did not return valid JSON")
+    try:
+        score = max(0, min(100, int(parsed.get("score", 0))))
+    except (TypeError, ValueError):
+        score = 0
+    gaps: list[dict[str, str]] = []
+    if isinstance(parsed.get("gaps"), list):
+        for item in parsed["gaps"][:8]:
+            if not isinstance(item, dict):
+                continue
+            title = redact_sensitive(str(item.get("title") or item.get("task") or "")).strip()[:1000]
+            acceptance = redact_sensitive(str(item.get("acceptance") or item.get("evidence") or "")).strip()[:1600]
+            if title:
+                gaps.append({
+                    "title": title,
+                    "acceptance": acceptance or "The reviewer concern is fixed and a focused deterministic check passes.",
+                })
+    summary = redact_sensitive(str(parsed.get("summary") or "")).strip()[:3000]
+    passed = bool(parsed.get("passed", False)) and score >= 80 and not gaps
+    return VibeReview(passed, score, summary, gaps)
+
+
+def run_vibecode_review(agent: Agent, objective: str, flow_id: str,
+                        local_check: str, deferred: list[Any]) -> VibeReview:
+    """Run an isolated read-only acceptance review after the implementation queue."""
+    child_cfg = Config(agent.cfg.home)
+    child_cfg.data = copy.deepcopy(agent.cfg.data)
+    child_cfg.data.update({
+        "_runtime_no_save": True,
+        "auto_subagents": False,
+        "work_mode": "plan",
+        "watchdog_enabled": True,
+        "first_response_timeout_seconds": 180,
+        "stream_idle_timeout_seconds": 300,
+        "request_total_timeout_seconds": 900,
+    })
+    reviewer = Agent(
+        agent.root, child_cfg, agent.goals, lambda _: False, read_only=True, role="review",
+        record_history=False, session_name=agent.session_name, sandbox=agent.sandbox,
+    )
+    reviewer.activity_callback = agent.activity_callback
+    task_rows = [
+        f"- {task.get('status')}: {str(task.get('title', ''))[:500]} | "
+        f"acceptance={str(task.get('acceptance', ''))[:700]} | "
+        f"evidence={str(task.get('evidence', task.get('summary', '')))[:700]}"
+        for task in agent.task_queue.flow_tasks(flow_id)
+    ]
+    prompt = (
+        "VIBECODE FINAL ACCEPTANCE REVIEW. You are independent and read-only. Inspect important project files and compare "
+        "the actual result with the root objective. Look for missing behavior, shallow placeholder implementation, broken "
+        "integration, weak UX, unsafe behavior, unhandled errors, absent tests, and packaging/build failures. Do not edit. "
+        "Pass only when the result is genuinely usable and the evidence supports it. Return ONLY JSON with this shape: "
+        '{"passed":true,"score":0,"summary":"concise evidence","gaps":[{"title":"repair task","acceptance":"testable evidence"}]}.\n\n'
+        f"ROOT OBJECTIVE:\n{objective}\n\nLOCAL CHECK:\n{local_check[:3000]}\n\n"
+        f"DEFERRED ITEMS:\n{json.dumps(deferred[-20:], ensure_ascii=False)[:4000]}\n\n"
+        "TASK RECEIPTS:\n" + "\n".join(task_rows[-40:])
+    )
+    answer = reviewer.ask(prompt)
+    agent.session_usage.add(reviewer.session_usage)
+    agent.session_cost_usd += reviewer.session_cost_usd
+    return parse_vibecode_review(answer)
+
+
+def vibecode_local_gate(agent: Agent, objective: str) -> tuple[bool, str]:
+    """Run a deterministic project-wide gate before the independent AI review."""
+    is_web, require_multifile, _ = forceflow_web_policy(agent, objective)
+    if is_web and not forceflow_framework_project(agent):
+        report = agent.tools.web_quality_report(require_multifile)
+        return report.passed, report.render()
+    result = agent.tools.tool_test_project(
+        timeout_seconds=int(agent.cfg.data.get("vibe_command_timeout_seconds", 1200))
+    )
+    return not result.startswith("ERROR:"), result
+
+
+def compact_vibecode_context(agent: Agent) -> None:
+    """Discard expensive transcript while preserving usage, files, and checkpoints."""
+    agent.messages.clear()
+    agent.completed_turns.clear()
+    agent._system_cache = ""
+    agent._force_context_text = ""
+    agent._active_skill_text = ""
+    agent._active_skill_names = ()
+
+
+def write_vibecode_report(agent: Agent, state: dict[str, Any], flow_id: str,
+                          summary: str, changed_files: list[str], checks: list[str]) -> pathlib.Path:
+    task_lines = []
+    for task in agent.task_queue.flow_tasks(flow_id):
+        mark = "x" if task.get("status") == "completed" else "-" if task.get("status") == "skipped" else " "
+        task_lines.append(
+            f"- [{mark}] {str(task.get('title', ''))[:500]}"
+            + (f" — {str(task.get('summary', ''))[:800]}" if task.get("summary") else "")
+        )
+    lines = [
+        "# VibeCode Run Report", "",
+        f"- Session: {state.get('id', '-')}",
+        f"- Status: {state.get('status', '-')}",
+        f"- Started: {state.get('started_at', '-')}",
+        f"- Finished: {dt.datetime.now().isoformat(timespec='seconds')}",
+        f"- Provider/model: {agent.cfg.data.get('provider')}/{agent.cfg.data.get('model')}",
+        f"- Estimated session cost: ${agent.session_cost_usd:.6f}",
+        "", "## Objective", "", str(state.get("objective", "")),
+        "", "## Result", "", summary or "No final summary.",
+        "", "## Tasks", "", *(task_lines or ["- No task receipts."]),
+        "", "## Checks", "", *[f"- {str(item)[:2000]}" for item in checks[-30:]],
+        "", "## Changed files", "", *[f"- {name}" for name in changed_files[:500]], "",
+    ]
+    path = agent.root / ".forgecode" / "vibe-report.md"
+    atomic_text(path, "\n".join(lines))
+    return path
+
+
+def run_vibecode(
+    agent: Agent,
+    objective: str = "",
+    on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    resume: bool = False,
+) -> VibeRunResult:
+    """Execute an unattended, checkpointed, review-driven software objective."""
+    if not agent.sandbox.active():
+        return VibeRunResult(False, "VibeCode başlamadı: gözetimsiz çalışma için ForceSandbox açık olmalı.", [], [])
+    engine, available = agent.sandbox.engine_status(True)
+    if not available:
+        return VibeRunResult(
+            False,
+            f"VibeCode başlamadı: ForceSandbox komut motoru hazır değil ({engine}). /sandbox ile kontrol edin.",
+            [],
+            [],
+        )
+    session = agent.vibe_session
+    previous_runtime = {
+        name: copy.deepcopy(agent.cfg.data.get(name))
+        for name in (
+            "_runtime_no_save", "work_mode", "watchdog_enabled", "first_response_timeout_seconds",
+            "stream_idle_timeout_seconds", "request_total_timeout_seconds", "timeout_seconds",
+            "auto_subagents", "thinking_mode", "efficiency_mode",
+        )
+    }
+    agent.cfg.data.update({
+        "_runtime_no_save": True,
+        "work_mode": "build",
+        "watchdog_enabled": True,
+        "first_response_timeout_seconds": 180,
+        "stream_idle_timeout_seconds": 300,
+        "request_total_timeout_seconds": 900,
+        "timeout_seconds": int(agent.cfg.data.get("vibe_command_timeout_seconds", 1200)),
+        "auto_subagents": True,
+        "thinking_mode": "high",
+        "efficiency_mode": "balanced",
+    })
+    agent.tools.unattended_mode = True
+    checks: list[str] = list(session.state.get("checks", [])) if session.state else []
+    changed_files: list[str] = list(session.state.get("changed_files", [])) if session.state else []
+    flow_id = ""
+
+    def plan_with_retries(goal: str) -> tuple[list[dict[str, str]], str]:
+        plan_error = ""
+        planned: list[dict[str, str]] = []
+        for attempt in range(1, 4):
+            try:
+                maximum = min(24, int(agent.cfg.data.get("flow_max_tasks", 12)))
+                agent._emit_activity(f"VibeCode: architecture plan {attempt}/3")
+                planned = create_vibecode_plan(agent, goal, maximum)
+                break
+            except ApiError as exc:
+                plan_error = redact_sensitive(str(exc))[:1500]
+                agent.record_runtime_error("api_error", exc, {"source": "vibecode_planner", "attempt": attempt})
+                session.update(last_error=plan_error, retries=int(session.state.get("retries", 0)) + 1)
+                if attempt < 3:
+                    time.sleep(min(30, int(agent.cfg.data.get("vibe_retry_delay_seconds", 15)) * attempt))
+        if not planned:
+            planned = [{
+                "title": goal,
+                "acceptance": "The full objective is implemented as a cohesive product and all available checks pass.",
+            }]
+            agent._emit_activity("VibeCode: planner unavailable, resilient single-objective fallback")
+        return planned, plan_error
+
+    try:
+        if resume:
+            if not session.resumable():
+                return VibeRunResult(False, "Sürdürülebilecek VibeCode oturumu bulunamadı.", changed_files, checks)
+            if session.remaining_seconds() <= 0:
+                session.update(deadline_epoch=time.time() + int(agent.cfg.data.get("vibe_max_hours", 10)) * 3600)
+            session.mark_running()
+            objective = str(session.state.get("objective", "")).strip()
+            flow_id = str(session.state.get("flow_id", "")).strip()
+            if not flow_id:
+                planned, plan_error = plan_with_retries(objective)
+                added = agent.task_queue.add_many(planned, objective=objective)
+                flow_id = str(added[0]["flow_id"])
+                session.update(
+                    flow_id=flow_id,
+                    status="running",
+                    owner_pid=os.getpid(),
+                    last_error=plan_error,
+                    planned_tasks=len(added),
+                )
+            agent.task_queue.skip_unresolved("Superseded stale flow", except_flow_id=flow_id)
+            agent._emit_activity(f"VibeCode {session.state.get('id')}: checkpoint resumed")
+        else:
+            objective = str(objective).strip()
+            if not objective:
+                return VibeRunResult(False, "VibeCode hedefi boş olamaz.", [], [])
+            if (
+                session.state.get("status") in {"planning", "running", "reviewing"}
+                and TaskQueueStore._pid_alive(session.state.get("owner_pid"))
+            ):
+                return VibeRunResult(False, "Bu proje için bir VibeCode oturumu zaten çalışıyor.", [], [])
+            agent.task_queue.skip_unresolved("Superseded by a new explicit VibeCode objective")
+            session.start(objective, int(agent.cfg.data.get("vibe_max_hours", 10)))
+            planned, plan_error = plan_with_retries(objective)
+            added = agent.task_queue.add_many(planned, objective=objective)
+            flow_id = str(added[0]["flow_id"])
+            session.update(
+                flow_id=flow_id,
+                status="running",
+                owner_pid=os.getpid(),
+                last_error=plan_error,
+                planned_tasks=len(added),
+            )
+        max_reviews = int(agent.cfg.data.get("vibe_review_cycles", 4))
+        failure_limit = int(agent.cfg.data.get("vibe_failure_retries", 6))
+        base_delay = int(agent.cfg.data.get("vibe_retry_delay_seconds", 15))
+        while session.remaining_seconds() > 0:
+            if session.state.get("status") == "stopped":
+                return VibeRunResult(False, "VibeCode kullanıcı tarafından durduruldu.", changed_files, checks)
+            current = agent.task_queue.first_unresolved()
+            if current is not None and str(current.get("flow_id", "")) != flow_id:
+                agent.task_queue.skip_unresolved("Stale task outside the active VibeCode flow", except_flow_id=flow_id)
+                current = agent.task_queue.first_unresolved()
+            if current is not None and current.get("status") in {"paused", "failed"}:
+                error = str(current.get("error", "")).strip()
+                lower_error = error.casefold()
+                api_failure = any(marker in lower_error for marker in (
+                    "api ", "rate limit", "quota", "timed out", "timeout", "connection", "network", "429", "503",
+                ))
+                streak = int(session.state.get("failure_streak", 0)) + 1
+                session.update(
+                    failure_streak=streak,
+                    retries=int(session.state.get("retries", 0)) + 1,
+                    last_error=error,
+                )
+                if api_failure:
+                    if streak > failure_limit:
+                        session.pause("API remained unavailable after the retry budget: " + error)
+                        break
+                    delay = min(300, base_delay * (2 ** min(streak - 1, 5)))
+                    agent._emit_activity(f"VibeCode: API recovery wait {delay}s · retry {streak}/{failure_limit}")
+                    time.sleep(delay)
+                    agent.task_queue.update(current, "pending", finished_at="")
+                    continue
+                if int(current.get("attempts", 0)) >= 3:
+                    deferred = list(session.state.get("deferred_tasks", []))
+                    deferred.append({"title": str(current.get("title", ""))[:1000], "error": error[:1600]})
+                    agent.task_queue.update(
+                        current,
+                        "skipped",
+                        finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+                        error="Deferred for independent final review: " + error[:1000],
+                    )
+                    session.update(deferred_tasks=deferred[-50:], failure_streak=0)
+                    agent._emit_activity("VibeCode: blocked task deferred; remaining work continues")
+                    compact_vibecode_context(agent)
+                    continue
+                acceptance = str(current.get("acceptance", "")).strip()
+                evidence = ("\nPrevious failed evidence: " + error[:1200]) if error else ""
+                agent.task_queue.update(
+                    current,
+                    "pending",
+                    acceptance=(acceptance + evidence)[-2500:],
+                    finished_at="",
+                )
+            if current is not None:
+                def after_task(result: ForceFlowTaskResult) -> None:
+                    nonlocal changed_files
+                    if result.completed:
+                        changed_files = list(dict.fromkeys(changed_files + result.changed_files))
+                        completed = sum(
+                            item.get("status") == "completed"
+                            for item in agent.task_queue.flow_tasks(flow_id)
+                        )
+                        session.update(
+                            completed_tasks=completed,
+                            changed_files=changed_files[:500],
+                            failure_streak=0,
+                            last_summary=result.answer[-3000:],
+                            last_error="",
+                        )
+                    compact_vibecode_context(agent)
+
+                run_forceflow_queue(
+                    agent,
+                    agent.task_queue,
+                    int(agent.cfg.data.get("flow_max_rounds", 3)),
+                    on_tool,
+                    repair_rounds=int(agent.cfg.data.get("flow_repair_rounds", 3)),
+                    max_tasks_to_process=1,
+                    after_task=after_task,
+                )
+                continue
+            cycle = int(session.state.get("review_cycle", 0)) + 1
+            session.update(review_cycle=cycle, status="reviewing")
+            agent._emit_activity(f"VibeCode: final quality cycle {cycle}/{max_reviews}")
+            local_passed, local_check = vibecode_local_gate(agent, objective)
+            checks.append(local_check[:3000])
+            session.update(checks=checks[-50:])
+            if not local_passed:
+                if cycle >= max_reviews:
+                    session.pause("Deterministic final check still fails: " + local_check[:1600])
+                    break
+                agent.task_queue.add(
+                    "Repair the complete project-wide verification failure",
+                    "Fix the root cause and make this deterministic check pass:\n" + local_check[:2000],
+                    flow_id,
+                    objective,
+                    "vibe_repair",
+                )
+                session.update(status="running", last_error=local_check[:1600])
+                continue
+            try:
+                review = run_vibecode_review(
+                    agent, objective, flow_id, local_check,
+                    list(session.state.get("deferred_tasks", [])),
+                )
+                checks.append(f"Independent review: {review.score}/100 · {review.summary}"[:3000])
+                session.update(checks=checks[-50:], last_summary=review.summary)
+            except (ApiError, ValueError) as exc:
+                error = redact_sensitive(str(exc))[:1600]
+                streak = int(session.state.get("failure_streak", 0)) + 1
+                session.update(
+                    status="running",
+                    # Transport/parser failures are retries of the same
+                    # independent review, not failed product-quality cycles.
+                    review_cycle=max(0, cycle - 1),
+                    failure_streak=streak,
+                    retries=int(session.state.get("retries", 0)) + 1,
+                    last_error=error,
+                )
+                if streak > failure_limit:
+                    session.pause("Independent reviewer remained unavailable: " + error)
+                    break
+                delay = min(300, base_delay * (2 ** min(streak - 1, 5)))
+                agent._emit_activity(f"VibeCode: reviewer retry in {delay}s")
+                time.sleep(delay)
+                continue
+            if review.passed:
+                summary = review.summary or "The objective passed deterministic and independent acceptance checks."
+                session.complete(summary, changed_files, checks)
+                report = write_vibecode_report(agent, session.state, flow_id, summary, changed_files, checks)
+                return VibeRunResult(
+                    True,
+                    f"VibeCode hedefi tamamladı ve bağımsız kalite kontrolünden {review.score}/100 aldı. "
+                    f"Rapor: {report}",
+                    changed_files,
+                    checks,
+                )
+            if cycle >= max_reviews:
+                session.pause(
+                    f"Independent quality gate remained below acceptance ({review.score}/100): {review.summary}"
+                )
+                break
+            gaps = review.gaps or [{
+                "title": "Resolve the independent review and raise final product quality",
+                "acceptance": review.summary or "Independent review passes at 80/100 or higher.",
+            }]
+            agent.task_queue.add_many(gaps[:6], flow_id=flow_id, objective=objective)
+            session.update(status="running", failure_streak=0, last_error=review.summary[:1600])
+            compact_vibecode_context(agent)
+        if session.remaining_seconds() <= 0 and session.state.get("status") not in {"paused", "completed"}:
+            session.pause("Configured overnight time budget ended; all checkpoints are preserved.")
+        summary = session.status_text(agent.task_queue)
+        write_vibecode_report(agent, session.state, flow_id, summary, changed_files, checks)
+        return VibeRunResult(False, summary, changed_files, checks)
+    except KeyboardInterrupt:
+        current = agent.task_queue.first_unresolved()
+        if current is not None and current.get("status") == "running":
+            agent.task_queue.update(current, "paused", error="User paused VibeCode with Ctrl+C", finished_at="")
+        session.pause("User paused VibeCode with Ctrl+C; resume with /vibe resume.")
+        raise
+    except SteeringInterrupt:
+        session.pause("Live user guidance paused VibeCode; resume after applying the new guidance.")
+        raise
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {redact_sensitive(str(exc))[:1800]}"
+        session.pause(error)
+        agent.record_runtime_error("runtime_error", exc, {"source": "vibecode"})
+        return VibeRunResult(False, "VibeCode güvenli checkpoint'e duraklatıldı: " + error, changed_files, checks)
+    finally:
+        agent.tools.unattended_mode = False
+        for name, value in previous_runtime.items():
+            if value is None and name in agent.cfg.data:
+                agent.cfg.data.pop(name, None)
+            else:
+                agent.cfg.data[name] = value
+        agent.provider = make_provider(agent.cfg)
+        agent._system_cache = ""
+
+
 def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bool:
     parts = line.split(maxsplit=2)
     cmd = parts[0].lower()
@@ -11598,6 +12265,68 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print("Başka bir kod uygulamasında projeyi açın; AGENTS.md, CLAUDE.md veya GEMINI.md yeni AI'yi AI_HANDOFF.md dosyasına yönlendirecek.")
         except OSError as exc:
             print(f"{C.RED}Devir dosyaları yazılamadı: {exc}{C.RESET}")
+    elif cmd == "/vibe":
+        value = line[len(parts[0]):].strip()
+        selected = value.casefold()
+        if not value or selected in {"status", "durum"}:
+            print(agent.vibe_session.status_text(agent.task_queue))
+            print(
+                "Kullanım: /vibe on (sonraki hedef) · /vibe <hedef> · /vibe resume · "
+                "/vibe stop · /vibe hours <1-24>"
+            )
+        elif selected in {"on", "aç", "ac", "arm", "hazır", "hazir"}:
+            cfg.set_value("vibe_mode", "true")
+            print(
+                f"{C.GREEN}VibeCode hazır.{C.RESET} Şimdi ürün hedefini normal mesaj olarak yazın; "
+                f"{cfg.data.get('vibe_max_hours', 10)} saate kadar gözetimsiz çalışacak."
+            )
+        elif selected in {"off", "stop", "kapat", "dur"}:
+            cfg.set_value("vibe_mode", "false")
+            if agent.vibe_session.resumable():
+                flow_id = str(agent.vibe_session.state.get("flow_id", ""))
+                for task in agent.task_queue.flow_tasks(flow_id):
+                    if task.get("status") not in FLOW_FINAL_STATES:
+                        agent.task_queue.update(
+                            task, "skipped",
+                            finished_at=dt.datetime.now().isoformat(timespec="seconds"),
+                            error="VibeCode stopped by user",
+                        )
+                agent.vibe_session.stop()
+            print(f"{C.YELLOW}VibeCode kapatıldı.{C.RESET}")
+        elif selected.startswith("hours ") or selected.startswith("saat "):
+            raw_hours = value.split(maxsplit=1)[1].strip()
+            try:
+                cfg.set_value("vibe_max_hours", raw_hours)
+                print(f"VibeCode süre bütçesi: {cfg.data['vibe_max_hours']} saat")
+            except ValueError as exc:
+                print(f"{C.RED}{exc}{C.RESET}")
+        else:
+            if cfg.requires_key() and not cfg.key():
+                print(f"{C.RED}Önce /key ile API anahtarını ayarlayın.{C.RESET}")
+            else:
+                is_resume = selected in {"resume", "devam", "sürdür", "surdur"}
+                objective = "" if is_resume else value
+                cfg.set_value("vibe_mode", "false")
+                print(f"{C.CYAN}VibeCode başlatılıyor.{C.RESET} Ctrl+C güvenli checkpoint'e duraklatır.")
+
+                def vibe_tool(name: str, args: dict[str, Any]) -> None:
+                    detail = (
+                        args.get("path") or args.get("command") or args.get("query")
+                        or args.get("task") or args.get("target") or ""
+                    )
+                    print(f"{C.DIM}  ↳ {name} {str(detail)[:100]}{C.RESET}")
+
+                try:
+                    result = run_vibecode(agent, objective, vibe_tool, resume=is_resume)
+                    color = C.GREEN if result.completed else C.YELLOW
+                    print(f"\n{color}{result.summary}{C.RESET}")
+                    if result.changed_files:
+                        print("Değişen dosyalar: " + ", ".join(result.changed_files[:40]))
+                except (KeyboardInterrupt, SteeringInterrupt):
+                    print(
+                        f"\n{C.YELLOW}VibeCode duraklatıldı; checkpoint korundu. "
+                        "/vibe resume ile devam edebilirsiniz.{C.RESET}"
+                    )
     elif cmd == "/dashboard":
         show_dashboard(agent, cfg, goals)
     elif cmd == "/sandbox":
@@ -12405,6 +13134,10 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         flow_counts = agent.task_queue.counts()
         flow_open = flow_counts["pending"] + flow_counts["running"] + flow_counts["paused"] + flow_counts["failed"]
         print(f"ForceFlow: {flow_open} açık · {flow_counts['completed']} tamamlandı · {flow_counts['failed']} başarısız")
+        print(
+            f"VibeCode: {'hazır' if cfg.data.get('vibe_mode') else agent.vibe_session.state.get('status', 'kapalı')} "
+            f"· süre {cfg.data.get('vibe_max_hours', 10)} saat"
+        )
         skill_records = agent.skills.catalog()
         enabled_skill_count = len(agent.skills.catalog(include_disabled=False))
         print(
@@ -12763,6 +13496,13 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
         renderer.activity(activity_line)
     agent.activity_callback = show_activity
     print_banner(root, cfg, agent.session_name)
+    if cfg.data.get("vibe_mode", False):
+        print(f"{C.MAGENTA}VibeCode hazır:{C.RESET} yazacağınız sonraki hedef gözetimsiz yürütülecek.")
+    elif agent.vibe_session.resumable():
+        print(
+            f"{C.YELLOW}VibeCode checkpoint bulundu:{C.RESET} "
+            f"{agent.vibe_session.state.get('status')} · /vibe resume ile devam edin."
+        )
     if agent.sandbox.active():
         print(
             f"{C.GREEN}ForceSandbox açık:{C.RESET} AI dosyaları {agent.sandbox.workspace} içinde; "
@@ -12815,7 +13555,13 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
                 renderer.activity(f"Araç: {name} {str(detail)[:100]}")
             agent.activity_callback = show_request_activity
             with spinner:
-                if should_auto_forceflow(agent, line):
+                if cfg.data.get("vibe_mode", False):
+                    cfg.set_value("vibe_mode", "false")
+                    vibe_result = run_vibecode(agent, line, on_tool)
+                    answer = vibe_result.summary
+                    if vibe_result.changed_files:
+                        answer += "\n\nDeğişen dosyalar: " + ", ".join(vibe_result.changed_files[:40])
+                elif should_auto_forceflow(agent, line):
                     answer = run_automatic_forceflow(agent, line, on_tool, force_web=force_web)
                 else:
                     answer = agent.ask(line, on_tool, force_web=force_web)
@@ -12935,6 +13681,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         agent = Agent(root, cfg, GoalStore(root), lambda q: False, session_name=session_name, auto_graph_runtime=True)
         try:
+            if cfg.data.get("vibe_mode", False):
+                cfg.set_value("vibe_mode", "false")
+                vibe_result = run_vibecode(agent, args.prompt)
+                print(vibe_result.summary)
+                return 0 if vibe_result.completed else 1
             if should_auto_forceflow(agent, args.prompt):
                 print(run_automatic_forceflow(agent, args.prompt))
             else:

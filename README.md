@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current stable release: **v7.7.2**. This checkout includes **v7.9.0** with a language-independent project toolchain, verified C++/.NET/Java/Paper scaffolds, native build/test/package execution, and task-matched compiled-project skills. The local-first Agent Skills engine, pinned-model default, zero-wait ForceFlow path, and unlimited ForceSandbox project/transfer mode remain intact.
+Current stable release: **v7.7.2**. This checkout includes **v7.10.0** with VibeCode: checkpointed overnight autonomy that plans a broad product objective, implements and tests tasks in sequence, recovers from transient failures, and requires deterministic plus independent quality review before completion. The language-independent project toolchain, local-first Agent Skills engine, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -21,6 +21,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Default-on ForceSandbox isolation with a native Windows AppContainer engine, per-project identities, snapshots, conflict detection, rollback, and controlled transfer.
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
 - Automatic ForceFlow AI task decomposition, crash-safe sequential execution, evidence-guided unattended repair, and verification-gated progression without manual queue commands.
+- VibeCode overnight product mode with architecture-first planning, per-task checkpoints, context compaction, long build budgets, API backoff, crash resume, repair cycles, and an independent read-only final reviewer.
 - Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and the main model remains unlimited when `/watchdog off` is selected.
 - A model-independent web quality gate that rejects broken assets, placeholders, weak one-file scaffolds, missing responsive behavior, and basic accessibility failures before a site can be reported complete.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
@@ -118,6 +119,7 @@ Force -p "Review the current changes and run the relevant tests"
 | ForceGraph | `/graph`, `/impact`, `/review` |
 | Execution engine | `/plan`, `/debug`, `/confidence`, `/engine` |
 | Sequential work | Automatic ForceFlow on normal project requests; no command required |
+| Overnight autonomy | `/vibe <goal>`, `/vibe on`, `/vibe status`, `/vibe resume`, `/vibe stop`, `/vibe hours <1-24>` |
 | Parallel work | `/agents`, `/agent`, `/delegate`, `/team` |
 | Usage | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
 | Help | `/help`, `/clear`, `/exit` |
@@ -186,6 +188,19 @@ forge › all tasks completed and verified
 Each subtask keeps the original user objective, so quality requirements are not lost when a large request is divided. If normal attempts fail, ForceFlow enters bounded autonomous repair rounds: it carries forward missing evidence and API/tool diagnostics, asks for a different root-cause-driven approach, reruns focused checks, and continues without waiting for another prompt. It still stops safely when repair evidence never passes or an existing approval policy requires user confirmation.
 
 Framework-free website work receives a final deterministic quality gate independent of the selected model. Serious static sites must have linked HTML, responsive CSS, and functional JavaScript, plus semantic structure, mobile metadata, valid local assets, accessible basics, and non-placeholder content. React, Next, Vue, Svelte, and similar projects keep their framework and use its native test/build gate instead. A failed gate creates its own internal repair task and is rechecked before completion. Ctrl+C marks the running item as paused; the next normal prompt resumes it with fresh guidance. State is stored in `.forgecode/tasks.json` and is excluded from Git. See [docs/FORCEFLOW.md](docs/FORCEFLOW.md) for the state model and verification rules.
+
+## VibeCode overnight autonomy
+
+VibeCode turns one broad product goal into a supervised-by-evidence overnight run. Start it directly, or arm the next normal prompt:
+
+```text
+/vibe hours 10
+/vibe Build a polished desktop-ready application from this project, test every important flow, and leave it ready to release
+```
+
+The planner creates an ordered architecture and acceptance plan. ForceCode then completes one task at a time, saves a checkpoint, and clears expensive conversation context before continuing. Long compilers and test suites receive a separate command budget; temporary API failures use capped exponential backoff. A repeatedly blocked local task can be deferred so unrelated work continues, but the final result cannot pass while the independent reviewer still considers that gap important.
+
+VibeCode never silently weakens the safety boundary. It requires ForceSandbox, auto-approves only isolated project work, blocks known destructive commands, and transfers verified changes through the existing snapshot/conflict controls. A crash or Ctrl+C leaves `.forgecode/vibe-session.json` resumable with `/vibe resume`. The latest objective, task receipts, checks, changed files, and outcome are written to `.forgecode/vibe-report.md`. Use `/vibe status` at any time; `/vibe stop` abandons the saved run without deleting project changes.
 
 ## ForceSandbox
 
