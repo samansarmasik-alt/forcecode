@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+  <title id="title">ForceCode architecture</title>
+  <desc id="desc">Diagram showing providers, ForceCode orchestration, safety, context, tools, and verified project output.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080b14"/><stop offset="1" stop-color="#10182b"/></linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#65dfff"/><stop offset=".5" stop-color="#9a7cff"/><stop offset="1" stop-color="#65f0a5"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".35"/></filter>
+  </defs>
+  <rect width="1500" height="760" rx="30" fill="url(#bg)"/>
+  <text x="750" y="64" text-anchor="middle" fill="#f3f6ff" font-family="Inter, Segoe UI, sans-serif" font-size="34" font-weight="700">One agent. Your model. Controlled execution.</text>
+  <text x="750" y="102" text-anchor="middle" fill="#929dbd" font-family="Inter, Segoe UI, sans-serif" font-size="19">ForceCode connects reasoning, memory, tools, and verification without locking you into one provider.</text>
+
+  <g filter="url(#shadow)" font-family="Inter, Segoe UI, sans-serif">
+    <rect x="70" y="190" width="280" height="380" rx="24" fill="#0b1220" stroke="#2e4b67" stroke-width="2"/>
+    <text x="210" y="235" text-anchor="middle" fill="#69dcff" font-size="24" font-weight="700">MODEL LAYER</text>
+    <g fill="#dce6fb" font-size="18">
+      <rect x="105" y="275" width="210" height="52" rx="14" fill="#111d31"/><text x="210" y="307" text-anchor="middle">OpenAI / Anthropic</text>
+      <rect x="105" y="342" width="210" height="52" rx="14" fill="#111d31"/><text x="210" y="374" text-anchor="middle">Gemini / OpenRouter</text>
+      <rect x="105" y="409" width="210" height="52" rx="14" fill="#111d31"/><text x="210" y="441" text-anchor="middle">Ollama / LM Studio</text>
+      <rect x="105" y="476" width="210" height="52" rx="14" fill="#111d31"/><text x="210" y="508" text-anchor="middle">22+ + Custom API</text>
+    </g>
+
+    <rect x="435" y="152" width="630" height="470" rx="28" fill="#0d1020" stroke="url(#line)" stroke-width="3"/>
+    <text x="750" y="204" text-anchor="middle" fill="#ffffff" font-size="31" font-weight="800">FORCECODE CORE</text>
+    <g font-size="18" fill="#e7ebfa">
+      <rect x="485" y="244" width="245" height="88" rx="16" fill="#111a31" stroke="#4e6c9a"/><text x="607" y="279" text-anchor="middle" font-weight="700">ForceFlow</text><text x="607" y="306" text-anchor="middle" fill="#aeb9d4">plan · sequence · repair</text>
+      <rect x="770" y="244" width="245" height="88" rx="16" fill="#1a1532" stroke="#765de1"/><text x="892" y="279" text-anchor="middle" font-weight="700">Execution Kernel</text><text x="892" y="306" text-anchor="middle" fill="#bdb2df">debug · verify · confidence</text>
+      <rect x="485" y="354" width="245" height="88" rx="16" fill="#102029" stroke="#3288a8"/><text x="607" y="389" text-anchor="middle" font-weight="700">ForceContext</text><text x="607" y="416" text-anchor="middle" fill="#a7c8d4">memory · receipts · indexing</text>
+      <rect x="770" y="354" width="245" height="88" rx="16" fill="#10291f" stroke="#3ca473"/><text x="892" y="389" text-anchor="middle" font-weight="700">ForceSandbox</text><text x="892" y="416" text-anchor="middle" fill="#a9d3bd">isolate · snapshot · transfer</text>
+      <rect x="485" y="464" width="245" height="88" rx="16" fill="#191a28" stroke="#606985"/><text x="607" y="499" text-anchor="middle" font-weight="700">Skills & Agents</text><text x="607" y="526" text-anchor="middle" fill="#b6bed3">specialists on demand</text>
+      <rect x="770" y="464" width="245" height="88" rx="16" fill="#1d1828" stroke="#8a6aa3"/><text x="892" y="499" text-anchor="middle" font-weight="700">ForceGraph</text><text x="892" y="526" text-anchor="middle" fill="#c3b2d0">impact · review · structure</text>
+    </g>
+
+    <rect x="1150" y="190" width="280" height="380" rx="24" fill="#0b1618" stroke="#2d6d5a" stroke-width="2"/>
+    <text x="1290" y="235" text-anchor="middle" fill="#72efb2" font-size="24" font-weight="700">PROJECT LAYER</text>
+    <g fill="#dff6eb" font-size="18">
+      <rect x="1185" y="275" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="307" text-anchor="middle">Files & Search</text>
+      <rect x="1185" y="342" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="374" text-anchor="middle">Commands & Builds</text>
+      <rect x="1185" y="409" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="441" text-anchor="middle">Tests & Artifacts</text>
+      <rect x="1185" y="476" width="210" height="52" rx="14" fill="#123126" stroke="#3aa976"/><text x="1290" y="508" text-anchor="middle" font-weight="700">Verified Changes</text>
+    </g>
+  </g>
+
+  <path d="M350 380H435" stroke="#64dfff" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1065 380H1150" stroke="#65f0a5" stroke-width="4" stroke-linecap="round"/>
+  <path d="M420 370l15 10-15 10" fill="#64dfff"/>
+  <path d="M1135 370l15 10-15 10" fill="#65f0a5"/>
+
+  <text x="750" y="688" text-anchor="middle" fill="#aab4d0" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="20">prompt → plan → isolated action → verification → evidence-backed result</text>
+</svg>
