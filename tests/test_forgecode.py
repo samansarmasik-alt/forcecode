@@ -105,6 +105,14 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(cfg.data["watchdog_enabled"])
             self.assertEqual(forgecode.request_watchdog_limits(cfg), (60, 75, 180))
 
+    def test_stall_guard_defaults_and_retry_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            self.assertTrue(cfg.data["stall_guard_enabled"])
+            self.assertEqual(forgecode.request_stall_guard_limits(cfg), (120, 180))
+            cfg.set_value("stall_retry_attempts", "0")
+            self.assertEqual(forgecode.Config(pathlib.Path(tmp)).data["stall_retry_attempts"], 0)
+
     def test_typed_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))
@@ -1654,7 +1662,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 28)
+            self.assertEqual(cfg.data["config_version"], 29)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1668,7 +1676,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 28)
+            self.assertEqual(cfg.data["config_version"], 29)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1800,7 +1808,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 28)
+        self.assertEqual(cfg.data["config_version"], 29)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -3332,6 +3340,98 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 "geç ama başarılı",
             )
 
+    def test_watchdog_off_still_detaches_a_connection_with_no_first_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "watchdog_enabled": False,
+                "stall_guard_enabled": True,
+                "stall_first_response_seconds": 0.05,
+                "stall_stream_idle_seconds": 1,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            release = forgecode.threading.Event()
+
+            class StuckProvider:
+                def request(self, *args):
+                    release.wait(1)
+                    return forgecode.ModelReply("too late", [], forgecode.Usage(), [])
+
+            agent.provider = StuckProvider()
+            try:
+                with self.assertRaises(forgecode.RequestStallError) as caught:
+                    agent._request_with_heartbeat([], 32, False)
+                self.assertEqual(caught.exception.reason, "stall_first_response")
+                self.assertTrue(caught.exception.safe_to_retry)
+                self.assertEqual(cfg.data["request_watchdog_stats"]["last_reason"], "stall_first_response")
+            finally:
+                release.set()
+
+    def test_watchdog_off_preserves_long_stream_that_keeps_progressing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "watchdog_enabled": False,
+                "request_total_timeout_seconds": 0.05,
+                "stall_first_response_seconds": 0.05,
+                "stall_stream_idle_seconds": 0.06,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            class ActiveProvider:
+                def request(self, *args):
+                    callback = args[-1]
+                    for _ in range(6):
+                        forgecode.time.sleep(0.03)
+                        callback(".")
+                    return forgecode.ModelReply("tamam", [], forgecode.Usage(), [])
+
+            agent.provider = ActiveProvider()
+            started = forgecode.time.monotonic()
+            reply = agent._request_with_heartbeat([], 32, False)
+            self.assertEqual(reply.text, "tamam")
+            self.assertGreater(forgecode.time.monotonic() - started, 0.15)
+
+    def test_agent_retries_same_model_once_after_safe_first_data_stall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "watchdog_enabled": False,
+                "stall_guard_enabled": True,
+                "stall_first_response_seconds": 0.05,
+                "stall_stream_idle_seconds": 1,
+                "stall_retry_attempts": 1,
+                "retry_backoff_seconds": 0,
+                "auto_subagents": False,
+                "forcegraph_auto_enabled": False,
+                "sandbox_enabled": False,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            release = forgecode.threading.Event()
+
+            class RecoveringProvider:
+                def __init__(self):
+                    self.calls = 0
+
+                def request(self, *args):
+                    self.calls += 1
+                    if self.calls == 1:
+                        release.wait(1)
+                        return forgecode.ModelReply("late", [], forgecode.Usage(), [])
+                    return forgecode.ModelReply("Bağlantı kurtarıldı.", [], forgecode.Usage(), [])
+
+            provider = RecoveringProvider()
+            agent.provider = provider
+            try:
+                answer = agent.ask("Son Maven test hatasını açıkla")
+                self.assertEqual(answer, "Bağlantı kurtarıldı.")
+                self.assertEqual(provider.calls, 2)
+            finally:
+                release.set()
+
     def test_watchdog_off_keeps_optional_preflight_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -3373,6 +3473,7 @@ class StreamingAndModelMenuTests(unittest.TestCase):
                 ))
             self.assertFalse(cfg.data["watchdog_enabled"])
             self.assertIn("süre sınırı yok", forgecode.request_watchdog_status_text(cfg))
+            self.assertIn("takılma kurtarma", forgecode.request_watchdog_status_text(cfg))
             self.assertIn("Ctrl+C", output.getvalue())
 
     def test_stream_status_explains_watchdog_and_normal_timeout_modes(self):
@@ -4814,7 +4915,7 @@ class VibeCodeTests(unittest.TestCase):
             self.assertTrue(loaded.data["vibe_mode"])
             self.assertEqual(loaded.data["vibe_max_hours"], 12)
             self.assertEqual(loaded.data["vibe_command_timeout_seconds"], 1800)
-            self.assertEqual(loaded.data["config_version"], 28)
+            self.assertEqual(loaded.data["config_version"], 29)
             with self.assertRaises(ValueError):
                 loaded.set_value("vibe_max_hours", "25")
 

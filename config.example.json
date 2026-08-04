@@ -1,5 +1,5 @@
 {
-  "config_version": 28,
+  "config_version": 29,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",
@@ -15,6 +15,10 @@
   "timeout_seconds": 100,
   "streaming_enabled": true,
   "watchdog_enabled": true,
+  "stall_guard_enabled": true,
+  "stall_first_response_seconds": 120,
+  "stall_stream_idle_seconds": 180,
+  "stall_retry_attempts": 1,
   "first_response_timeout_seconds": 60,
   "stream_idle_timeout_seconds": 75,
   "request_total_timeout_seconds": 180,

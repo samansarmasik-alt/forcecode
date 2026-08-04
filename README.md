@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current development version: **v7.11.0**. It includes Skill Scout, a privacy-preserving skills.sh discovery and security gate that adds only high-contribution skills to the current project. VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
+Current development version: **v7.11.1**. It adds adaptive stuck-connection recovery while preserving unlimited active generation with `/watchdog off`. Skill Scout, VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -22,7 +22,7 @@ The terminal interface supports both English and Turkish. New installations ask 
 - Streaming output, prompt queueing, persistent sessions, project memory, goals, and optional backup API failover.
 - Automatic ForceFlow AI task decomposition, crash-safe sequential execution, evidence-guided unattended repair, and verification-gated progression without manual queue commands.
 - VibeCode overnight product mode with architecture-first planning, per-task checkpoints, context compaction, long build budgets, API backoff, crash resume, repair cycles, and an independent read-only final reviewer.
-- Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and the main model remains unlimited when `/watchdog off` is selected.
+- Low-latency coordination: ordinary builds skip the remote planning/orchestration fan-out, optional preflights are bounded, and `/watchdog off` keeps active main-model generations unlimited while safely recovering connections that stop producing data.
 - A model-independent web quality gate that rejects broken assets, placeholders, weak one-file scaffolds, missing responsive behavior, and basic accessibility failures before a site can be reported complete.
 - Multi-line clipboard prompts are submitted as one request, including while using the live queue or steering input.
 - ForceContext context receipts, token-budgeted memory retrieval, incremental project indexing, and verified response learning.
@@ -125,6 +125,20 @@ Force -p "Review the current changes and run the relevant tests"
 | Help | `/help`, `/clear`, `/exit` |
 
 Run `/help` for the complete command list and usage syntax.
+
+### Slow API and stall recovery
+
+`/watchdog off` removes the total main-model generation deadline; it does not leave a silent dead connection alive forever. By default, ForceCode detaches a connection after 120 seconds without first data or 180 seconds without streaming progress, then safely retries once against the same pinned model if no visible answer was emitted. Healthy slow-provider latency history automatically raises these limits. Active streams may run indefinitely.
+
+For unusually slow services, adjust the independent limits without restoring a total timeout:
+
+```text
+/set stall_first_response_seconds 300
+/set stall_stream_idle_seconds 600
+/set stall_retry_attempts 2
+```
+
+Set `stall_retry_attempts` to `0` to keep detection but disable automatic retry. The protection itself can be explicitly disabled with `/set stall_guard_enabled false`, though this permits genuinely dead connections to wait until Ctrl+C.
 
 ## Agent Skills
 

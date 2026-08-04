@@ -2,6 +2,19 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.11.1] - 2026-08-04
+
+### Fixed
+
+- `/watchdog off` no longer leaves a dead provider connection waiting forever. It still removes the total generation limit, but an independent stall guard now detaches requests that send no first data or stop making progress.
+- A stalled request with no visible streamed output is retried once against the same pinned model and unchanged conversation, avoiding an unintended model switch or duplicate visible output.
+- Stall thresholds adapt upward from healthy provider latency history, while active long-running streams continue without a total timeout.
+- Heartbeat and status text now distinguish unlimited generation time from stuck-connection recovery instead of reporting the misleading `zaman aşımı yok` message.
+
+### Configuration
+
+- Added `stall_guard_enabled`, `stall_first_response_seconds` (120 seconds), `stall_stream_idle_seconds` (180 seconds), and `stall_retry_attempts` (1 by default, 0 to disable retry). Users can raise the limits for unusually slow providers or explicitly disable the guard.
+
 ## [7.11.0] - 2026-08-04
 
 ### Added

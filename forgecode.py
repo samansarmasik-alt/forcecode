@@ -55,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.11.0"
+VERSION = "7.11.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -265,7 +265,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 28,
+    "config_version": 29,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -281,6 +281,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "timeout_seconds": 100,
     "streaming_enabled": True,
     "watchdog_enabled": True,
+    "stall_guard_enabled": True,
+    "stall_first_response_seconds": 120,
+    "stall_stream_idle_seconds": 180,
+    "stall_retry_attempts": 1,
     "first_response_timeout_seconds": 60,
     "stream_idle_timeout_seconds": 75,
     "request_total_timeout_seconds": 180,
@@ -486,7 +490,7 @@ class Config:
         # migrate the legacy default; deliberately customized limits remain.
         if saved.get("config_version", 1) < 24 and saved.get("sandbox_max_transfer_mb", 200) == 200:
             saved["sandbox_max_transfer_mb"] = 0
-        saved["config_version"] = 28
+        saved["config_version"] = 29
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -596,13 +600,15 @@ class Config:
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb", "vibe_max_hours", "vibe_review_cycles", "vibe_failure_retries", "vibe_retry_delay_seconds", "vibe_command_timeout_seconds", "skill_scout_min_security", "skill_scout_min_relevance", "skill_scout_max_auto_install", "skill_scout_max_project_skills", "skill_scout_cooldown_hours"}:
+        elif name in {"max_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "stall_first_response_seconds", "stall_stream_idle_seconds", "stall_retry_attempts", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb", "vibe_max_hours", "vibe_review_cycles", "vibe_failure_retries", "vibe_retry_delay_seconds", "vibe_command_timeout_seconds", "skill_scout_min_security", "skill_scout_min_relevance", "skill_scout_max_auto_install", "skill_scout_max_project_skills", "skill_scout_cooldown_hours"}:
             value: Any = int(raw)
-            zero_allowed = {"flow_repair_rounds", "sandbox_max_transfer_mb"}
+            zero_allowed = {"flow_repair_rounds", "sandbox_max_transfer_mb", "stall_retry_attempts"}
             if value < 0 or (value == 0 and name not in zero_allowed):
                 raise ValueError("Değer sıfırdan büyük olmalı")
             if name == "retry_attempts" and value > 5:
                 raise ValueError("retry_attempts 1 ile 5 arasında olmalı")
+            if name == "stall_retry_attempts" and value > 3:
+                raise ValueError("stall_retry_attempts 0 ile 3 arasında olmalı")
             if name == "flow_max_tasks" and value > 50:
                 raise ValueError("flow_max_tasks 1 ile 50 arasında olmalı")
             if name in {"skill_scout_min_security", "skill_scout_min_relevance"} and value > 100:
@@ -613,6 +619,9 @@ class Config:
                 raise ValueError("skill_scout_max_project_skills en fazla 50 olabilir")
             if name == "skill_scout_cooldown_hours" and value > 720:
                 raise ValueError("skill_scout_cooldown_hours en fazla 720 olabilir")
+            stall_maximums = {"stall_first_response_seconds": 900, "stall_stream_idle_seconds": 1800}
+            if name in stall_maximums and value > stall_maximums[name]:
+                raise ValueError(f"{name} en fazla {stall_maximums[name]} olabilir")
             if name in {"flow_max_rounds", "flow_repair_rounds"} and value > 10:
                 raise ValueError(f"{name} en fazla 10 olabilir")
             vibe_maximums = {
@@ -644,7 +653,7 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "skills_enabled", "skill_auto_select", "skill_scout_enabled", "vibe_mode"}:
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "stall_guard_enabled", "forcegraph_auto_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "skills_enabled", "skill_auto_select", "skill_scout_enabled", "vibe_mode"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -1119,6 +1128,16 @@ class SessionStore:
 
 class ApiError(RuntimeError):
     pass
+
+
+class RequestStallError(ApiError):
+    """A detached API request made no useful progress and may be retried safely once."""
+
+    def __init__(self, message: str, reason: str, elapsed_seconds: float, safe_to_retry: bool):
+        super().__init__(message)
+        self.reason = str(reason)
+        self.elapsed_seconds = max(0.0, float(elapsed_seconds))
+        self.safe_to_retry = bool(safe_to_retry)
 
 
 class SteeringInterrupt(RuntimeError):
@@ -1877,6 +1896,25 @@ def request_watchdog_limits(cfg: Config, read_only: bool = False) -> tuple[float
     return first, idle, total
 
 
+def request_stall_guard_limits(cfg: Config) -> tuple[float, float]:
+    """Return adaptive no-progress limits independent from the total-time watchdog."""
+    if not cfg.data.get("stall_guard_enabled", True):
+        return float("inf"), float("inf")
+    configured_first = max(0.05, float(cfg.data.get("stall_first_response_seconds", 120)))
+    configured_idle = max(0.05, float(cfg.data.get("stall_stream_idle_seconds", 180)))
+    stats = cfg.data.get("latency_stats", {})
+    provider_stats = stats.get(str(cfg.data.get("provider", "")), {}) if isinstance(stats, dict) else {}
+    if not isinstance(provider_stats, dict) or not provider_stats.get("samples"):
+        return configured_first, configured_idle
+    first_average = max(0.0, float(provider_stats.get("first_avg_ms", 0))) / 1000.0
+    total_average = max(0.0, float(provider_stats.get("avg_ms", 0))) / 1000.0
+    # A historically slow but healthy service receives more room. Caps keep a
+    # dead connection from silently surviving forever even after an outlier.
+    learned_first = min(600.0, first_average * 4.0 + 15.0)
+    learned_idle = min(900.0, total_average * 2.0 + 30.0)
+    return max(configured_first, learned_first), max(configured_idle, learned_idle)
+
+
 def record_request_watchdog(cfg: Config, reason: str, elapsed_seconds: float) -> None:
     """Persist compact, secret-free stall diagnostics for `/diagnostics`."""
     previous = cfg.data.get("request_watchdog_stats", {})
@@ -1895,9 +1933,13 @@ def record_request_watchdog(cfg: Config, reason: str, elapsed_seconds: float) ->
 
 def request_watchdog_status_text(cfg: Config) -> str:
     if not watchdog_enabled(cfg):
+        stall_first, stall_idle = request_stall_guard_limits(cfg)
+        guard_enabled = cfg.data.get("stall_guard_enabled", True)
         if cfg.data.get("ui_language") == "en":
-            return "Request watchdog: off · no API time limit · Ctrl+C still cancels"
-        return "İstek gözetmeni: kapalı · API süre sınırı yok · Ctrl+C durdurur"
+            guard = f" · stall recovery first {stall_first:g}s / idle {stall_idle:g}s" if guard_enabled else " · stall recovery off"
+            return "Request watchdog: off · no total API time limit" + guard + " · Ctrl+C still cancels"
+        guard = f" · takılma kurtarma ilk {stall_first:g} sn / durgun {stall_idle:g} sn" if guard_enabled else " · takılma kurtarma kapalı"
+        return "İstek gözetmeni: kapalı · toplam API süre sınırı yok" + guard + " · Ctrl+C durdurur"
     first, idle, total = request_watchdog_limits(cfg)
     stats = cfg.data.get("request_watchdog_stats", {})
     last = ""
@@ -1936,16 +1978,24 @@ def stream_status_text(cfg: Config) -> str:
     enabled = bool(cfg.data.get("streaming_enabled", True))
     if not enabled:
         if not watchdog_enabled(cfg):
+            stall_first, stall_idle = request_stall_guard_limits(cfg)
+            guard_enabled = cfg.data.get("stall_guard_enabled", True)
             if cfg.data.get("ui_language") == "en":
-                return "Live response off · no normal API timeout · Ctrl+C cancels"
-            return "Canlı yanıt kapalı · normal API zaman aşımı yok · Ctrl+C durdurur"
+                guard = f" · stall recovery {stall_first:g}/{stall_idle:g}s" if guard_enabled else " · stall recovery off"
+                return "Live response off · no total API timeout" + guard + " · Ctrl+C cancels"
+            guard = f" · takılma kurtarma {stall_first:g}/{stall_idle:g} sn" if guard_enabled else " · takılma kurtarma kapalı"
+            return "Canlı yanıt kapalı · toplam API zaman aşımı yok" + guard + " · Ctrl+C durdurur"
         if cfg.data.get("ui_language") == "en":
             return f"Live response off · normal API timeout: {int(cfg.data.get('timeout_seconds', 100))} sec"
         return f"Canlı yanıt kapalı · normal API timeout: {int(cfg.data.get('timeout_seconds', 100))} sn"
     if not watchdog_enabled(cfg):
+        stall_first, stall_idle = request_stall_guard_limits(cfg)
+        guard_enabled = cfg.data.get("stall_guard_enabled", True)
         if cfg.data.get("ui_language") == "en":
-            return "Live response on · no first/idle/total timeout · Ctrl+C cancels"
-        return "Canlı yanıt açık · ilk/durgun/toplam zaman aşımı yok · Ctrl+C durdurur"
+            guard = f" · stuck connection recovery {stall_first:g}/{stall_idle:g}s" if guard_enabled else " · stuck recovery off"
+            return "Live response on · no total generation timeout" + guard + " · Ctrl+C cancels"
+        guard = f" · takılan bağlantı kurtarma {stall_first:g}/{stall_idle:g} sn" if guard_enabled else " · takılma kurtarma kapalı"
+        return "Canlı yanıt açık · toplam üretim sınırı yok" + guard + " · Ctrl+C durdurur"
     mode = cfg.mode()
     protocol = "Anthropic SSE" if mode == "anthropic" else "OpenAI Responses SSE" if mode == "responses" else "OpenAI Chat SSE"
     stats = cfg.data.get("latency_stats", {})
@@ -4624,7 +4674,8 @@ AI_EDITABLE_SETTINGS = {
     "max_tokens", "temperature", "timeout_seconds", "streaming_enabled",
     "first_response_timeout_seconds", "stream_idle_timeout_seconds",
     "request_total_timeout_seconds", "retry_budget_seconds",
-    "preflight_timeout_seconds",
+    "preflight_timeout_seconds", "stall_first_response_seconds",
+    "stall_stream_idle_seconds", "stall_retry_attempts",
     "retry_attempts", "retry_backoff_seconds", "max_tool_output_chars",
     "web_search_mode", "web_max_results", "thinking_mode", "thinking_budget_tokens",
     "efficiency_mode", "power_mode", "web_project_mode", "work_mode",
@@ -7544,6 +7595,8 @@ commands:
             "first_response_timeout_seconds": (5, 180), "stream_idle_timeout_seconds": (5, 300),
             "request_total_timeout_seconds": (15, 600), "retry_budget_seconds": (5, 300),
             "preflight_timeout_seconds": (1, 60),
+            "stall_first_response_seconds": (15, 900), "stall_stream_idle_seconds": (30, 1800),
+            "stall_retry_attempts": (0, 3),
             "retry_attempts": (1, 5), "retry_backoff_seconds": (0, 10),
             "max_tool_output_chars": (1000, 100000), "web_max_results": (1, 20),
             "thinking_budget_tokens": (1024, 32000), "subagent_timeout_seconds": (5, 300),
@@ -9242,7 +9295,7 @@ class DebuggingEngine:
             ("authentication", ("401", "403", "api key", "unauthorized", "forbidden"), "Stop blind retries; verify provider, endpoint, protocol, and authentication mode.", False),
             ("rate-limit", ("429", "rate limit", "quota"), "Use configured backoff or backup provider; do not multiply parallel retries.", True),
             ("interactive-input", ("kullanıcı girdisi", "stdin alanına", "waiting for input"), "Use scripted stdin or start_process/process_input so the program cannot block ForgeCode's terminal.", False),
-            ("timeout", ("timed out", "timeout"), "Reduce request/tool scope or continue streaming; retry once only when the operation is idempotent.", True),
+            ("timeout", ("timed out", "timeout", "zaman aşımı", "takılan bağlantı", "ilk veriyi göndermedi", "ilerleme göndermedi"), "Reduce request/tool scope or continue streaming; retry once only when the operation is idempotent.", True),
             ("encoding", ("unicode", "codec", "decode", "encoding"), "Read command output as bytes and decode with UTF-8 replacement fallback.", False),
             ("syntax", ("syntax", "parse", "unexpected token", "exit_code="), "Inspect the exact command or file and correct syntax before rerunning.", False),
             ("permission", ("permission", "access denied", "erişim engellendi"), "Stay inside the workspace and request approval only if the operation is truly required.", False),
@@ -9516,6 +9569,8 @@ class Agent:
         last_progress_at = started
         first_limit, idle_limit, total_limit = request_watchdog_limits(self.cfg, self.read_only)
         unbounded_request = not watchdog_enabled(self.cfg)
+        stall_first_limit, stall_idle_limit = request_stall_guard_limits(self.cfg)
+        stall_guard = bool(self.cfg.data.get("stall_guard_enabled", True))
 
         def touch_progress() -> None:
             nonlocal first_response_seconds, last_progress_at
@@ -9563,23 +9618,52 @@ class Agent:
                     elapsed = now - started
                     watchdog_reason = ""
                     watchdog_message = ""
-                    if elapsed >= total_limit:
+                    if not unbounded_request and elapsed >= total_limit:
                         watchdog_reason = "total"
                         watchdog_message = f"İstek toplam {total_limit:g} saniyelik çalışma sınırını aştı. Geç yanıt güvenle ayrıldı."
-                    elif first_response_seconds is None and elapsed >= first_limit:
+                    elif not unbounded_request and first_response_seconds is None and elapsed >= first_limit:
                         watchdog_reason = "first_response"
                         watchdog_message = f"Model {first_limit:g} saniye içinde ilk yanıtı vermedi. Takılan istek güvenle durduruldu."
-                    elif first_response_seconds is not None and now - last_progress_at >= idle_limit:
+                    elif not unbounded_request and first_response_seconds is not None and now - last_progress_at >= idle_limit:
                         watchdog_reason = "stream_idle"
                         watchdog_message = f"Canlı yanıt {idle_limit:g} saniye ilerlemedi. Durgun bağlantı güvenle durduruldu."
+                    elif unbounded_request and stall_guard and first_response_seconds is None and elapsed >= stall_first_limit:
+                        watchdog_reason = "stall_first_response"
+                        watchdog_message = (
+                            f"Model bağlantısı {stall_first_limit:g} saniye boyunca ilk veriyi göndermedi. "
+                            "Toplam üretim sınırı uygulanmadı; yalnızca takılan bağlantı güvenle ayrıldı."
+                        )
+                    elif (
+                        unbounded_request and stall_guard and first_response_seconds is not None
+                        and now - last_progress_at >= stall_idle_limit
+                    ):
+                        watchdog_reason = "stall_stream_idle"
+                        watchdog_message = (
+                            f"Canlı bağlantı {stall_idle_limit:g} saniye boyunca hiçbir ilerleme göndermedi. "
+                            "Aktif uzun üretimler korunur; yalnızca durgun bağlantı güvenle ayrıldı."
+                        )
                     if watchdog_reason:
                         record_request_watchdog(self.cfg, watchdog_reason, elapsed)
                         self._emit_activity(f"{label}: istek gözetmeni kesti · {watchdog_reason} · {elapsed:.1f} sn")
+                        if watchdog_reason != "total":
+                            raise RequestStallError(
+                                watchdog_message, watchdog_reason, elapsed,
+                                safe_to_retry=not bool(self.last_streamed_reply.strip()),
+                            )
                         raise ApiError(watchdog_message)
                     if now >= next_heartbeat:
                         if unbounded_request:
                             stream_state = "ilk parça bekleniyor" if first_response_seconds is None else "canlı yanıt sürüyor"
-                            self._emit_activity(f"{label}: {stream_state} · {int(elapsed)} sn · zaman aşımı yok · Ctrl+C durdurur")
+                            if stall_guard:
+                                guard_limit = stall_first_limit if first_response_seconds is None else stall_idle_limit
+                                guard_elapsed = elapsed if first_response_seconds is None else now - last_progress_at
+                                remaining = max(0, int(guard_limit - guard_elapsed))
+                                self._emit_activity(
+                                    f"{label}: {stream_state} · {int(elapsed)} sn · toplam sınır yok · "
+                                    f"takılma koruması {remaining} sn · Ctrl+C durdurur"
+                                )
+                            else:
+                                self._emit_activity(f"{label}: {stream_state} · {int(elapsed)} sn · zaman aşımı yok · Ctrl+C durdurur")
                         elif stream_sink:
                             stream_state = "ilk parça bekleniyor" if first_response_seconds is None else "canlı yanıt sürüyor"
                             remaining = max(0, int(total_limit - elapsed))
@@ -10541,6 +10625,7 @@ class Agent:
         verification_after_mutation = False
         previous_tool_fingerprint = ""
         repeated_tool_rounds = 0
+        stall_recovery_attempts = 0
 
         def finalize_execution(answer_text: str, changed: list[str]) -> None:
             artifact_requirement = requires_artifacts and not configuration_changed
@@ -10579,6 +10664,21 @@ class Agent:
                 api_finding = self.execution_kernel.debugger.diagnose("api", str(exc))
                 execution_state.errors.append(api_finding)
                 self._emit_activity(f"Hata ayıklama motoru: {api_finding.category} · tekrar {'uygun' if api_finding.retryable else 'sınırlı'}")
+                stall_retry_limit = max(0, min(3, int(self.cfg.data.get("stall_retry_attempts", 1))))
+                if (
+                    isinstance(exc, RequestStallError) and exc.safe_to_retry
+                    and stall_recovery_attempts < stall_retry_limit
+                ):
+                    stall_recovery_attempts += 1
+                    step_number = max(0, step_number - 1)
+                    self._emit_activity(
+                        f"Takılma kurtarma: aynı model ve bağlam yeniden deneniyor · "
+                        f"{stall_recovery_attempts}/{stall_retry_limit}"
+                    )
+                    delay = min(2.0, max(0.0, float(self.cfg.data.get("retry_backoff_seconds", 0.5))))
+                    if delay:
+                        time.sleep(delay)
+                    continue
                 cause: ApiError | None = exc
                 if self.activate_backup(cause):
                     mode = self.cfg.mode()
@@ -10629,6 +10729,7 @@ class Agent:
                                 finalize_execution("API error: " + str(retry_exc), self.tools.changed_since(baseline))
                                 raise
                             reply = fallback
+            stall_recovery_attempts = 0
             self.session_usage.add(reply.usage)
             self.session_cost_usd += reply.usage.cost(self.cfg)
             self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage)
@@ -13824,7 +13925,10 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print("Profiller: /watchdog off|fast|balanced|patient")
         elif profile in {"off", "unlimited", "kapalı", "kapali"}:
             cfg.set_value("watchdog_enabled", "false")
-            print(f"{C.GREEN}İstek gözetmeni kapatıldı.{C.RESET} API süre sınırı yok; Ctrl+C çalışmaya devam eder.")
+            print(
+                f"{C.GREEN}Toplam istek süresi sınırı kapatıldı.{C.RESET} "
+                "Aktif uzun üretimler kesilmez; takılan bağlantı kurtarması ve Ctrl+C çalışmaya devam eder."
+            )
             print(request_watchdog_status_text(cfg))
         elif profile in profiles:
             first, idle, total, retry_budget = profiles[profile]
