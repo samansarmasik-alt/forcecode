@@ -305,6 +305,20 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(any("Komut çıktısı: third" in line for line in activity))
         self.assertTrue(any("Komut tamamlandı" in line for line in activity))
 
+    def test_windows_run_command_uses_direct_adapter_for_scripted_stdin(self):
+        self.cfg.data["auto_approve_commands"] = True
+        completed = mock.Mock(returncode=0, stdout=b"Hello Ada\n", stderr=b"")
+        direct_argv = [sys.executable, "-u", "prompt_app.py"]
+        with mock.patch.object(forgecode.os, "name", "nt"), mock.patch.object(
+            self.tools, "_interactive_command", return_value=(direct_argv, False)
+        ) as adapter, mock.patch.object(forgecode.subprocess, "run", return_value=completed) as run:
+            result = self.tools.tool_run_command("python prompt_app.py", 10, "Ada\n")
+        adapter.assert_called_once_with("python prompt_app.py")
+        self.assertEqual(run.call_args.args[0], direct_argv)
+        self.assertFalse(run.call_args.kwargs["shell"])
+        self.assertEqual(run.call_args.kwargs["input"], b"Ada\n")
+        self.assertTrue(result.startswith("exit_code=0"))
+
     def test_run_command_closes_stdin_instead_of_hanging(self):
         (self.root / "eof_app.py").write_text(
             "try:\n input('Value: ')\nexcept EOFError:\n print('EOF received')\n", encoding="utf-8"

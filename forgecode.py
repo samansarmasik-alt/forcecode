@@ -6770,10 +6770,13 @@ class WorkspaceTools:
                     timeout=timeout,
                 )
             elif os.name == "nt":
-                translated = windows_shell_command(command)
+                # Reuse the direct Python command adapter used by interactive
+                # processes. Passing scripted stdin through PowerShell can
+                # intermittently leave the child waiting forever on Windows
+                # CI, while a direct argv preserves bytes and EOF reliably.
+                command_value, command_shell = self._interactive_command(command)
                 completed = subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", translated],
-                    shell=False, **run_options,
+                    command_value, shell=command_shell, **run_options,
                 )
             else:
                 completed = subprocess.run(command, shell=True, **run_options)

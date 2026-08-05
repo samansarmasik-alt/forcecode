@@ -14,6 +14,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 - Explicit custom routes no longer force the protocol back on when raw mode is selected.
 - Automatic 404 endpoint recovery and successful Anthropic authentication probing no longer overwrite a user-selected `off` protocol state.
 - `/endpoint` now reports both the raw protocol state and the payload codec used for the request.
+- Scripted stdin for direct Python commands on Windows now bypasses the PowerShell wrapper, preventing intermittent child-input hangs on Python 3.13 CI and real prompt-driven tests.
 
 ## [7.11.1] - 2026-08-04
 
