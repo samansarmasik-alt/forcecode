@@ -2,6 +2,19 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.11.2] - 2026-08-05
+
+### Added
+
+- Added `/protocol off [openai|anthropic]` for custom APIs. It disables model/route-based protocol enforcement while retaining an explicit payload codec.
+
+### Fixed
+
+- Raw custom mode now sends directly to the exact `/route` target and never appends a standard API suffix.
+- Explicit custom routes no longer force the protocol back on when raw mode is selected.
+- Automatic 404 endpoint recovery and successful Anthropic authentication probing no longer overwrite a user-selected `off` protocol state.
+- `/endpoint` now reports both the raw protocol state and the payload codec used for the request.
+
 ## [7.11.1] - 2026-08-04
 
 ### Fixed

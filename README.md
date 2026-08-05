@@ -1,6 +1,6 @@
 # ForgeCode
 
-Current development version: **v7.11.1**. It adds adaptive stuck-connection recovery while preserving unlimited active generation with `/watchdog off`. Skill Scout, VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
+Current development version: **v7.11.2**. It adds raw custom API routing with `/protocol off`, alongside adaptive stuck-connection recovery that preserves unlimited active generation with `/watchdog off`. Skill Scout, VibeCode checkpointed autonomy, the language-independent project toolchain, pinned-model default, and ForceSandbox isolation remain intact.
 
 ForgeCode is a lightweight, dependency-free terminal coding agent for Windows. It connects to multiple AI providers, works inside the directory from which it is launched, and gives the model a controlled set of file, search, command, diagnostics, and delegation tools.
 
@@ -293,6 +293,17 @@ For a custom OpenAI-compatible or Anthropic-compatible endpoint:
 /models
 /test
 ```
+
+For gateways where protocol inference rewrites or rejects a valid custom URL, disable enforcement and send to the selected route exactly as configured:
+
+```text
+/route https://gateway.example/custom/inference
+/protocol off openai
+/endpoint
+/test
+```
+
+`/protocol off` keeps the current payload format; append `openai` or `anthropic` to choose it explicitly. In this mode ForgeCode does not infer a protocol from the model or route, append `/v1/messages` or `/chat/completions`, or replace the route after a 404. Authentication remains independently configurable through `custom_auth_mode`.
 
 Use only services you are authorized to access. ForgeCode does not attempt to bypass provider client restrictions, access controls, or terms of service.
 

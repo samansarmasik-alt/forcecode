@@ -1662,7 +1662,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 29)
+            self.assertEqual(cfg.data["config_version"], 30)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1676,7 +1676,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 29)
+            self.assertEqual(cfg.data["config_version"], 30)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1808,7 +1808,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 29)
+        self.assertEqual(cfg.data["config_version"], 30)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -1836,6 +1836,98 @@ class CommandAssistTests(unittest.TestCase):
             self.assertEqual(cfg.data["custom_endpoint_path"], "off")
             self.assertEqual(forgecode.endpoint_plan(cfg)["request"], "https://proxy.test/gateway")
             self.assertIn("Custom route: off", output.getvalue())
+
+    def test_protocol_off_never_appends_a_standard_endpoint(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("custom")
+        cfg.set_value("base_url", "https://proxy.test/gateway")
+        cfg.set_value("custom_endpoint_path", "auto")
+        cfg.set_value("custom_protocol", "off")
+        cfg.set_value("api_mode", "chat")
+        self.assertEqual(forgecode.request_endpoint(cfg, "/chat/completions"), "https://proxy.test/gateway")
+        self.assertEqual(forgecode.endpoint_plan(cfg)["protocol"], "off")
+        self.assertEqual(forgecode.endpoint_plan(cfg)["payload_mode"], "chat")
+
+    def test_protocol_off_keeps_explicit_route_and_ignores_route_inference(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("custom")
+        cfg.set_value("base_url", "https://proxy.test")
+        cfg.set_value("custom_endpoint_path", "/v1/messages")
+        cfg.set_value("api_mode", "chat")
+        cfg.set_value("custom_protocol", "off")
+        self.assertEqual(cfg.mode(), "chat")
+        self.assertIsInstance(forgecode.make_provider(cfg), forgecode.OpenAIChatProvider)
+        self.assertEqual(forgecode.request_endpoint(cfg, "/chat/completions"), "https://proxy.test/v1/messages")
+
+    def test_protocol_off_command_can_choose_payload_without_route_rewrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("custom")
+            cfg.set_value("base_url", "https://proxy.test")
+            cfg.set_value("custom_endpoint_path", "/v1/messages")
+            cfg.set_value("custom_auth_mode", "bearer")
+            agent = mock.MagicMock()
+            output = io.StringIO()
+            with mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command(
+                    "/protocol off openai", agent, cfg, forgecode.GoalStore(root)
+                ))
+            self.assertEqual(cfg.data["custom_protocol"], "off")
+            self.assertEqual(cfg.data["custom_auth_mode"], "bearer")
+            self.assertEqual(cfg.mode(), "chat")
+            self.assertEqual(forgecode.endpoint_plan(cfg)["request"], "https://proxy.test/v1/messages")
+            self.assertIn("route adresi aynen kullanılacak", output.getvalue())
+
+    def test_protocol_off_disables_automatic_endpoint_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.select_provider("custom")
+            cfg.set_value("base_url", "https://proxy.test/raw")
+            cfg.set_value("custom_endpoint_path", "off")
+            cfg.set_value("custom_protocol", "off")
+            cfg.set_value("api_mode", "chat")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            self.assertFalse(agent._recover_custom_endpoint(
+                forgecode.ApiError("API 404: only /v1/messages is supported")
+            ))
+            self.assertEqual(cfg.data["custom_protocol"], "off")
+            self.assertEqual(cfg.data["custom_endpoint_path"], "off")
+            self.assertEqual(forgecode.endpoint_plan(cfg)["request"], "https://proxy.test/raw")
+
+    def test_protocol_off_openai_request_posts_to_exact_base(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("custom")
+        cfg.set_value("base_url", "https://proxy.test/raw-inference")
+        cfg.set_value("custom_endpoint_path", "auto")
+        cfg.set_value("custom_protocol", "off")
+        cfg.set_value("api_mode", "chat")
+        cfg.set_value("custom_auth_mode", "bearer")
+        cfg.set_value("custom_api_key", "test-key")
+        response = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+        with mock.patch.object(forgecode, "post_json_with_retry", return_value=response) as post:
+            reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+        self.assertEqual(reply.text, "ok")
+        self.assertEqual(post.call_args.args[1], "https://proxy.test/raw-inference")
+        self.assertEqual(cfg.data["custom_protocol"], "off")
+
+    def test_protocol_off_anthropic_request_does_not_reenable_protocol(self):
+        cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+        cfg.select_provider("custom")
+        cfg.set_value("base_url", "https://proxy.test")
+        cfg.set_value("custom_endpoint_path", "/raw-messages")
+        cfg.set_value("custom_protocol", "off")
+        cfg.set_value("api_mode", "anthropic")
+        cfg.set_value("custom_auth_mode", "x-api-key")
+        cfg.set_value("custom_api_key", "test-key")
+        response = {"content": [{"type": "text", "text": "ok"}], "usage": {}}
+        with mock.patch.object(forgecode, "post_json_with_retry", return_value=response) as post:
+            reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+        self.assertEqual(reply.text, "ok")
+        self.assertEqual(post.call_args.args[1], "https://proxy.test/raw-messages")
+        self.assertEqual(cfg.data["custom_protocol"], "off")
+        self.assertEqual(cfg.mode(), "anthropic")
 
     def test_custom_auto_protocol_recognizes_claude_model(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -4915,7 +5007,7 @@ class VibeCodeTests(unittest.TestCase):
             self.assertTrue(loaded.data["vibe_mode"])
             self.assertEqual(loaded.data["vibe_max_hours"], 12)
             self.assertEqual(loaded.data["vibe_command_timeout_seconds"], 1800)
-            self.assertEqual(loaded.data["config_version"], 29)
+            self.assertEqual(loaded.data["config_version"], 30)
             with self.assertRaises(ValueError):
                 loaded.set_value("vibe_max_hours", "25")
 

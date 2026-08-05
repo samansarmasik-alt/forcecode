@@ -55,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.11.1"
+VERSION = "7.11.2"
 
 _UI_LANGUAGE = "tr"
 
@@ -265,7 +265,7 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 29,
+    "config_version": 30,
     "ui_language": "tr",
     "ui_language_selected": False,
     "provider": "anthropic",
@@ -490,7 +490,7 @@ class Config:
         # migrate the legacy default; deliberately customized limits remain.
         if saved.get("config_version", 1) < 24 and saved.get("sandbox_max_transfer_mb", 200) == 200:
             saved["sandbox_max_transfer_mb"] = 0
-        saved["config_version"] = 29
+        saved["config_version"] = 30
         self.data = copy.deepcopy(DEFAULT_CONFIG)
         self.data.update(saved)
         self.data["_runtime_enable_sandbox"] = home is None
@@ -513,10 +513,17 @@ class Config:
 
     def mode(self) -> str:
         if self.data.get("provider") == "custom":
+            protocol = str(self.data.get("custom_protocol", "auto")).lower()
+            # `off` disables protocol inference/enforcement, not JSON itself:
+            # the last explicitly selected wire codec remains in api_mode.
+            # This lets custom gateways receive requests at an exact URL even
+            # when that URL happens to resemble a well-known API route.
+            if protocol == "off":
+                payload_mode = str(self.data.get("api_mode", "chat")).lower()
+                return payload_mode if payload_mode in {"anthropic", "chat", "responses"} else "chat"
             routed_protocol = custom_protocol_for_route(str(self.data.get("custom_endpoint_path", "auto")))
             if routed_protocol:
                 return "anthropic" if routed_protocol == "anthropic" else "chat"
-            protocol = str(self.data.get("custom_protocol", "auto")).lower()
             if protocol == "anthropic":
                 return "anthropic"
             if protocol == "openai":
@@ -683,8 +690,8 @@ class Config:
                 raise ValueError("custom_auth_mode: auto, bearer, x-api-key, api-key, both veya none olmalı")
         elif name == "custom_protocol":
             value = raw.lower()
-            if value not in {"auto", "openai", "anthropic"}:
-                raise ValueError("custom_protocol: auto, openai veya anthropic olmalı")
+            if value not in {"auto", "off", "openai", "anthropic"}:
+                raise ValueError("custom_protocol: auto, off, openai veya anthropic olmalı")
         elif name == "custom_endpoint_path":
             value = normalize_custom_route(raw)
         elif name == "web_project_mode":
@@ -1633,6 +1640,11 @@ def request_endpoint(cfg: Config, standard_path: str) -> str:
     if cfg.data.get("provider") != "custom":
         return api_endpoint(base, standard_path)
     route = normalize_custom_route(str(cfg.data.get("custom_endpoint_path", "auto")))
+    protocol_off = str(cfg.data.get("custom_protocol", "auto")).lower() == "off"
+    # Raw custom mode never appends a protocol-owned suffix. An explicit URL
+    # or path is honored verbatim; auto/off/exact all mean the saved base URL.
+    if protocol_off and route == "auto":
+        return base
     if route == "auto":
         return api_endpoint(base, standard_path)
     if route in {"off", "exact"}:
@@ -1657,10 +1669,12 @@ def endpoint_plan(cfg: Config) -> dict[str, Any]:
         model_urls = [api_endpoint(base, "/v1/models")]
     else:
         model_urls = [api_endpoint(base, "/models")]
+    protocol = "off" if cfg.data.get("provider") == "custom" and str(cfg.data.get("custom_protocol", "")).lower() == "off" else cfg.mode()
     return {
         "base": base,
         "source": cfg.base_url_source(),
-        "protocol": cfg.mode(),
+        "protocol": protocol,
+        "payload_mode": cfg.mode(),
         "request": request,
         "models": model_urls,
     }
@@ -2216,8 +2230,9 @@ class AnthropicProvider(Provider):
                     data = send(headers)
                     if selected_auth == "auto":
                         cfg["custom_auth_mode"] = auth_mode
-                    cfg["custom_protocol"] = "anthropic"
-                    cfg["api_mode"] = "anthropic"
+                    if str(cfg.get("custom_protocol", "auto")).lower() != "off":
+                        cfg["custom_protocol"] = "anthropic"
+                        cfg["api_mode"] = "anthropic"
                     self.cfg.save()
                     break
                 except ApiError as exc:
@@ -9784,6 +9799,9 @@ class Agent:
     def _recover_custom_endpoint(self, cause: ApiError) -> bool:
         if self.cfg.data.get("provider") != "custom":
             return False
+        if str(self.cfg.data.get("custom_protocol", "auto")).lower() == "off":
+            self._emit_activity("Protokol zorlaması kapalı · kullanıcı route adresi korunuyor")
+            return False
         hint = endpoint_hint_from_error(cause)
         if hint is not None and hint[0] in {"anthropic", "openai"}:
             protocol, route = hint
@@ -11104,7 +11122,7 @@ HELP = """Komutlar
   /providers             Sağlayıcıları otomatik hız ölçümleriyle listele
   /provider <ad|sıra>    Sağlayıcıyı değiştir
   /connect <base-url>     Özel OpenAI-uyumlu proxy/API bağla
-  /protocol <mod>         Özel API: auto, openai veya anthropic
+  /protocol <mod>         Özel API: auto, off, openai veya anthropic
   /endpoint              Kullanılacak kesin API adreslerini göster
   /profiles              Kayıtlı bağlantı profillerini listele
   /profile <işlem> <ad>  save, use veya delete bağlantı profili
@@ -11183,7 +11201,7 @@ HELP_EN = """Commands
   /providers             List providers with measured response times
   /provider <name|no>    Change provider
   /connect <base-url>    Connect a custom OpenAI/Anthropic-compatible API
-  /protocol <mode>       Custom API protocol: auto, openai, or anthropic
+  /protocol <mode>       Custom API protocol: auto, off, openai, or anthropic
   /route <choice>        Custom API route: auto, off, exact, or a custom path
   /endpoint              Show the exact planned API endpoints
   /profiles              List saved connection profiles
@@ -13714,22 +13732,36 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
     elif cmd == "/protocol":
         if cfg.data.get("provider") != "custom":
             print("/protocol yalnızca özel API sağlayıcısında kullanılır.")
-        elif len(parts) < 2 or parts[1].lower() not in {"auto", "openai", "anthropic"}:
-            print(f"Özel API protokolü: {cfg.data.get('custom_protocol', 'auto')} · kullanım: /protocol auto|openai|anthropic")
+        elif len(parts) < 2 or parts[1].lower() not in {"auto", "off", "openai", "anthropic"}:
+            print(f"Özel API protokolü: {cfg.data.get('custom_protocol', 'auto')} · kullanım: /protocol auto|off|openai|anthropic")
         else:
             protocol = parts[1].lower()
+            requested_payload = parts[2].lower() if len(parts) >= 3 else ""
+            if protocol == "off" and requested_payload and requested_payload not in {"openai", "anthropic"}:
+                print(f"{C.RED}Kullanım: /protocol off [openai|anthropic]{C.RESET}")
+                return True
             pinned_protocol = custom_protocol_for_route(str(cfg.data.get("custom_endpoint_path", "auto")))
-            if pinned_protocol and protocol not in {"auto", pinned_protocol}:
+            if pinned_protocol and protocol not in {"auto", "off", pinned_protocol}:
                 print(f"{C.RED}Seçili API yolu {pinned_protocol} protokolünü zorunlu kılıyor. Önce /route değiştirin.{C.RESET}")
                 return True
             if protocol == "auto" and pinned_protocol:
                 protocol = pinned_protocol
+            previous_mode = cfg.mode()
             cfg.set_value("custom_protocol", protocol)
-            cfg.set_value("api_mode", "anthropic" if protocol == "anthropic" else "chat")
-            cfg.set_value("custom_auth_mode", "auto")
+            if protocol == "off":
+                payload_mode = requested_payload or ("anthropic" if previous_mode == "anthropic" else "openai")
+                cfg.set_value("api_mode", "anthropic" if payload_mode == "anthropic" else "chat")
+            else:
+                payload_mode = protocol
+                cfg.set_value("api_mode", "anthropic" if protocol == "anthropic" else "chat")
+            if protocol != "off":
+                cfg.set_value("custom_auth_mode", "auto")
             agent.provider = make_provider(cfg)
             agent.clear()
-            print(f"Özel API protokolü: {protocol} · şimdi /test kullanın.")
+            if protocol == "off":
+                print(f"Özel API protokol zorlaması: kapalı · payload: {payload_mode} · route adresi aynen kullanılacak · şimdi /test kullanın.")
+            else:
+                print(f"Özel API protokolü: {protocol} · şimdi /test kullanın.")
     elif cmd == "/route":
         if cfg.data.get("provider") != "custom":
             print("/route yalnizca custom saglayicida kullanilir.")
@@ -13753,6 +13785,8 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f" Kaynak: {plan['source']}")
             print(f" Base URL: {plan['base']}")
             print(f" Protokol: {plan['protocol']}")
+            if plan['protocol'] == "off":
+                print(f" Payload biçimi: {plan['payload_mode']} · otomatik route/protokol düzeltmesi kapalı")
             print(f" İstek: {plan['request']}")
             print(" Model yolları:")
             for url in plan["models"]:
@@ -14031,8 +14065,12 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
     elif cmd == "/status":
         protocol_line = ""
         if cfg.data["provider"] == "custom":
-            protocol = "Anthropic/Claude Code" if cfg.mode() == "anthropic" else "OpenAI"
-            protocol_line = f"\nProtokol: {protocol} · auth: {cfg.data.get('custom_auth_mode', 'auto')}"
+            if str(cfg.data.get("custom_protocol", "auto")).lower() == "off":
+                payload = "Anthropic" if cfg.mode() == "anthropic" else "OpenAI"
+                protocol_line = f"\nProtokol zorlaması: kapalı · payload: {payload} · auth: {cfg.data.get('custom_auth_mode', 'auto')}"
+            else:
+                protocol = "Anthropic/Claude Code" if cfg.mode() == "anthropic" else "OpenAI"
+                protocol_line = f"\nProtokol: {protocol} · auth: {cfg.data.get('custom_auth_mode', 'auto')}"
         print(f"Proje: {agent.root}\nOturum: {agent.session_name}\nSağlayıcı: {cfg.data['provider']}\nModel: {cfg.data['model']}{protocol_line}\n{stream_status_text(cfg)}\n{request_watchdog_status_text(cfg)}\nOtomatik: {autopilot_state(cfg)} · Mod: {cfg.data['work_mode']} · Güç: {cfg.data.get('power_mode', 'auto')} · Web: {cfg.data['web_search_mode']} · Thinking: {cfg.data['thinking_mode']} · Temperature: {float(cfg.data['temperature']):g} · Kalite: {cfg.data['web_project_mode']} · Verimlilik: {cfg.data['efficiency_mode']}\nAktif hedef: {sum(not g['done'] for g in goals.goals)}")
         flow_counts = agent.task_queue.counts()
         flow_open = flow_counts["pending"] + flow_counts["running"] + flow_counts["paused"] + flow_counts["failed"]
