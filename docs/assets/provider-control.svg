@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="650" viewBox="0 0 1500 650" role="img" aria-labelledby="title desc">
+  <title id="title">ForceCode provider control plane</title>
+  <desc id="desc">Provider profiles flow through model discovery, pricing and latency metadata, protocol routing, authentication, connection testing, and optional quota failover before reaching the agent.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080a12"/><stop offset="1" stop-color="#11152a"/></linearGradient><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4 0 8z" fill="#65759a"/></marker><style>.s{font-family:Inter,"Segoe UI",Arial,sans-serif}.m{font-family:"Cascadia Code",Consolas,monospace}.h{fill:#f2f4ff;font-size:20px;font-weight:700}.p{fill:#9da8c3;font-size:14px}.k{font-size:12px;font-weight:700;letter-spacing:1.4px}.box{fill:#0d1422;stroke:#34425f;stroke-width:1.5}</style></defs>
+  <rect width="1500" height="650" rx="30" fill="url(#bg)"/>
+  <text x="65" y="68" class="s" font-size="34" font-weight="800" fill="#f7f8ff">Bring any model without giving up transport control</text>
+  <text x="65" y="103" class="s" font-size="18" fill="#99a5c0">Discovery, route selection, authentication, speed history, pricing, and failover remain visible and user-controlled.</text>
+  <g class="s">
+    <rect x="65" y="164" width="260" height="330" rx="22" class="box"/><text x="91" y="200" class="k" fill="#61d9fb">PROVIDER SOURCES</text>
+    <g class="p"><text x="91" y="242">22+ hosted presets</text><text x="91" y="278">OpenAI-compatible custom</text><text x="91" y="314">Anthropic-compatible custom</text><text x="91" y="350">Ollama / LM Studio</text><text x="91" y="386">Saved connection profiles</text></g>
+    <rect x="91" y="427" width="150" height="34" rx="10" fill="#102536"/><text x="106" y="449" class="m" font-size="14" fill="#7ddaf2">/provider /connect</text>
+
+    <rect x="390" y="164" width="300" height="330" rx="22" class="box"/><text x="416" y="200" class="k" fill="#9f8cff">MODEL CATALOG</text>
+    <g><rect x="416" y="225" width="248" height="57" rx="12" fill="#141a2d"/><text x="434" y="249" class="h" font-size="17">Automatic model scan</text><text x="434" y="269" class="p">free models ranked first</text>
+    <rect x="416" y="296" width="248" height="57" rx="12" fill="#141a2d"/><text x="434" y="320" class="h" font-size="17">Price metadata</text><text x="434" y="340" class="p">input / output per million</text>
+    <rect x="416" y="367" width="248" height="57" rx="12" fill="#141a2d"/><text x="434" y="391" class="h" font-size="17">Latency history</text><text x="434" y="411" class="p">first token + total response</text></g>
+    <text x="416" y="463" class="m" font-size="14" fill="#b8acff">/models → arrows → /model</text>
+
+    <rect x="755" y="164" width="360" height="330" rx="22" class="box"/><text x="781" y="200" class="k" fill="#f1c36f">WIRE CONTRACT</text>
+    <g><rect x="781" y="225" width="308" height="57" rx="12" fill="#211c21"/><text x="799" y="249" class="h" font-size="17">Route</text><text x="799" y="269" class="p">auto · exact · off · full endpoint</text>
+    <rect x="781" y="296" width="308" height="57" rx="12" fill="#211c21"/><text x="799" y="320" class="h" font-size="17">Protocol</text><text x="799" y="340" class="p">OpenAI · Anthropic · raw off</text>
+    <rect x="781" y="367" width="308" height="57" rx="12" fill="#211c21"/><text x="799" y="391" class="h" font-size="17">Authentication</text><text x="799" y="411" class="p">Bearer · x-api-key · explicit test</text></g>
+    <text x="781" y="463" class="m" font-size="14" fill="#f0c67c">/route /protocol /endpoint /test</text>
+
+    <rect x="1180" y="164" width="255" height="330" rx="22" fill="#0d211b" stroke="#3c9870" stroke-width="1.5"/><text x="1206" y="200" class="k" fill="#63dca2">RUNTIME</text>
+    <text x="1206" y="242" class="h">Primary API</text><text x="1206" y="269" class="p">selected model pinned</text>
+    <path d="M1206 304H1407" stroke="#334c46" stroke-width="2"/>
+    <text x="1206" y="344" class="h">Quota / limit?</text><text x="1206" y="371" class="p">eligible errors only</text>
+    <rect x="1206" y="399" width="175" height="54" rx="12" fill="#123126" stroke="#3f9f75"/><text x="1225" y="423" class="h" font-size="17">Backup profile</text><text x="1225" y="443" class="p">optional failover</text>
+  </g>
+  <g fill="none" stroke="#65759a" stroke-width="2.5" marker-end="url(#a)"><path d="M325 329H382"/><path d="M690 329H747"/><path d="M1115 329H1172"/></g>
+  <text x="750" y="572" text-anchor="middle" class="m" font-size="16" fill="#8996b4">keys stay local · endpoint is shown before testing · automatic model switching is off by default</text>
+</svg>

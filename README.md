@@ -74,6 +74,8 @@ Most coding assistants stop after producing plausible code. ForceCode is built a
 | Runs tools directly | Works inside an isolated project copy |
 | Stops at failure | Debugs, repairs, retries, and reports evidence |
 
+<img src="docs/assets/feature-atlas.svg" alt="ForceCode capability atlas showing twelve coordinated product systems" width="100%" />
+
 ---
 
 ## From request to verified result
@@ -92,23 +94,21 @@ transfer › snapshot created · conflict check passed
 forge    › completed with evidence
 ```
 
-### ForceFlow
+<img src="docs/assets/execution-kernel.svg" alt="ForceFlow and Execution Kernel state machine with evidence and repair gates" width="100%" />
+
+### ForceFlow + Execution Kernel
 
 Turns explicit multi-step work into ordered tasks. Later tasks remain blocked until earlier tasks satisfy their acceptance criteria.
 
-### Execution Kernel
-
 Tracks the public plan, tool failures, debugging state, missing verification, and confidence. It stores evidence—not private chain-of-thought.
 
-### ForceContext
+<img src="docs/assets/context-intelligence.svg" alt="ForceContext memory selection and exclusive ForceGraph or MCP code intelligence backends" width="100%" />
+
+### ForceContext + code intelligence
 
 Retrieves only the project facts, preferences, and session notes relevant to the current request under a strict token budget.
 
-### ForceGraph
-
 Adds optional local structural intelligence for architecture understanding, blast-radius analysis, review, and test-gap discovery.
-
-### MCP backend
 
 Connect project MCP servers over stdio or Streamable HTTP and expose their tools directly to the active model. ForceCode can safely discover secret-free entries from `.mcp.json`, and the AI receives MCP management controls only after an explicit user request. A verified MCP connection automatically pauses ForceGraph to prevent duplicate context; type `/mcp` or say `ForceGraph'a geri geç` to switch back instantly.
 
@@ -130,6 +130,8 @@ Runs broad product goals as checkpointed, resumable, evidence-driven long sessio
 ## Use the model that fits the job
 
 <img src="docs/assets/provider-network.svg" alt="ForceCode provider network" width="100%" />
+
+<img src="docs/assets/provider-control.svg" alt="Provider control plane with model discovery, price and latency metadata, exact routing, testing, and backup failover" width="100%" />
 
 ForceCode includes presets for:
 
@@ -287,6 +289,8 @@ a verification report
 </tr>
 </table>
 
+<img src="docs/assets/live-control.svg" alt="Live terminal showing streaming, immediate steering, queued prompts, interactive process input, and resumable interruption" width="100%" />
+
 While a request is active:
 
 - Send a normal message to steer the work.
@@ -296,6 +300,8 @@ While a request is active:
 ---
 
 ## Autonomy with controls
+
+<img src="docs/assets/autonomy-agents.svg" alt="Smart Autopilot risk gate, checkpointed VibeCode loop, and AI-chosen specialist agents" width="100%" />
 
 ### Smart Autopilot
 
@@ -332,6 +338,8 @@ VibeCode never disables ForceSandbox or weakens the safety boundary.
 
 ## Built-in project toolchain
 
+<img src="docs/assets/toolchain-map.svg" alt="Native toolchain coverage mapped to build, test, package, and artifact evidence" width="100%" />
+
 | Ecosystem | Supported work |
 | --- | --- |
 | Python | Syntax checks, tests, project execution |
@@ -348,6 +356,8 @@ For binary-producing tasks, ForceCode does not mark work complete unless the exp
 ---
 
 ## Agent Skills
+
+<img src="docs/assets/skills-pipeline.svg" alt="Privacy-preserving skill discovery, security scoring, project-scoped installation, and runtime selection" width="100%" />
 
 ForceCode supports the portable `SKILL.md` format and adds only the selected skills to the current model context.
 
@@ -395,6 +405,8 @@ Run `/help` inside ForceCode for the full command reference.
 ---
 
 ## Local data and privacy
+
+<img src="docs/assets/local-data-map.svg" alt="Local data boundaries for AppData configuration, project state, ForceSandbox, and the configured inference provider" width="100%" />
 
 | Data | Default location |
 | --- | --- |
@@ -445,7 +457,7 @@ Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for beha
 
 ## Project status
 
-Current development version: **v7.11.1**
+Current development version: **v7.12.0**
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and technical details.
 

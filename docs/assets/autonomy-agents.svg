@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="690" viewBox="0 0 1500 690" role="img" aria-labelledby="title desc">
+  <title id="title">Smart Autopilot, VibeCode, and specialist agents</title>
+  <desc id="desc">Smart Autopilot classifies operations as safe, ask, or block. VibeCode runs checkpointed tasks and specialist agents provide research, implementation, and review evidence before an independent final gate.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080a12"/><stop offset="1" stop-color="#171228"/></linearGradient><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4 0 8z" fill="#6e678d"/></marker><style>.s{font-family:Inter,"Segoe UI",Arial,sans-serif}.m{font-family:"Cascadia Code",Consolas,monospace}.h{font-size:20px;font-weight:700;fill:#f2f4ff}.p{font-size:14px;fill:#9ea9c4}.k{font-size:12px;font-weight:700;letter-spacing:1.4px}.box{fill:#0e1422;stroke:#36415e;stroke-width:1.5}</style></defs>
+  <rect width="1500" height="690" rx="30" fill="url(#bg)"/>
+  <text x="65" y="68" class="s" font-size="34" font-weight="800" fill="#f7f8ff">Autonomy expands time, not permission</text>
+  <text x="65" y="103" class="s" font-size="18" fill="#9da7c1">Long-running work, specialist agents, and recovery cycles remain inside the same deterministic safety boundary.</text>
+  <g class="s">
+    <rect x="65" y="158" width="360" height="438" rx="22" class="box"/><text x="93" y="196" class="k" fill="#f0c36f">SMART AUTOPILOT</text><text x="93" y="234" class="h">Operation risk gate</text>
+    <g transform="translate(93 264)"><rect width="304" height="74" rx="14" fill="#0f2820" stroke="#3a926b"/><text x="20" y="29" class="h" font-size="17" fill="#67dfa5">SAFE · continue</text><text x="20" y="53" class="p">scoped, reversible project work</text></g>
+    <g transform="translate(93 352)"><rect width="304" height="74" rx="14" fill="#2b2115" stroke="#9a7138"/><text x="20" y="29" class="h" font-size="17" fill="#f0c476">ASK · user decides</text><text x="20" y="53" class="p">network, install, delete, uncertainty</text></g>
+    <g transform="translate(93 440)"><rect width="304" height="74" rx="14" fill="#2a171c" stroke="#a34d5c"/><text x="20" y="29" class="h" font-size="17" fill="#f28b98">BLOCK · deterministic</text><text x="20" y="53" class="p">secrets, escape, destructive host action</text></g>
+    <text x="93" y="556" class="m" font-size="14" fill="#d2ae70">/autopilot smart</text>
+
+    <rect x="475" y="158" width="560" height="438" rx="22" class="box"/><text x="503" y="196" class="k" fill="#a996ff">VIBECODE SESSION</text><text x="503" y="234" class="h">Checkpointed product loop</text>
+    <g><rect x="503" y="264" width="215" height="74" rx="14" fill="#17152b"/><text x="523" y="293" class="h" font-size="17">1. Architecture</text><text x="523" y="317" class="p">objective + acceptance plan</text>
+    <rect x="766" y="264" width="241" height="74" rx="14" fill="#17152b"/><text x="786" y="293" class="h" font-size="17">2. Ordered work</text><text x="786" y="317" class="p">persist after each task</text>
+    <rect x="503" y="368" width="215" height="74" rx="14" fill="#17152b"/><text x="523" y="397" class="h" font-size="17">3. Repair</text><text x="523" y="421" class="p">bounded root-cause retries</text>
+    <rect x="766" y="368" width="241" height="74" rx="14" fill="#0f2820" stroke="#3a926b"/><text x="786" y="397" class="h" font-size="17">4. Final review</text><text x="786" y="421" class="p">independent read-only gate</text></g>
+    <path d="M718 301H758M886 338V360M766 405H726M610 368V346" fill="none" stroke="#7567c2" stroke-width="2.5" marker-end="url(#a)"/>
+    <rect x="503" y="488" width="504" height="66" rx="14" fill="#101925"/><text x="523" y="515" class="m" font-size="14" fill="#b7c1d8">crash → load checkpoint → resume unresolved task</text><text x="523" y="539" class="p">hours limit · retry budget · quality cycles remain bounded</text>
+
+    <rect x="1085" y="158" width="350" height="438" rx="22" class="box"/><text x="1113" y="196" class="k" fill="#62d8fa">AI-CHOSEN SPECIALISTS</text><text x="1113" y="234" class="h">Parallel evidence lanes</text>
+    <g><rect x="1113" y="264" width="294" height="66" rx="14" fill="#102333"/><text x="1133" y="291" class="h" font-size="17">Research</text><text x="1133" y="314" class="p">project facts + current sources</text>
+    <rect x="1113" y="346" width="294" height="66" rx="14" fill="#17152b"/><text x="1133" y="373" class="h" font-size="17">Design / backend</text><text x="1133" y="396" class="p">focused, non-overlapping tasks</text>
+    <rect x="1113" y="428" width="294" height="66" rx="14" fill="#0f2820"/><text x="1133" y="455" class="h" font-size="17">Review / security</text><text x="1133" y="478" class="p">advisory findings, parent verifies</text></g>
+    <text x="1113" y="540" class="p">AI decides whether agents help.</text><text x="1113" y="565" class="m" font-size="14" fill="#70d5ec">/agents ai · /team</text>
+  </g>
+  <text x="750" y="642" text-anchor="middle" class="m" font-size="16" fill="#8c97b3">ForceSandbox and evidence gates remain active in every mode</text>
+</svg>

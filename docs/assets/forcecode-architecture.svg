@@ -27,16 +27,16 @@
       <rect x="770" y="244" width="245" height="88" rx="16" fill="#1a1532" stroke="#765de1"/><text x="892" y="279" text-anchor="middle" font-weight="700">Execution Kernel</text><text x="892" y="306" text-anchor="middle" fill="#bdb2df">debug · verify · confidence</text>
       <rect x="485" y="354" width="245" height="88" rx="16" fill="#102029" stroke="#3288a8"/><text x="607" y="389" text-anchor="middle" font-weight="700">ForceContext</text><text x="607" y="416" text-anchor="middle" fill="#a7c8d4">memory · receipts · indexing</text>
       <rect x="770" y="354" width="245" height="88" rx="16" fill="#10291f" stroke="#3ca473"/><text x="892" y="389" text-anchor="middle" font-weight="700">ForceSandbox</text><text x="892" y="416" text-anchor="middle" fill="#a9d3bd">isolate · snapshot · transfer</text>
-      <rect x="485" y="464" width="245" height="88" rx="16" fill="#191a28" stroke="#606985"/><text x="607" y="499" text-anchor="middle" font-weight="700">Skills & Agents</text><text x="607" y="526" text-anchor="middle" fill="#b6bed3">specialists on demand</text>
+      <rect x="485" y="464" width="245" height="88" rx="16" fill="#191a28" stroke="#606985"/><text x="607" y="499" text-anchor="middle" font-weight="700">Skills &amp; Agents</text><text x="607" y="526" text-anchor="middle" fill="#b6bed3">specialists on demand</text>
       <rect x="770" y="464" width="245" height="88" rx="16" fill="#1d1828" stroke="#8a6aa3"/><text x="892" y="499" text-anchor="middle" font-weight="700">ForceGraph</text><text x="892" y="526" text-anchor="middle" fill="#c3b2d0">impact · review · structure</text>
     </g>
 
     <rect x="1150" y="190" width="280" height="380" rx="24" fill="#0b1618" stroke="#2d6d5a" stroke-width="2"/>
     <text x="1290" y="235" text-anchor="middle" fill="#72efb2" font-size="24" font-weight="700">PROJECT LAYER</text>
     <g fill="#dff6eb" font-size="18">
-      <rect x="1185" y="275" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="307" text-anchor="middle">Files & Search</text>
-      <rect x="1185" y="342" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="374" text-anchor="middle">Commands & Builds</text>
-      <rect x="1185" y="409" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="441" text-anchor="middle">Tests & Artifacts</text>
+      <rect x="1185" y="275" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="307" text-anchor="middle">Files &amp; Search</text>
+      <rect x="1185" y="342" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="374" text-anchor="middle">Commands &amp; Builds</text>
+      <rect x="1185" y="409" width="210" height="52" rx="14" fill="#10231f"/><text x="1290" y="441" text-anchor="middle">Tests &amp; Artifacts</text>
       <rect x="1185" y="476" width="210" height="52" rx="14" fill="#123126" stroke="#3aa976"/><text x="1290" y="508" text-anchor="middle" font-weight="700">Verified Changes</text>
     </g>
   </g>

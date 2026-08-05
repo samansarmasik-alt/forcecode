@@ -21,6 +21,11 @@ All notable changes to ForgeCode are documented here. The project follows semant
 - MCP subprocesses use argument arrays with `shell=False`, a project-scoped working directory, and a credential-stripped environment. Shell wrappers, remote plaintext HTTP, URL credentials, query tokens, and malformed arguments are rejected.
 - MCP descriptions and results are explicitly treated as untrusted data. Saved MCP profiles contain connection metadata only, never API secrets.
 
+### Documentation
+
+- Rebuilt the README as a product-specific visual guide with nine new lightweight SVG diagrams for the feature atlas, execution state machine, context and code-intelligence pipeline, provider control plane, live terminal controls, autonomy and specialist agents, native toolchains, skill security pipeline, and local data boundaries.
+- Every major subsystem is now paired with a diagram that explains real behavior rather than decorative generated artwork. All assets are editable vector source, render without external dependencies, and include descriptive README alt text.
+
 ## [7.11.2] - 2026-08-05
 
 ### Added

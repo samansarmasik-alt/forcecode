@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="720" viewBox="0 0 1500 720" role="img" aria-labelledby="title desc">
+  <title id="title">ForceContext, ForceGraph, and MCP context selection</title>
+  <desc id="desc">User, project, and session memory are ranked, redacted, budgeted, and compiled. Code intelligence uses either ForceGraph or an MCP server, never both simultaneously, before selected context reaches the model.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#070b13"/><stop offset="1" stop-color="#0a1b1b"/></linearGradient>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4 0 8z" fill="#546b8c"/></marker>
+    <style>.s{font-family:Inter,"Segoe UI",Arial,sans-serif}.m{font-family:"Cascadia Code",Consolas,monospace}.h{fill:#f2f5ff;font-size:21px;font-weight:700}.p{fill:#9eabc6;font-size:15px}.k{font-size:12px;font-weight:700;letter-spacing:1.5px}.box{fill:#0d1522;stroke:#31425f;stroke-width:1.5}</style>
+  </defs>
+  <rect width="1500" height="720" rx="30" fill="url(#bg)"/>
+  <text x="65" y="68" class="s" font-size="34" font-weight="800" fill="#f6f8ff">Send the smallest context that can still solve the task</text>
+  <text x="65" y="103" class="s" font-size="18" fill="#99a7c1">Memory retrieval and code intelligence are separate inputs with explicit privacy and token boundaries.</text>
+
+  <g class="s">
+    <text x="65" y="160" class="k" fill="#64d9fa">MEMORY LAYERS · LOCAL</text>
+    <g transform="translate(65 184)"><rect class="box" width="245" height="102" rx="17"/><text class="h" x="22" y="42">User memory</text><text class="p" x="22" y="70">preferences · coding style</text></g>
+    <g transform="translate(65 306)"><rect class="box" width="245" height="102" rx="17"/><text class="h" x="22" y="42">Project memory</text><text class="p" x="22" y="70">goals · rules · decisions</text></g>
+    <g transform="translate(65 428)"><rect class="box" width="245" height="102" rx="17"/><text class="h" x="22" y="42">Session memory</text><text class="p" x="22" y="70">recent work · interruption</text></g>
+
+    <g transform="translate(380 184)"><rect width="330" height="346" rx="22" fill="#0c1724" stroke="#327b97" stroke-width="1.5"/><text class="k" x="26" y="35" fill="#64d9fa">FORCECONTEXT PIPELINE</text>
+      <g><rect x="24" y="62" width="282" height="48" rx="12" fill="#102233"/><text class="h" x="42" y="93" font-size="17">1. Intent analysis</text></g>
+      <g><rect x="24" y="122" width="282" height="48" rx="12" fill="#102233"/><text class="h" x="42" y="153" font-size="17">2. Candidate retrieval</text></g>
+      <g><rect x="24" y="182" width="282" height="48" rx="12" fill="#102233"/><text class="h" x="42" y="213" font-size="17">3. Secret redaction</text></g>
+      <g><rect x="24" y="242" width="282" height="48" rx="12" fill="#102233"/><text class="h" x="42" y="273" font-size="17">4. Relevance + token budget</text></g>
+      <text class="m" x="24" y="322" font-size="14" fill="#7ecde6">Context Receipt: what + why + tokens</text>
+    </g>
+
+    <text x="780" y="160" class="k" fill="#a995ff">CODE INTELLIGENCE · EXCLUSIVE</text>
+    <rect x="780" y="184" width="340" height="150" rx="20" fill="#171429" stroke="#6d5bc1" stroke-width="1.5"/>
+    <text class="h" x="808" y="226">ForceGraph</text><text class="p" x="808" y="257">Local structure · impact · review</text><text class="p" x="808" y="284">Incremental graph, compact evidence</text><rect x="808" y="300" width="112" height="24" rx="7" fill="#241d43"/><text class="m" x="820" y="317" font-size="13" fill="#c4b8ff">/graph /impact</text>
+    <rect x="780" y="380" width="340" height="150" rx="20" fill="#101f25" stroke="#378ba3" stroke-width="1.5"/>
+    <text class="h" x="808" y="422">MCP backend</text><text class="p" x="808" y="453">stdio or Streamable HTTP tools</text><text class="p" x="808" y="480">Handshake first · dynamic schemas</text><rect x="808" y="496" width="88" height="24" rx="7" fill="#102d36"/><text class="m" x="820" y="513" font-size="13" fill="#77d9ee">/mcp</text>
+    <rect x="906" y="343" width="88" height="28" rx="14" fill="#362917" stroke="#9d773b"/><text x="950" y="362" text-anchor="middle" class="k" fill="#f2c77a">OR</text>
+
+    <rect x="1190" y="240" width="245" height="230" rx="22" fill="#0d211b" stroke="#3d9970" stroke-width="1.5"/>
+    <text class="k" x="1216" y="276" fill="#62daa0">COMPILED REQUEST</text><text class="h" x="1216" y="318">Model input</text>
+    <text class="p" x="1216" y="351">Current user request</text><text class="p" x="1216" y="380">Selected memories</text><text class="p" x="1216" y="409">One code backend</text><text class="p" x="1216" y="438">Tools + evidence contract</text>
+  </g>
+  <g fill="none" stroke="#546b8c" stroke-width="2.5" marker-end="url(#a)"><path d="M310 235H372"/><path d="M310 357H372"/><path d="M310 479H372"/><path d="M710 357H760"/><path d="M1120 259H1160V330H1182"/><path d="M1120 455H1160V390H1182"/></g>
+  <path d="M710 357H742" stroke="#5dd4f2" stroke-width="3"/><text x="750" y="635" text-anchor="middle" class="m" font-size="16" fill="#8795b2">View · edit · delete · disable memory at any time · project data remains local</text>
+</svg>

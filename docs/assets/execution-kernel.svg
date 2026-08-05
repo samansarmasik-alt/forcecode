@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="690" viewBox="0 0 1500 690" role="img" aria-labelledby="title desc">
+  <title id="title">ForceFlow and Execution Kernel lifecycle</title>
+  <desc id="desc">An ordered task passes through local planning, token budgeting, tools, error classification, validation, and confidence. Missing evidence loops to focused repair while verified evidence advances the task.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#070a12"/><stop offset="1" stop-color="#11162a"/></linearGradient>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#5edcff"/><stop offset=".52" stop-color="#9c83ff"/><stop offset="1" stop-color="#5fe8a5"/></linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4 0 8z" fill="#65779f"/></marker>
+    <style>.s{font-family:Inter,"Segoe UI",Arial,sans-serif}.m{font-family:"Cascadia Code",Consolas,monospace}.box{fill:#0d1423;stroke:#334262;stroke-width:1.5}.t{fill:#f1f4ff;font-size:19px;font-weight:700}.p{fill:#9da9c6;font-size:14px}.k{fill:#707d9d;font-size:12px;font-weight:700;letter-spacing:1.5px}</style>
+  </defs>
+  <rect width="1500" height="690" rx="30" fill="url(#bg)"/>
+  <text x="65" y="68" class="s" font-size="34" font-weight="800" fill="#f6f7ff">Execution is a state machine, not a long prompt</text>
+  <text x="65" y="103" class="s" font-size="18" fill="#9aa6c2">Every transition has an observable condition. A confident sentence cannot skip a failed gate.</text>
+  <rect x="65" y="142" width="1370" height="4" rx="2" fill="url(#flow)"/>
+
+  <g class="s">
+    <g transform="translate(65 194)"><rect class="box" width="205" height="142" rx="18"/><text class="k" x="20" y="29">FORCEFLOW</text><text class="t" x="20" y="62">Active task</text><text class="p" x="20" y="91">Root objective</text><text class="p" x="20" y="115">Acceptance criterion</text></g>
+    <g transform="translate(302 194)"><rect class="box" width="205" height="142" rx="18"/><text class="k" x="20" y="29">LOCAL</text><text class="t" x="20" y="62">Plan + budget</text><text class="p" x="20" y="91">Evidence checklist</text><text class="p" x="20" y="115">Phase token limits</text></g>
+    <g transform="translate(539 194)"><rect class="box" width="205" height="142" rx="18"/><text class="k" x="20" y="29">MODEL + TOOLS</text><text class="t" x="20" y="62">Execute</text><text class="p" x="20" y="91">Read · edit · command</text><text class="p" x="20" y="115">Build · test · inspect</text></g>
+    <g transform="translate(776 194)"><rect class="box" width="205" height="142" rx="18"/><text class="k" x="20" y="29">DEBUG ENGINE</text><text class="t" x="20" y="62">Classify</text><text class="p" x="20" y="91">Stable error signature</text><text class="p" x="20" y="115">Retryable vs terminal</text></g>
+    <g transform="translate(1013 194)"><rect class="box" width="205" height="142" rx="18"/><text class="k" x="20" y="29">VALIDATION</text><text class="t" x="20" y="62">Verify</text><text class="p" x="20" y="91">Files · tests · artifacts</text><text class="p" x="20" y="115">Required-text checks</text></g>
+    <g transform="translate(1250 194)"><rect width="185" height="142" rx="18" fill="#0d211b" stroke="#3f9b73" stroke-width="1.5"/><text class="k" x="20" y="29" fill="#64d8a0">RECEIPT</text><text class="t" x="20" y="62">Confidence</text><text class="p" x="20" y="91">Score + evidence</text><text class="p" x="20" y="115">Missing proof stays visible</text></g>
+  </g>
+  <g stroke="#65779f" stroke-width="2.5" fill="none" marker-end="url(#arrow)"><path d="M270 265H295"/><path d="M507 265H532"/><path d="M744 265H769"/><path d="M981 265H1006"/><path d="M1218 265H1243"/></g>
+
+  <g class="s">
+    <rect x="198" y="414" width="430" height="146" rx="20" fill="#15132a" stroke="#6555b1" stroke-width="1.5"/>
+    <text x="226" y="450" class="k" fill="#a997ff">MISSING EVIDENCE</text><text x="226" y="486" class="t">Focused repair round</text>
+    <text x="226" y="516" class="p">Same objective · exact failure · current artifacts</text><text x="226" y="540" class="p">No blind restart and no automatic uncertainty skip</text>
+    <rect x="862" y="414" width="440" height="146" rx="20" fill="#0d211b" stroke="#3f9b73" stroke-width="1.5"/>
+    <text x="890" y="450" class="k" fill="#65dba2">VERIFIED EVIDENCE</text><text x="890" y="486" class="t">Advance or finish</text>
+    <text x="890" y="516" class="p">Persist hashes, checks, changed paths, and confidence</text><text x="890" y="540" class="p">Only then unblock the next ordered task</text>
+  </g>
+  <path d="M1110 336V380H628V414" fill="none" stroke="#8c78ea" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M413 414V382H641V342" fill="none" stroke="#8c78ea" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M1120 336V414" fill="none" stroke="#5edb9f" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="750" y="626" text-anchor="middle" class="m" font-size="16" fill="#8f9bb8">.forgecode/tasks.json + .forgecode/last-run.json · compact state, no private chain-of-thought</text>
+</svg>

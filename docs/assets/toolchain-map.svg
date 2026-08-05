@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="630" viewBox="0 0 1500 630" role="img" aria-labelledby="title desc">
+  <title id="title">ForceCode project toolchain coverage</title>
+  <desc id="desc">Eight ecosystems map to native build and test commands, then to artifact-specific evidence such as executables, JARs, binaries, or static quality checks.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#070a11"/><stop offset="1" stop-color="#0b1b18"/></linearGradient><style>.s{font-family:Inter,"Segoe UI",Arial,sans-serif}.m{font-family:"Cascadia Code",Consolas,monospace}.h{font-size:17px;font-weight:700;fill:#eef2ff}.p{font-size:13px;fill:#96a4bf}.k{font-size:12px;font-weight:700;letter-spacing:1.4px}</style></defs>
+  <rect width="1500" height="630" rx="30" fill="url(#bg)"/>
+  <text x="65" y="67" class="s" font-size="34" font-weight="800" fill="#f7f8ff">Use the project’s own toolchain. Verify its real artifact.</text>
+  <text x="65" y="102" class="s" font-size="18" fill="#9aa6c1">ForceCode detects the ecosystem, chooses focused commands, supplies scripted input when needed, and checks what the build actually produced.</text>
+  <g class="s">
+    <text x="65" y="157" class="k" fill="#61d8fa">ECOSYSTEM</text><text x="390" y="157" class="k" fill="#a996ff">NATIVE WORK</text><text x="910" y="157" class="k" fill="#62dca2">COMPLETION EVIDENCE</text>
+    <g transform="translate(65 181)">
+      <g><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">Python</text><text x="325" y="30" class="p">compileall · unittest / project tests · interactive stdin</text><text x="845" y="30" class="p">exit 0 · focused test output · expected files</text></g>
+      <g transform="translate(0 57)"><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">Node.js / Web</text><text x="325" y="30" class="p">npm build · npm test · static quality gate</text><text x="845" y="30" class="p">bundle / pages · responsive + asset integrity</text></g>
+      <g transform="translate(0 114)"><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">C / C++</text><text x="325" y="30" class="p">CMake configure · build · CTest</text><text x="845" y="30" class="p">non-empty executable · hash · test result</text></g>
+      <g transform="translate(0 171)"><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">.NET</text><text x="325" y="30" class="p">restore · build · test · single-file publish</text><text x="845" y="30" class="p">EXE / DLL present · size · SHA-256</text></g>
+      <g transform="translate(0 228)"><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">Java / Minecraft</text><text x="325" y="30" class="p">Maven / Gradle · Paper plugin packaging</text><text x="845" y="30" class="p">executable JAR · plugin descriptor · tests</text></g>
+      <g transform="translate(0 285)"><rect width="1370" height="48" rx="12" fill="#0d1421"/><text x="22" y="30" class="h">Rust / Go</text><text x="325" y="30" class="p">cargo build/test · go build/test</text><text x="845" y="30" class="p">binary artifact · package checks · exit 0</text></g>
+    </g>
+  </g>
+  <rect x="65" y="550" width="1370" height="3" rx="1.5" fill="#294b42"/>
+  <text x="750" y="589" text-anchor="middle" class="m" font-size="16" fill="#79cfa9">No artifact → no completion claim · binary files are verified as bytes, never decoded as UTF-8</text>
+</svg>
