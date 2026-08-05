@@ -3547,14 +3547,18 @@ class StreamingAndModelMenuTests(unittest.TestCase):
 
             class SlowProvider:
                 def request(self, *args):
-                    forgecode.time.sleep(0.25)
+                    forgecode.time.sleep(0.5)
                     return forgecode.ModelReply("too late", [], forgecode.Usage(), [])
 
             agent.provider = SlowProvider()
             started = forgecode.time.monotonic()
             with self.assertRaises(forgecode.ApiError):
                 agent._standalone_request("Optional planner", "system", "user", 32)
-            self.assertLess(forgecode.time.monotonic() - started, 0.2)
+            # Windows CI scheduling can cross an exact 200 ms boundary by a
+            # fraction while the 50 ms preflight is still correctly bounded.
+            # Keep a wide gap below the provider's 500 ms completion time so
+            # this verifies cancellation without a scheduler-race assertion.
+            self.assertLess(forgecode.time.monotonic() - started, 0.4)
 
     def test_watchdog_off_passes_no_timeout_to_chat_transport(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
