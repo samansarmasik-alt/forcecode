@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">ForceCode terminal coding agent</title>
+  <desc id="desc">Dark terminal-inspired ForceCode banner with provider routing, sandboxing and verified execution.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070912"/>
+      <stop offset="0.55" stop-color="#10152d"/>
+      <stop offset="1" stop-color="#071a1c"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#66e3ff"/>
+      <stop offset="0.5" stop-color="#9a7cff"/>
+      <stop offset="1" stop-color="#65f0a5"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="18" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse"><path d="M44 0H0V44" fill="none" stroke="#6070a0" stroke-opacity=".08"/></pattern>
+  </defs>
+  <rect width="1600" height="720" rx="34" fill="url(#bg)"/>
+  <rect width="1600" height="720" rx="34" fill="url(#grid)"/>
+  <circle cx="1240" cy="110" r="220" fill="#6a55ff" opacity=".16" filter="url(#glow)"/>
+  <circle cx="1420" cy="600" r="260" fill="#00d98b" opacity=".10" filter="url(#glow)"/>
+  <circle cx="200" cy="610" r="220" fill="#00b7ff" opacity=".10" filter="url(#glow)"/>
+
+  <g transform="translate(110 98)">
+    <rect width="920" height="524" rx="22" fill="#080b14" stroke="#354065" stroke-width="2"/>
+    <rect width="920" height="56" rx="22" fill="#11172a"/>
+    <rect y="34" width="920" height="22" fill="#11172a"/>
+    <circle cx="34" cy="28" r="7" fill="#ff6b6b"/><circle cx="58" cy="28" r="7" fill="#ffd166"/><circle cx="82" cy="28" r="7" fill="#65f0a5"/>
+    <text x="458" y="35" text-anchor="middle" fill="#8f9abd" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="17">FORCECODE — VERIFIED AGENT SESSION</text>
+
+    <text x="42" y="108" fill="#66e3ff" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">you ›</text>
+    <text x="118" y="108" fill="#e8ecff" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">build the feature, test it, and prove it works</text>
+
+    <text x="42" y="162" fill="#9a7cff" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">forceflow ›</text>
+    <text x="170" y="162" fill="#b9c2e2" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">plan created · 4 ordered tasks</text>
+
+    <text x="42" y="212" fill="#65f0a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">sandbox  ✓</text>
+    <text x="210" y="212" fill="#b9c2e2" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">isolated workspace ready</text>
+
+    <text x="42" y="262" fill="#65f0a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">context  ✓</text>
+    <text x="210" y="262" fill="#b9c2e2" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">project memory compiled</text>
+
+    <text x="42" y="312" fill="#65f0a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">edit     ✓</text>
+    <text x="210" y="312" fill="#b9c2e2" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">6 files changed transactionally</text>
+
+    <text x="42" y="362" fill="#65f0a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">tests    ✓</text>
+    <text x="210" y="362" fill="#b9c2e2" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="19">42 passed · artifacts verified</text>
+
+    <rect x="40" y="407" width="840" height="76" rx="12" fill="#0d1820" stroke="#2c8062"/>
+    <text x="66" y="440" fill="#65f0a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="18">confidence 94%</text>
+    <text x="66" y="468" fill="#dce8e4" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="17">completed with file, test, and build evidence</text>
+  </g>
+
+  <g transform="translate(1090 150)">
+    <text x="0" y="0" fill="url(#brand)" font-family="Inter, Segoe UI, sans-serif" font-size="76" font-weight="800">FORCE</text>
+    <text x="0" y="72" fill="#f2f5ff" font-family="Inter, Segoe UI, sans-serif" font-size="76" font-weight="800">CODE</text>
+    <rect x="0" y="100" width="330" height="5" rx="3" fill="url(#brand)"/>
+    <text x="0" y="154" fill="#aeb8d7" font-family="Inter, Segoe UI, sans-serif" font-size="24">The coding agent that</text>
+    <text x="0" y="188" fill="#aeb8d7" font-family="Inter, Segoe UI, sans-serif" font-size="24">does not stop at code.</text>
+
+    <g font-family="Inter, Segoe UI, sans-serif" font-size="18">
+      <rect y="232" width="185" height="42" rx="21" fill="#102238" stroke="#3abde8"/><text x="92" y="259" text-anchor="middle" fill="#75ddff">22+ providers</text>
+      <rect y="288" width="185" height="42" rx="21" fill="#20183a" stroke="#8066e8"/><text x="92" y="315" text-anchor="middle" fill="#b7a5ff">safe execution</text>
+      <rect y="344" width="185" height="42" rx="21" fill="#102d25" stroke="#3dba85"/><text x="92" y="371" text-anchor="middle" fill="#76efb0">verified results</text>
+    </g>
+  </g>
+</svg>
