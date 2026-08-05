@@ -1,5 +1,5 @@
 {
-  "config_version": 29,
+  "config_version": 30,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",

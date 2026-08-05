@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.11.1-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.11.2-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
@@ -138,6 +138,17 @@ Custom OpenAI-compatible and Anthropic-compatible APIs are supported too.
 ```
 
 Built-in provider tooling includes model discovery, connection testing, response-latency history, token accounting, configurable pricing, saved profiles, and optional backup-provider failover.
+
+For gateways where protocol inference rewrites or rejects a valid custom URL, disable enforcement and send to the selected route exactly as configured:
+
+```text
+/route https://gateway.example/custom/inference
+/protocol off openai
+/endpoint
+/test
+```
+
+`/protocol off` keeps the current payload format; append `openai` or `anthropic` to choose it explicitly. In this mode ForgeCode does not infer a protocol from the model or route, append `/v1/messages` or `/chat/completions`, or replace the route after a 404. Authentication remains independently configurable through `custom_auth_mode`.
 
 > Use only endpoints you are authorized to access. ForceCode does not bypass provider restrictions or access controls.
 
