@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.11.2-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.12.0-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
@@ -107,6 +107,19 @@ Retrieves only the project facts, preferences, and session notes relevant to the
 ### ForceGraph
 
 Adds optional local structural intelligence for architecture understanding, blast-radius analysis, review, and test-gap discovery.
+
+### MCP backend
+
+Connect project MCP servers over stdio or Streamable HTTP and expose their tools directly to the active model. ForceCode can safely discover secret-free entries from `.mcp.json`, and the AI receives MCP management controls only after an explicit user request. A verified MCP connection automatically pauses ForceGraph to prevent duplicate context; type `/mcp` or say `ForceGraph'a geri geç` to switch back instantly.
+
+```text
+/mcp discover
+/mcp add local-tools stdio my-mcp-server --repo .
+/mcp add remote-tools http https://example.com/mcp
+/mcp use local-tools
+/mcp tools
+/mcp
+```
 
 ### VibeCode
 
@@ -371,7 +384,7 @@ Skill Scout can search the public skills.sh catalog using generic project labels
 | Execution | `/plan`, `/debug`, `/confidence`, `/engine` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update` |
-| ForceGraph | `/graph`, `/impact`, `/review` |
+| Code intelligence | `/graph`, `/impact`, `/review`, `/mcp` |
 | Skills and agents | `/skills`, `/skill`, `/agents`, `/delegate`, `/team` |
 | Long work | `/vibe`, `/watchdog`, `/retry`, `/queue` |
 | Visibility | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |

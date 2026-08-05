@@ -1,5 +1,5 @@
 {
-  "config_version": 30,
+  "config_version": 31,
   "ui_language": "tr",
   "ui_language_selected": false,
   "provider": "anthropic",
@@ -100,6 +100,10 @@
   "backup_last_reason": "",
   "backup_last_switch": "",
   "forcegraph_auto_enabled": true,
+  "mcp_enabled": false,
+  "mcp_active_server": "",
+  "mcp_servers": {},
+  "mcp_timeout_seconds": 45,
   "sandbox_enabled": true,
   "sandbox_engine": "auto",
   "sandbox_network_enabled": true,

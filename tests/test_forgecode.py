@@ -1676,7 +1676,7 @@ class CommandAssistTests(unittest.TestCase):
             (home / "config.json").write_text('{"timeout_seconds": 120}', encoding="utf-8")
             cfg = forgecode.Config(home)
             self.assertEqual(cfg.data["timeout_seconds"], 100)
-            self.assertEqual(cfg.data["config_version"], 30)
+            self.assertEqual(cfg.data["config_version"], 31)
             self.assertEqual(cfg.data["max_agent_steps"], 0)
             self.assertEqual(cfg.data["temperature"], 1.0)
 
@@ -1690,7 +1690,7 @@ class CommandAssistTests(unittest.TestCase):
 
             cfg = forgecode.Config(home)
 
-            self.assertEqual(cfg.data["config_version"], 30)
+            self.assertEqual(cfg.data["config_version"], 31)
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
             cfg.set_value("sandbox_max_transfer_mb", "0")
             self.assertEqual(cfg.data["sandbox_max_transfer_mb"], 0)
@@ -1822,7 +1822,7 @@ class CommandAssistTests(unittest.TestCase):
         self.assertEqual(cfg.mode(), "chat")
         self.assertEqual(cfg.data["custom_protocol"], "openai")
         self.assertEqual(cfg.data["custom_auth_mode"], "auto")
-        self.assertEqual(cfg.data["config_version"], 30)
+        self.assertEqual(cfg.data["config_version"], 31)
 
     def test_explicit_chat_route_wins_over_stale_anthropic_protocol(self):
         cfg = forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
@@ -5021,7 +5021,7 @@ class VibeCodeTests(unittest.TestCase):
             self.assertTrue(loaded.data["vibe_mode"])
             self.assertEqual(loaded.data["vibe_max_hours"], 12)
             self.assertEqual(loaded.data["vibe_command_timeout_seconds"], 1800)
-            self.assertEqual(loaded.data["config_version"], 30)
+            self.assertEqual(loaded.data["config_version"], 31)
             with self.assertRaises(ValueError):
                 loaded.set_value("vibe_max_hours", "25")
 
@@ -5159,6 +5159,125 @@ class VibeCodeTests(unittest.TestCase):
             self.assertTrue((project / ".forgecode" / "vibe-report.md").is_file())
             self.assertFalse(agent.tools.unattended_mode)
             self.assertEqual(cfg.data["work_mode"], original_mode)
+
+
+class MCPIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def write_fake_server(root):
+        script = root / "fake_mcp_server.py"
+        script.write_text(
+            """import json, os, sys
+for line in sys.stdin:
+    try:
+        message = json.loads(line)
+    except Exception:
+        continue
+    request_id = message.get('id')
+    if request_id is None:
+        continue
+    method = message.get('method')
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-03-26', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fake', 'version': '1'}}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'echo', 'description': 'Echo safely', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}}}]}
+    elif method == 'tools/call':
+        args = message.get('params', {}).get('arguments', {})
+        result = {'content': [{'type': 'text', 'text': args.get('text', '') + '|secret=' + str(bool(os.environ.get('OPENAI_API_KEY')))}]}
+    else:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'error': {'code': -32601, 'message': 'unknown'}}), flush=True)
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'result': result}), flush=True)
+""",
+            encoding="utf-8",
+        )
+        return script
+
+    def test_stdio_handshake_dynamic_tool_and_backend_exclusion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            script = self.write_fake_server(root)
+            saved = agent.mcp.add_stdio("Demo Server", sys.executable, [str(script)])
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "must-not-leak"}):
+                schemas = agent.mcp.connect(saved)
+                self.assertEqual([item["name"] for item in schemas], ["mcp__demo_server__echo"])
+                tools = {item["name"] for item in agent._effective_tools("projeyi incele")}
+                self.assertIn("mcp__demo_server__echo", tools)
+                self.assertNotIn("graph_context", tools)
+                output = agent.tools.execute("mcp__demo_server__echo", {"text": "hello"})
+            self.assertEqual(output, "hello|secret=False")
+            self.assertTrue(cfg.data["mcp_enabled"])
+            self.assertFalse(cfg.data["forcegraph_auto_enabled"])
+            agent.tools.close_processes()
+
+    def test_failed_connection_does_not_disable_forcegraph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            manager = forgecode.MCPManager(root, cfg)
+            manager.add_stdio("missing", str(root / "not-installed.exe"), [])
+            with self.assertRaises(RuntimeError):
+                manager.connect("missing")
+            self.assertFalse(cfg.data["mcp_enabled"])
+            self.assertTrue(cfg.data["forcegraph_auto_enabled"])
+
+    def test_slash_mcp_toggles_and_natural_language_returns_to_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            script = self.write_fake_server(root)
+            agent.mcp.add_stdio("demo", sys.executable, [str(script)])
+            enabled = forgecode.handle_mcp_command("/mcp use demo", agent, cfg)
+            self.assertIn("MCP etkin", enabled)
+            self.assertTrue(cfg.data["mcp_enabled"])
+            switched = forgecode.handle_natural_backend_switch("ForceGraph'a geri geç", agent)
+            self.assertIn("geri geçildi", switched)
+            self.assertFalse(cfg.data["mcp_enabled"])
+            self.assertTrue(cfg.data["forcegraph_auto_enabled"])
+            enabled_again = forgecode.handle_mcp_command("/mcp", agent, cfg)
+            self.assertIn("MCP etkin", enabled_again)
+            disabled = forgecode.handle_mcp_command("/mcp", agent, cfg)
+            self.assertIn("ForceGraph yeniden etkin", disabled)
+
+    def test_ai_management_tool_requires_explicit_mcp_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            ordinary = {item["name"] for item in agent._effective_tools("projeyi düzelt")}
+            self.assertNotIn("manage_mcp_server", ordinary)
+            agent.mcp.set_request("MCP sunucusunu bağla")
+            explicit = {item["name"] for item in agent._effective_tools("MCP sunucusunu bağla")}
+            self.assertIn("manage_mcp_server", explicit)
+            agent.mcp.management_requested = False
+            output = agent.tools.execute("manage_mcp_server", {"action": "discover"})
+            self.assertIn("açıkça MCP", output)
+
+    def test_mcp_security_rejects_shell_and_insecure_remote_http(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = forgecode.MCPManager(pathlib.Path(tmp), forgecode.Config(pathlib.Path(tmp) / "home"))
+            with self.assertRaises(ValueError):
+                manager.add_stdio("bad", "powershell.exe", ["-Command", "whoami"])
+            with self.assertRaises(ValueError):
+                manager.add_stdio("secret", sys.executable, ["--token", "sk-examplecredential12345"])
+            with self.assertRaises(ValueError):
+                manager.add_http("bad", "http://example.com/mcp")
+            with self.assertRaises(ValueError):
+                manager.add_http("secret", "https://example.com/mcp?token=abc")
+
+    def test_forcegraph_automatic_bridge_is_disabled_while_mcp_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["mcp_enabled"] = True
+            bridge = forgecode.ForceGraphBridge(root, cfg)
+            bridge.runtime_auto = True
+            with mock.patch.object(bridge, "command") as command:
+                result = bridge.ensure_automatic({"src/app.py": (10, 1)})
+            self.assertEqual(result["status"], "disabled")
+            command.assert_not_called()
 
 
 if __name__ == "__main__":

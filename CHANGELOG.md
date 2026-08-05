@@ -2,6 +2,25 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.12.0] - 2026-08-05
+
+### Added
+
+- Added a dependency-free MCP client with stdio and Streamable HTTP transports, JSON-RPC initialization, dynamic tool discovery, bounded calls, and clean process shutdown.
+- Added `/mcp` backend toggling plus `status`, `discover`, `tools`, `use`, `add`, `remove`, and `graph` actions. Project `.mcp.json`, `.vscode/mcp.json`, and `.cursor/mcp.json` entries can be discovered without importing embedded environment secrets.
+- The AI can discover, configure, test, activate, remove, or disable MCP servers through `manage_mcp_server` only after the user explicitly requests MCP management.
+- Added deterministic natural-language switching for `ForceGraph'a geri geç`, avoiding an unnecessary API call.
+
+### Changed
+
+- MCP and native ForceGraph are now mutually exclusive code-intelligence backends. MCP is enabled only after `initialize` and `tools/list` succeed; successful activation pauses ForceGraph, while failed connections preserve the current backend.
+- Active MCP tools are injected into the model schema dynamically and removed again on disconnect. `graph_context` is not offered while MCP is active.
+
+### Security
+
+- MCP subprocesses use argument arrays with `shell=False`, a project-scoped working directory, and a credential-stripped environment. Shell wrappers, remote plaintext HTTP, URL credentials, query tokens, and malformed arguments are rejected.
+- MCP descriptions and results are explicitly treated as untrusted data. Saved MCP profiles contain connection metadata only, never API secrets.
+
 ## [7.11.2] - 2026-08-05
 
 ### Added
