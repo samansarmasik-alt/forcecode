@@ -9147,7 +9147,8 @@ Project context:
 # regardless of encoding. The stream consumer also drops thinking deltas.
 _THINKING_MARKERS = ("yapiyorum", "yapıyor", "inceliyorum", "düşünüyorum", "dusunuyorum", "çözüyorum", "cozuyorum", "hata yakaland", "onar")
 _THINKING_TRACE_RE = re.compile(r"(yap[i\u0131]yorum|inceliyorum|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum|\u00e7[\u00f6o]z[\u00fc\u0131]yorum|hata yakaland|onar[\u0131i]yorum)", re.IGNORECASE)
-_THINKING_STRIP_RE = re.compile(r"^\s*(hata yakaland.*?onar[\u0131i]yorum|hata yakaland.*|onar[\u0131i]yorum.*?)[\r\n]+", re.IGNORECASE | re.DOTALL)
+_THINKING_STRIP_RE = re.compile(r"^\s*(hata yakaland.*?onar[\u0131i]yorum|hata yakaland.*|onar[\u0131i]yorum.*|yap[i\u0131]yorum.*|inceliyorum.*|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum.*|\u00e7[\u00f6o]z[\u00fc\u0131]yorum.*)[\r\n]+", re.IGNORECASE | re.DOTALL)
+_GENERIC_THINKING_LINE_RE = re.compile(r"^\s*(yap[i\u0131]yorum|inceliyorum|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum|\u00e7[\u00f6o]z[\u00fc\u0131]yorum|onar[\u0131i]yorum)\b[^\r\n]*[\r\n]+", re.IGNORECASE)
 
 def _is_thinking_trace_only(text: str, tool_calls: list[Any] | None) -> bool:
     if tool_calls:
@@ -9180,17 +9181,25 @@ def _is_thinking_trace_only(text: str, tool_calls: list[Any] | None) -> bool:
     return False
 
 def _strip_thinking_prefix(text: str) -> str:
+    # Pure trace must never become visible result
+    if _is_thinking_trace_only(text, []):
+        return ""
     stripped = str(text).lstrip()
     low = stripped[:320].casefold()
     if not any(m in low for m in _THINKING_MARKERS):
         return str(text)
+    # Try the main strip pattern (covers hata yakaland/onar/yapıyorum etc with newline)
     cleaned = _THINKING_STRIP_RE.sub("", stripped, count=1).lstrip()
-    # Single-line "Hata yakalandı — onarıyorum" without newline -> treat as whole trace
-    if stripped.strip().casefold() in {"hata yakalandı — onarıyorum", "hata yakalandı - onariyorum"} or not cleaned:
+    if cleaned != stripped:
+        return cleaned if len(cleaned) >= 8 else ""
+    # Generic one-line thinking line with newline
+    cleaned2 = _GENERIC_THINKING_LINE_RE.sub("", stripped, count=1).lstrip()
+    if cleaned2 != stripped:
+        return cleaned2 if len(cleaned2) >= 8 else ""
+    # Single-line pure trace without newline
+    if stripped.strip().casefold() in {"hata yakalandı — onarıyorum", "hata yakalandı - onariyorum", "yapıyorum", "inceliyorum", "onarıyorum", "düşünüyorum", "çözüyorum"}:
         return ""
-    if len(cleaned) < 8:
-        return ""
-    return cleaned
+    return str(text)
 
 COMPACT_PROXY_SYSTEM_PROMPT = """You are ForgeCode, a coding agent working in the user's local project.
 SILENT DIRECT EXECUTION: Never announce intent before acting — call tools immediately without "yapıyorum/inceliyorum" preamble.

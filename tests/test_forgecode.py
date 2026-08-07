@@ -5284,5 +5284,123 @@ for line in sys.stdin:
             command.assert_not_called()
 
 
+class ThinkingChannelRegressionTests(unittest.TestCase):
+    def test_pure_repair_trace_is_never_counted_as_result(self):
+        pure_traces = [
+            "Hata yakalandı — onarıyorum",
+            "Hata yakalandı - onarıyorum",
+            "onarıyorum",
+            "yapıyorum",
+            "inceliyorum",
+            "düşünüyorum",
+            "çözüyorum",
+            "Hata yakalandı — onarıyorum\n",
+        ]
+        for trace in pure_traces:
+            with self.subTest(trace=trace):
+                self.assertTrue(
+                    forgecode._is_thinking_trace_only(trace, []),
+                    msg=f"pure trace should be blocked: {trace!r}",
+                )
+                self.assertFalse(
+                    forgecode._is_thinking_trace_only(trace, [{"name": "read_file"}]),
+                    msg="tool_calls must exempt trace from blocking",
+                )
+
+    def test_real_answer_is_not_blocked_even_with_prefix(self):
+        prefixed = "Hata yakalandı — onarıyorum\n\nGerçek cevap: proje derlendi ve testler geçti"
+        self.assertFalse(forgecode._is_thinking_trace_only(prefixed, []))
+        stripped = forgecode._strip_thinking_prefix(prefixed)
+        self.assertEqual(stripped, "Gerçek cevap: proje derlendi ve testler geçti")
+        self.assertNotIn("Hata yakalandı", stripped)
+
+    def test_strip_returns_empty_for_pure_trace_variants(self):
+        for trace in ["Hata yakalandı — onarıyorum", "onarıyorum", "yapıyorum"]:
+            with self.subTest(trace=trace):
+                self.assertEqual(forgecode._strip_thinking_prefix(trace + "\n"), "")
+                self.assertEqual(forgecode._strip_thinking_prefix(trace), "")
+
+    def test_consume_anthropic_stream_drops_thinking_delta_from_answer(self):
+        emitted = []
+        events = [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "gizli dusunce"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Hello"}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " world"}},
+        ]
+        result = forgecode.consume_anthropic_stream(iter(events), lambda d: emitted.append(d))
+        self.assertEqual(emitted, ["Hello", " world"])
+        texts = [b.get("text", "") for b in result.get("content", []) if b.get("type") == "text"]
+        self.assertEqual("".join(texts), "Hello world")
+        thinking_blocks = [b for b in result.get("content", []) if b.get("type") == "thinking"]
+        self.assertTrue(thinking_blocks)
+
+    def test_consume_anthropic_plain_response_ignores_thinking_block(self):
+        emitted = []
+        plain = {
+            "content": [
+                {"type": "thinking", "thinking": "should not emit"},
+                {"type": "text", "text": "visible answer"},
+            ]
+        }
+        result = forgecode.consume_anthropic_stream(iter([plain]), lambda d: emitted.append(d))
+        self.assertEqual(emitted, ["visible answer"])
+        self.assertEqual(result, plain)
+
+    def test_agent_ask_promotes_only_real_answer_not_thinking_trace(self):
+        # Use a conversational prompt so no artifact verification loop consumes an extra turn.
+        # The debug-type prompt "hata akışını düzelt" would require verification and
+        # could trigger an additional provider call beyond the two mocked replies.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_subagents": False, "power_mode": "off", "watchdog_enabled": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            agent._power_active = False
+            first = forgecode.ModelReply(
+                "Hata yakalandı — onarıyorum",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "Hata yakalandı — onarıyorum"}],
+            )
+            second = forgecode.ModelReply(
+                "Gerçek cevap: düzeltildi ve testler geçti",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "Gerçek cevap: düzeltildi ve testler geçti"}],
+            )
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=[first, second]) as req:
+                result = agent.ask("merhaba, kısa selam")
+            self.assertEqual(req.call_count, 2)
+            self.assertIn("Gerçek cevap", result)
+            self.assertNotIn("Hata yakalandı", result)
+            # History must not count pure trace as user-visible result; the persisted assistant messages
+            # should contain only the real answer for the thinking phrase
+            assistant_texts = [forgecode.portable_message_text(m) for m in agent.messages if isinstance(m, dict) and m.get("role") == "assistant"]
+            visible = " ".join(assistant_texts)
+            # The first assistant message is the trace, second is real; final result must not be trace
+            self.assertNotEqual(result.strip(), "Hata yakalandı — onarıyorum")
+
+    def test_agent_ask_strips_thinking_prefix_and_keeps_real_answer_in_one_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_subagents": False, "power_mode": "off", "watchdog_enabled": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            agent._power_active = False
+            combined = forgecode.ModelReply(
+                "Hata yakalandı — onarıyorum\n\nGerçek cevap: tamamlandı",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "Hata yakalandı — onarıyorum\n\nGerçek cevap: tamamlandı"}],
+            )
+            with mock.patch.object(agent, "_request_with_heartbeat", return_value=combined):
+                result = agent.ask("basit görev")
+            self.assertIn("Gerçek cevap", result)
+            self.assertNotIn("Hata yakalandı", result)
+
+
 if __name__ == "__main__":
     unittest.main()
