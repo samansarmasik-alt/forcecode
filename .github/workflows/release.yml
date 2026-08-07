@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Etiket (örn v7.12.10) — boş bırakırsan mevcut VERSION kullanılır"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Check version consistency
+        run: |
+          PY_VER=$(grep -E '^VERSION = ' forgecode.py | sed -E 's/.*"(.*)".*/\1/')
+          TOML_VER=$(grep -E '^version = ' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+          echo "forgecode.py VERSION=$PY_VER"
+          echo "pyproject.toml version=$TOML_VER"
+          if [ "$PY_VER" != "$TOML_VER" ]; then
+            echo "::error::Versiyon uyuşmazlığı: forgecode.py ($PY_VER) != pyproject.toml ($TOML_VER)"
+            exit 1
+          fi
+          # tag varsa tag ile karşılaştır
+          TAG="${{ github.ref_name }}"
+          if echo "$TAG" | grep -qE '^v[0-9]+\.'; then
+            TAG_VER=$(echo "$TAG" | sed 's/^v//')
+            if [ "$TAG_VER" != "$PY_VER" ]; then
+              echo "::warning::Tag $TAG ile kod versiyonu $PY_VER farklı — CHANGELOG ve VERSION'ı güncelleyin."
+            fi
+          fi
+
+      - name: Syntax check
+        run: python -m py_compile forgecode.py
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Secret scan (basit)
+        run: |
+          echo "Gizli anahtar taraması..."
+          if grep -R --include="*.py" --include="*.json" --include="*.toml" -i -E "(sk-ant-|sk-proj-|ghp_|github_pat_|AKIA|aws_secret)" . 2>/dev/null | grep -v ".git" | grep -v "graphify-out" | grep -v "test_forgecode.py"; then
+            echo "::error::Olası gizli anahtar bulundu — commit'e eklemeyin!"
+            exit 1
+          fi
+          echo "Temiz."
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build 2>&1 | tail -n 5
+          python -m build
+          ls -lh dist/
+          sha256sum dist/* | tee dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Build portable zip
+        run: |
+          VER=$(grep -E '^VERSION = ' forgecode.py | sed -E 's/.*"(.*)".*/\1/')
+          ZIP="ForgeCode-v${VER}.zip"
+          zip -r "$ZIP" forgecode.py forgecode.bat forgecode.sh install-force.sh install-force.ps1 install-force.bat uninstall-force.sh uninstall-force.ps1 pyproject.toml README.md CHANGELOG.md LICENSE docs/ -x "graphify-out/*" ".git/*" "__pycache__/*" "*.pyc" ".forgecode/*" ".venv/*" "dist/*" "build/*"
+          sha256sum "$ZIP" | tee -a dist/SHA256SUMS.txt
+          ls -lh "$ZIP" dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*
+            ForgeCode-v*.zip
+          body: |
+            ## ForgeCode ${{ github.ref_name }}
+            Otomatik release — testler ve paket doğrulaması geçti.
+            - `pip install` için `dist/*.whl` ve `dist/*.tar.gz`
+            - Taşınabilir paket için `ForgeCode-v*.zip`
+            - Doğrulama: `dist/SHA256SUMS.txt`
+
