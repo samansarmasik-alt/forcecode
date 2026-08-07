@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.12.11] - 2026-08-08
+
+### Fixed
+
+- Fix thinking vs final-answer channel separation in execution kernel: internal auto-repair trace `Hata yakalandı — onarıyorum` and other intent announcements (`yapıyorum`/`inceliyorum`/`düşünüyorum`/`çözüyorum`) now emit only on the transient thinking/trace stream (LiveStreamTerminal + activity) and are never counted as the assistant's final result message. `consume_anthropic_stream` drops `thinking_delta`/`signature_delta` blocks from the answer stream and `Agent.ask` strips the thinking prefix or rejects pure-trace replies, nudging the model to call tools directly. Final output contains only the real answer.
+
 ## [7.12.0] - 2026-08-05
 
 ### Added
