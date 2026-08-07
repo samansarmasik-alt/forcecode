@@ -1,0 +1,24 @@
+# LF/CRLF normalizasyonu — Windows'ta "LF will be replaced by CRLF" uyarısını önler
+* text=auto
+
+# Kaynak kod ve metinler LF ile saklansın, checkout'ta OS'e göre normalize edilsin
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf
+
+# Binary'ler dokunulmasın
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.svg text eol=lf
+*.zip binary
+*.whl binary
+*.tar.gz binary

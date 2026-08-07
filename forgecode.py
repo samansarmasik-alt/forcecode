@@ -2809,8 +2809,8 @@ def adapt_powershell_chain(command: str) -> str:
 def windows_shell_command(command: str) -> str:
     """Translate the small Unix inspection idioms Claude Code commonly emits."""
     translated = adapt_powershell_chain(command)
-    translated = re.sub(r"(?<![\w-])ls\s+-(?:la|al|a|l)\b", "Get-ChildItem -Force", translated)
-    translated = re.sub(r"(?<![\w-])ls\b", "Get-ChildItem", translated)
+    translated = re.sub(r"(?<![\w-])ls\s+-(?:la|al|a|l)\b(?!-)", "Get-ChildItem -Force", translated)
+    translated = re.sub(r"(?<![\w-])ls\b(?!-)", "Get-ChildItem", translated)
     translated = translated.replace("2>/dev/null", "2>$null").replace(">/dev/null", ">$null")
     translated = re.sub(
         r"\bmkdir\s+-p\s+([^;|&]+)",
