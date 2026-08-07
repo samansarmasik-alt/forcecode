@@ -55,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 APP_NAME = "ForgeCode"
-VERSION = "7.12.11"
+VERSION = "7.12.12"
 
 _UI_LANGUAGE = "tr"
 
