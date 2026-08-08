@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.13.1"
+VERSION = "7.13.2"
 
 _UI_LANGUAGE = "tr"
 
@@ -208,10 +208,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "freemodel": {"label": "FreeModel (resmî API)", "mode": "chat", "url": "https://api.freemodel.dev/v1", "model": "auto", "env": "FREEMODEL_API_KEY", "key": True},
     # Subscription adapters never copy browser cookies or OAuth tokens. They
     # call the vendor's already-authenticated official CLI as a child process.
-    "claude-subscription": {"label": "Claude subscription (official CLI)", "mode": "subscription", "url": "", "model": "claude-subscription", "env": "", "key": False, "command": ["claude", "-p", "--output-format", "text", "--permission-mode", "plan"]},
-    "codex-subscription": {"label": "ChatGPT/Codex subscription (official CLI)", "mode": "subscription", "url": "", "model": "codex-subscription", "env": "", "key": False, "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"]},
+    "claude-subscription": {"label": "Claude Code subscription (official CLI)", "mode": "subscription", "url": "", "model": "claude-subscription", "env": "", "key": False, "command": ["claude", "-p", "--output-format", "text", "--permission-mode", "plan", "--bare"], "setup": ["claude"]},
+    "codex-subscription": {"label": "ChatGPT/Codex subscription (official CLI)", "mode": "subscription", "url": "", "model": "codex-subscription", "env": "", "key": False, "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"], "setup": ["codex", "login"]},
     "cline-subscription": {"label": "Cline subscription (official CLI)", "mode": "subscription", "url": "", "model": "cline-subscription", "env": "", "key": False, "command": ["cline", "--json", "--auto-approve", "false", "--plan"], "output": "jsonl", "setup": ["cline", "auth"]},
-    "gemini-subscription": {"label": "Gemini subscription (official CLI)", "mode": "subscription", "url": "", "model": "gemini-subscription", "env": "", "key": False, "command": ["gemini", "-p"]},
+    "gemini-subscription": {"label": "Gemini subscription (official CLI)", "mode": "subscription", "url": "", "model": "gemini-subscription", "env": "", "key": False, "command": ["gemini", "-p"], "setup": ["gemini"]},
 }
 
 KIMCHI_PRICING: dict[str, tuple[float, float]] = {
@@ -2520,14 +2520,17 @@ class SubscriptionCLIProvider(Provider):
         )
         timeout = api_transport_timeout(self.cfg)
         try:
-            # The disposable empty working directory enforces advisory-only
-            # behavior even when a vendor CLI enables tools by default.
-            with tempfile.TemporaryDirectory(prefix="forgecode-subscription-") as isolated_cwd:
-                completed = subprocess.run(
-                    [executable, *command[1:], prompt], cwd=isolated_cwd, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                    timeout=timeout, check=False,
-                )
+            # Official CLIs need the actual project to give useful answers. Each
+            # adapter is constrained to its vendor's read-only/plan mode, while
+            # ForgeCode retains all mutation and approval duties.
+            project_root = pathlib.Path(str(self.cfg.data.get("_runtime_project_root") or ".")).resolve()
+            if not project_root.is_dir():
+                raise ApiError(f"Subscription workspace is unavailable: {project_root}")
+            completed = subprocess.run(
+                [executable, *command[1:], prompt], cwd=str(project_root), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                timeout=timeout, check=False,
+            )
         except subprocess.TimeoutExpired as exc:
             raise ApiError(f"Subscription CLI timed out: {command[0]}") from exc
         if completed.returncode != 0:
@@ -11082,6 +11085,8 @@ class Agent:
         # Prevents 9M giriş birikmesi when large jobs / GitHub release iterate many turns.
         self._compact_messages_for_token_budget()
         label = f"{self.role} alt ajan" if self.read_only else "Ana model"
+        if self.cfg.mode() == "subscription":
+            label = str(PROVIDERS.get(str(self.cfg.data.get("provider")), {}).get("label") or "Subscription CLI") + " arka planda"
         if self.stream_reset_callback:
             self.stream_reset_callback()
         self._emit_activity(f"{label}: istek gönderildi")
@@ -13672,7 +13677,7 @@ def subscription_status_text(cfg: Config) -> str:
         installed = bool(shutil.which(command))
         active = "*" if cfg.data.get("provider") == slug else " "
         rows.append(f" {active} {name:<7} · {'hazır' if installed else 'CLI bulunamadı'} · {command}")
-    rows.append("Kullanım: /subscriptions setup <cline> | use <claude|codex|cline|gemini> | ardından /test")
+    rows.append("Kullanım: /subscriptions setup <claude|codex|cline|gemini> | use <...> | ardından /test")
     return "\n".join(rows)
 
 

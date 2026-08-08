@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.13.2] - 2026-08-08
+
+### Fixed
+
+- Made all subscription bridges run the installed official CLI in the active project instead of an empty temporary directory. Claude Code, Codex, Cline, and Gemini now have setup routes, and subscription activity names the official CLI running in the background.
+
 ## [7.13.1] - 2026-08-08
 
 ### Fixed

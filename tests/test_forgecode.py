@@ -5683,6 +5683,7 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             self.assertEqual(reply.text, "ready")
             self.assertNotIn("shell", run.call_args.kwargs)
             self.assertEqual(run.call_args.kwargs["stdin"], forgecode.subprocess.DEVNULL)
+            self.assertEqual(run.call_args.kwargs["cwd"], tmp)
 
     def test_cline_subscription_uses_safe_json_headless_contract_and_extracts_visible_text(self):
         with tempfile.TemporaryDirectory() as tmp:

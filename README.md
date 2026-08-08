@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.13.1-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.13.2-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
