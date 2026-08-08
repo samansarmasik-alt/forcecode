@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.13.4"
+VERSION = "7.14.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -13640,10 +13640,35 @@ def smart_input(prompt: str, history: list[str] | None = None, agent: Agent | No
 
 
 def print_banner(root: pathlib.Path, cfg: Config, session_name: str = "main") -> None:
-    print(f"{C.BOLD}{C.CYAN}╭─ ◆ ForgeCode {C.RESET}{C.DIM}v{VERSION}{C.RESET}")
-    print(f"{C.CYAN}│{C.RESET} {root}")
-    print(f"{C.CYAN}│{C.RESET} {cfg.data['provider']} / {cfg.data['model']}  {C.DIM}· oturum {session_name}{C.RESET}")
-    print(f"{C.BOLD}{C.CYAN}╰─{C.RESET} {C.DIM}/help komutlar · /dashboard genel görünüm{C.RESET}\n")
+    """Render the new terminal control-center shell, including empty worker slots."""
+    try:
+        width = max(76, os.get_terminal_size().columns)
+    except OSError:
+        width = 100
+    left = max(46, int(width * 0.62))
+    right = max(27, width - left - 3)
+    fleet = TerminalFleet(root, cfg).state().get("terminals", [])
+    workers = {int(item.get("id", 0)): item for item in fleet if isinstance(item, dict)}
+    def box(text: str, size: int) -> str:
+        return text[:size].ljust(size)
+    top = "═" * left + "╤" + "═" * right
+    print(f"{C.BOLD}{C.CYAN}╔{top}╗{C.RESET}")
+    print(f"{C.CYAN}║{C.RESET} {box('FORGECODE  //  COMMAND CENTER', left - 2)} {C.CYAN}│{C.RESET} {box('LIVE FLEET', right - 2)} {C.CYAN}║{C.RESET}")
+    connection = f"v{VERSION}  ·  {cfg.data['provider']}/{cfg.data['model']}  ·  session {session_name}"
+    print(f"{C.CYAN}║{C.RESET} {box(connection, left - 2)} {C.CYAN}│{C.RESET} {box('T1  MANAGER  ·  ONLINE', right - 2)} {C.CYAN}║{C.RESET}")
+    print(f"{C.CYAN}╟{'─' * left}┼{'─' * right}╢{C.RESET}")
+    left_lines = [f'PROJECT  {root}', 'CHAT  Ready for a task', 'TOOLS  Safe approvals · live activity', 'MUSIC  /music search <query> · queue ready']
+    for index, line in enumerate(left_lines):
+        worker_id = index + 2
+        worker = workers.get(worker_id, {})
+        state = str(worker.get('status') or 'EMPTY').upper()
+        role = str(worker.get('role') or 'unassigned')
+        mode = 'VISIBLE' if worker.get('visible') else 'HEADLESS'
+        card = f'T{worker_id}  {role[:11]}  ·  {state}  ·  {mode}' if worker else f'T{worker_id}  EMPTY  ·  add worker'
+        print(f"{C.CYAN}║{C.RESET} {box(line, left - 2)} {C.CYAN}│{C.RESET} {box(card, right - 2)} {C.CYAN}║{C.RESET}")
+    print(f"{C.CYAN}╟{'─' * left}┼{'─' * right}╢{C.RESET}")
+    print(f"{C.CYAN}║{C.RESET} {box('F2 mode · F3 thinking · F5 efficiency · /terminal · /music · /dashboard', width - 2)} {C.CYAN}║{C.RESET}")
+    print(f"{C.BOLD}{C.CYAN}╚{'═' * width}╝{C.RESET}\n")
 
 
 def choose_language(cfg: Config) -> None:

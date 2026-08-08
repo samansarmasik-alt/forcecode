@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.14.0] - 2026-08-08
+
+### Added
+
+- Replaced the minimal startup banner with a Command Center dashboard: workspace, connection, session, music shortcut, live manager card, and three persistent worker slots that visibly show headless or visible worker state from first launch.
+
 ## [7.13.4] - 2026-08-08
 
 ### Added
