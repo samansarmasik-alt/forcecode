@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.12.12-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.13.0-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
@@ -232,6 +232,46 @@ One-shot mode:
 Force -p "Review the current changes, fix the root cause, and run the relevant tests"
 ```
 
+Headless managed team mode uses one main manager and at most three specialist AIs (four AIs total). Workers share a persistent coordination board, finish at a synchronization barrier, and the manager integrates and verifies their reports:
+
+```powershell
+Force --team "Inspect the API failures, fix the root cause, and run the relevant tests"
+Force --team-status
+```
+
+The same `.forgecode/team-state.json` board is visible from another terminal with `--team-status`. In interactive mode use `/team <task>` and `/team status`.
+
+For a persistent visible fleet, terminal 1 is always the manager/design director and up to three worker terminals can be added or removed while ForceCode is running:
+
+```text
+/terminal add design
+/terminal add backend
+/terminal task all "Inspect the current implementation and report focused findings"
+/terminal configure 2 high 2400
+/terminal status
+/terminal remove 2
+```
+
+You can also ask naturally: `Bu iş için gerekli terminal ekibini kur, görevleri dağıt ve sonuçları birleştir.` Terminal 1 then uses one orchestration call to create or reuse one to three workers, select each worker's temporary `off|low|medium|high` thinking level and output budget, queue independent work, and synthesize their shared reports. Fleet mutation is authorized only when the user explicitly asks for a team/terminal action.
+
+Workers are read-only, see the latest shared reports before each assignment, and publish their result back to terminal 1. The current provider and model are inherited and never changed by the manager. `model_lock` defaults to `true`, so automatic API recovery can repair an endpoint but cannot switch models; only explicit user commands such as `/model`, `/provider`, and `/agentconfig` choose another model. Use `/browser open <url>` and `/browser read` for the dedicated local Chrome profile. Chrome control never reads cookies, passwords, or browser storage.
+
+The streaming music queue uses the official YouTube iframe player and never downloads media:
+
+```text
+/music search synthwave coding mix
+/music add https://youtu.be/VIDEO_ID "Focus track"
+/music play
+/music next
+/music on
+```
+
+`/music on` enables startup playback when a queue exists. ForceCode does not block or bypass YouTube ads; an ad-free session requires the user's own YouTube Premium account.
+
+Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only; install and authenticate the vendor CLI separately, then verify it with `/test`.
+
+Request history is also kept under a rolling input budget (`input_budget_tokens`, default 24,000; `efficiency=max` caps it at 12,000). Old tool rounds are compacted before the next billed API request, and empty-response retries use a reduced transcript.
+
 ---
 
 ## Describe work normally
@@ -388,14 +428,15 @@ Skill Scout can search the public skills.sh catalog using generic project labels
 
 | Area | Commands |
 | --- | --- |
-| Provider setup | `/providers`, `/provider`, `/key`, `/models`, `/model`, `/test` |
+| Provider setup | `/providers`, `/provider`, `/subscriptions`, `/key`, `/models`, `/model`, `/test` |
 | Custom APIs | `/connect`, `/protocol`, `/route`, `/endpoint`, `/profiles` |
 | Safety | `/autopilot smart\|on\|off`, `/sandbox`, `/doctor`, `/diagnostics` |
 | Execution | `/plan`, `/debug`, `/confidence`, `/engine` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update` |
 | Code intelligence | `/graph`, `/impact`, `/review`, `/mcp` |
-| Skills and agents | `/skills`, `/skill`, `/agents`, `/delegate`, `/team` |
+| Skills and agents | `/skills`, `/skill`, `/agents`, `/delegate`, `/team`, `/terminal` |
+| Browser and media | `/browser`, `/music` |
 | Long work | `/vibe`, `/watchdog`, `/retry`, `/queue` |
 | Visibility | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
 | Interface | `/language en`, `/language tr`, `/help`, `/clear`, `/exit` |

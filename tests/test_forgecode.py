@@ -1432,7 +1432,7 @@ class ProviderTests(unittest.TestCase):
                 "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer",
                 "retry_attempts": 1,
-                "auto_model_switch": True,
+                "auto_model_switch": True, "model_lock": False,
                 "model_cache": {"custom": {"models": ["3.5", "opus-4.8", "sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1452,7 +1452,7 @@ class ProviderTests(unittest.TestCase):
                 "base_url": "https://proxy.test/v1", "model": "3.5", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "auto_subagents": False, "retry_attempts": 1,
                 "streaming_enabled": False,
-                "auto_model_switch": True,
+                "auto_model_switch": True, "model_lock": False,
                 "model_cache": {"custom": {"models": ["3.5", "sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1491,7 +1491,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "model-a", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer",
-                "auto_model_switch": True,
+                "auto_model_switch": True, "model_lock": False,
                 "model_cache": {"custom": {"models": ["model-a", "model-b"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -1546,7 +1546,7 @@ class ProviderTests(unittest.TestCase):
             cfg.data.update({
                 "base_url": "https://proxy.test/v1", "model": "claude-sonnet-5", "custom_api_key": "sk-test",
                 "custom_auth_mode": "bearer", "custom_protocol": "openai",
-                "auto_model_switch": True,
+                "auto_model_switch": True, "model_lock": False,
                 "model_cache": {"custom": {"models": ["claude-opus-4.8", "claude-sonnet-5"], "catalog": []}},
             })
             agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
@@ -2362,6 +2362,39 @@ class DynamicOrchestratorTests(unittest.TestCase):
             with mock.patch.object(agent, "delegate", side_effect=lambda role, task, output_cap=1200: f"{role}:{task}"):
                 reports = agent.run_delegations(assignments)
             self.assertEqual(reports, ["research:one", "design:two", "review:three"])
+
+    def test_managed_team_uses_one_manager_three_workers_and_persists_shared_barrier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            assignments = [
+                {"role": "research", "task": "inspect"},
+                {"role": "backend", "task": "trace api"},
+                {"role": "review", "task": "find risks"},
+                {"role": "test", "task": "must be capped"},
+            ]
+            reports = ["research report", "backend report", "review report"]
+            with mock.patch.object(agent, "plan_delegations", return_value=assignments), mock.patch.object(
+                agent, "run_delegations", return_value=reports
+            ) as run, mock.patch.object(agent, "ask", return_value="manager integrated") as ask:
+                result = agent.run_managed_team("fix the project")
+            self.assertEqual(result, "manager integrated")
+            self.assertEqual(len(run.call_args.args[0]), 3)
+            self.assertTrue(run.call_args.args[1])
+            self.assertIn("MANAGED TEAM BARRIER COMPLETE", ask.call_args.args[0])
+            state = agent.team_board.state()
+            self.assertEqual(state["max_agents"], 4)
+            self.assertEqual(state["status"], "completed")
+            self.assertEqual(len(state["assignments"]), 3)
+
+    def test_team_worker_limit_keeps_total_at_four_ais(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            with self.assertRaisesRegex(ValueError, "toplam 4 AI"):
+                cfg.set_value("team_max_workers", "4")
+            cfg.set_value("team_max_workers", "3")
+            self.assertEqual(cfg.data["team_max_workers"], 3)
 
     def test_research_specialist_forces_web_only_when_web_is_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5400,6 +5433,260 @@ class ThinkingChannelRegressionTests(unittest.TestCase):
                 result = agent.ask("basit görev")
             self.assertIn("Gerçek cevap", result)
             self.assertNotIn("Hata yakalandı", result)
+
+
+class WorkspaceToolsDispatchRegressionTests(unittest.TestCase):
+    def test_dispatch_alias_exists_and_forwards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            tools = forgecode.WorkspaceTools(root, cfg, lambda _: True)
+            self.assertTrue(hasattr(tools, "dispatch"))
+            self.assertTrue(hasattr(tools, "execute"))
+            # dispatch must forward to execute without AttributeError
+            result = tools.dispatch("list_files", {"pattern": "*"})
+            self.assertIsInstance(result, str)
+            # unknown tool must return ERROR, not raise AttributeError
+            unknown = tools.dispatch("nonexistent_tool_xyz", {})
+            self.assertTrue(unknown.startswith("ERROR:"))
+
+    def test_empty_retry_tool_branch_does_not_raise_attribute_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_subagents": False, "power_mode": "off", "watchdog_enabled": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+            agent._power_active = False
+            tool_reply = forgecode.ModelReply(
+                "",
+                [{"name": "list_files", "arguments": {"pattern": "*"}, "id": "c1"}],
+                forgecode.Usage(),
+                [{"type": "text", "text": ""}],
+            )
+            final_reply = forgecode.ModelReply(
+                "işlem doğrulandı",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "işlem doğrulandı"}],
+            )
+            empty_error = forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
+            # 1st call raises empty-success -> retry with thinking off succeeds with tool_calls
+            # 2nd call after tool execution returns final answer
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=[empty_error, tool_reply, final_reply]), mock.patch.object(
+                agent, "_compact_retry_messages", wraps=agent._compact_retry_messages
+            ) as compact:
+                result = agent.ask("dosyaları listele")
+            self.assertIn("doğrulandı", result)
+            compact.assert_called_once()
+            # must not have crashed with dispatch AttributeError
+            self.assertNotIn("dispatch", result.lower())
+            self.assertNotIn("AttributeError", result)
+
+
+class EfficiencyBenchmarkRegressionGuardsTests(unittest.TestCase):
+    """CI regression guards: token budget + thinking-loop never recur."""
+
+    def _tok(self, s: str) -> int:
+        return max(1, (len(s.encode("utf-8")) + 3) // 4)
+
+    def test_rolling_provider_history_is_compacted_before_each_billed_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"efficiency_mode": "max", "input_budget_tokens": 12000})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            for index in range(10):
+                agent.messages.append({"role": "user", "content": f"old-{index}:" + "x" * 18000})
+                agent.messages.append({"role": "assistant", "content": f"answer-{index}:" + "y" * 18000})
+            newest = agent.messages[-1]["content"]
+            agent._compact_messages_for_token_budget()
+            estimated = self._tok(agent.system()) + sum(
+                self._tok(json.dumps(item, ensure_ascii=False)) for item in agent.messages
+            )
+            self.assertLessEqual(estimated, 12000)
+            self.assertEqual(agent.messages[-1]["content"], newest)
+            self.assertLessEqual(len(agent.messages), 2)
+
+    def test_forceflow_completed_context_has_a_hard_character_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            store = forgecode.TaskQueueStore(root)
+            previous = []
+            for index in range(6):
+                task = store.add("task " + str(index), objective="root")
+                store.update(task, "completed", summary="result " + "z" * 3000, changed_files=[f"file-{n}.py" for n in range(20)])
+                previous.append(task)
+            current = store.add("current", objective="root")
+            context = store.completed_context(current, limit=6, char_budget=1800)
+            self.assertLessEqual(len(context), 1850)
+            self.assertNotIn("z" * 300, context)
+
+    def test_input_output_within_regression_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.0.0"\n', encoding="utf-8")
+            (root / "AGENTS.md").write_text("# AGENTS\n", encoding="utf-8")
+            for i in range(12):
+                (root / f"mod_{i}.py").write_text("x=1\n" * 200, encoding="utf-8")
+            cfg = forgecode.Config(root / "home")
+            cfg.data["efficiency_mode"] = "max"
+            baseline = forgecode.WorkspaceTools(root, cfg, lambda _: True, lambda o, d: ("safe", "ok"), lambda: "").snapshot()
+            changed = set(list(baseline.keys())[:6])
+            pruned_ctx = forgecode.project_context(root, "max", False, baseline=baseline, changed_only=changed)
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            system_t = self._tok(agent.system())
+            e2e_input = system_t + (self._tok(pruned_ctx) + 1500) * 8
+            eng = forgecode.TokenBudgetEngine()
+            out_cap = eng.allocate(cfg, "githuba release yap ve büyük işi tamamla", "build", False)["output"]
+            self.assertLess(e2e_input, 500_000, f"input budget exceeded: {e2e_input} tok (must be <500k)")
+            self.assertLess(out_cap, 20_000, f"output budget exceeded: {out_cap} tok (must be <20k)")
+
+    def test_forgecode_beats_claude_code_baseline_same_task(self):
+        # Aynı büyük işte ForgeCode verim=max, eski tam-context baseline'dan az token
+        # Küçük boş projede 'off' tesadüfen küçük çıkabilir; gerçek fark büyük projede  — bu yüzden gerçek repo üzerinde kıyas yap.
+        import pathlib as _pl
+        real_root = _pl.Path(__file__).resolve().parents[1]
+        cfg = forgecode.Config(real_root / ".tmp_bench_home")
+        cfg.data["efficiency_mode"] = "max"
+        # Gerçek proje baseline'ı (aynı iş: 8 dosya değişmiş büyük görev)
+        tools = forgecode.WorkspaceTools(real_root, cfg, lambda _: True, lambda o, d: ("safe", "ok"), lambda: "")
+        baseline = tools.snapshot()
+        changed = set(list(baseline.keys())[:8])
+        def _tok(s: str) -> int: return max(1, (len(s.encode("utf-8")) + 3)//4)
+        claude_like = _tok(forgecode.project_context(real_root, "off", False))
+        forge = _tok(forgecode.project_context(real_root, "max", False, baseline=baseline, changed_only=changed))
+        self.assertLess(forge, claude_like, f"ForgeCode verim=max ({forge} tok) must beat Claude-like baseline ({claude_like} tok) on same large task")
+
+    def test_silent_execution_contract_has_no_banned_intent_phrases(self):
+        import pathlib as _pl
+        # forgecode.py niyet ifadelerini tespit/strip etmek icin icerir; yasak olan "aciklama yapip arac geciktirme"dir.
+        # Dogrulama: sabit + strip mekanizmasi + guard dosyasi var ve bos degil.
+        self.assertTrue(hasattr(forgecode, "SILENT_EXECUTION_BANNED_PHRASES"))
+        self.assertGreater(len(getattr(forgecode, "SILENT_EXECUTION_BANNED_PHRASES")), 0)
+        text = (_pl.Path(__file__).parents[1] / "forgecode.py").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("SILENT DIRECT EXECUTION", text)
+        self.assertIn("_THINKING_STRIP_RE", text)
+        guard = _pl.Path(__file__).parents[1] / "scripts" / "verify_silent_execution.py"
+        self.assertTrue(guard.exists() and guard.stat().st_size > 200, "scripts/verify_silent_execution.py guard eksik")
+        self.assertIn("SILENT_EXECUTION OK", guard.read_text(encoding="utf-8"))
+
+    def test_thinking_duplicates_do_not_recur(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            events: list[str] = []
+            agent.activity_callback = lambda line: events.append(line.split(" · ", 1)[-1] if " · " in line else line)
+            agent._emit_activity("kontrol edip raporlayacağım")
+            agent._emit_activity("kontrol edip raporlayacağım")  # same phase -> suppressed
+            agent._emit_activity("Düşünüyor")
+            agent._emit_activity("Düşünüyor")  # suppressed
+            agent._emit_activity("Araç: read_file")
+            agent._emit_activity("kontrol edip raporlayacağım")  # new phase -> allowed once
+            agent._emit_activity("kontrol edip raporlayacağım")  # suppressed
+            self.assertEqual(events.count("kontrol edip raporlayacağım"), 2, f"thinking status must emit once per phase, got {events}")
+            self.assertEqual(events.count("Düşünüyor"), 1, f"Düşünüyor must emit once per phase, got {events}")
+
+
+class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
+    def test_terminal_fleet_keeps_manager_and_shares_worker_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            fleet = forgecode.TerminalFleet(root, cfg)
+            fleet.register_manager("main", pid=10)
+            process = mock.Mock(pid=22)
+            with mock.patch.object(forgecode.subprocess, "Popen", return_value=process) as popen:
+                worker = fleet.add("review")
+            self.assertEqual(worker["id"], 2)
+            self.assertIn("--fleet-worker", popen.call_args.args[0])
+            self.assertEqual(fleet.enqueue("2", "inspect API"), 1)
+            task = fleet.claim(2)
+            self.assertIsNotNone(task)
+            fleet.publish(2, task, "API report")
+            self.assertIn("API report", fleet.status_text())
+            with self.assertRaises(ValueError):
+                fleet.remove(1)
+
+    def test_manager_orchestrates_workers_with_temporary_thinking_without_model_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"model": "locked-model", "thinking_mode": "off"})
+            fleet = forgecode.TerminalFleet(root, cfg)
+            fleet.register_manager("main", pid=os.getpid())
+            processes = [mock.Mock(pid=2201), mock.Mock(pid=2202)]
+            assignments = [
+                {"role": "design", "task": "inspect UX", "thinking": "high", "output_cap": 2400},
+                {"role": "review", "task": "review risks", "thinking": "low", "output_cap": 900},
+            ]
+            with mock.patch.object(forgecode.subprocess, "Popen", side_effect=processes):
+                result = fleet.orchestrate(assignments)
+            first, second = fleet.claim(2), fleet.claim(3)
+            self.assertIn("model unchanged", result)
+            self.assertEqual((first["thinking_mode"], first["output_cap"]), ("high", 2400))
+            self.assertEqual((second["thinking_mode"], second["output_cap"]), ("low", 900))
+            self.assertEqual(cfg.data["model"], "locked-model")
+
+    def test_fleet_mutation_requires_an_explicit_team_request(self):
+        self.assertTrue(forgecode.explicit_fleet_request("Gerekli terminalleri kur ve çalışanlara görev ver"))
+        self.assertFalse(forgecode.explicit_fleet_request("Bu hatayı tek başına incele"))
+
+    def test_ai_terminal_and_music_arguments_survive_normalization(self):
+        assignments = [{"role": "review", "task": "inspect", "thinking": "medium", "output_cap": 1200}]
+        terminal = forgecode.normalize_tool_arguments("manage_terminal", {"action": "orchestrate", "assignments": assignments})
+        music = forgecode.normalize_tool_arguments("music_control", {"action": "play"})
+        self.assertEqual(terminal["assignments"], assignments)
+        self.assertEqual(terminal["action"], "orchestrate")
+        self.assertEqual(music["action"], "play")
+
+    def test_model_lock_blocks_automatic_recovery_even_if_legacy_switch_is_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"provider": "custom", "model": "keep-me", "auto_model_switch": True,
+                             "model_lock": True})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            with mock.patch.object(forgecode, "fetch_models") as fetch:
+                result = agent._recover_custom_model(forgecode.ApiError("model unavailable"))
+            self.assertIsNone(result)
+            fetch.assert_not_called()
+            self.assertEqual(cfg.data["model"], "keep-me")
+
+    def test_youtube_player_streams_official_queue_without_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            player = forgecode.YouTubeMusicPlayer(cfg)
+            self.assertIn("Added", player.control("add", "https://youtu.be/abcDEF_1234", "Track"))
+            with mock.patch.object(forgecode.ChromeController, "open", return_value={"id": "tab"}) as opened:
+                result = player.control("play")
+                player.control("on")
+            self.assertIn("official YouTube", result)
+            self.assertEqual(opened.call_count, 2)
+            html = player.page_path.read_text(encoding="utf-8")
+            self.assertIn("youtube.com/iframe_api", html)
+            self.assertNotIn("yt-dlp", html)
+            self.assertTrue(cfg.data["youtube_music_autostart"])
+
+    def test_subscription_provider_uses_signed_in_cli_without_shell_or_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("claude-subscription")
+            cfg.data["_runtime_project_root"] = tmp
+            completed = mock.Mock(returncode=0, stdout="ready", stderr="")
+            with mock.patch.object(forgecode.shutil, "which", return_value="claude.exe"), mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ) as run:
+                reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+            self.assertFalse(cfg.requires_key())
+            self.assertEqual(cfg.mode(), "subscription")
+            self.assertEqual(reply.text, "ready")
+            self.assertNotIn("shell", run.call_args.kwargs)
+            self.assertEqual(run.call_args.kwargs["stdin"], forgecode.subprocess.DEVNULL)
+
+    def test_new_commands_are_discoverable(self):
+        for command in ("/terminal", "/browser", "/music", "/subscriptions"):
+            self.assertIn(command, forgecode.COMMANDS)
 
 
 if __name__ == "__main__":

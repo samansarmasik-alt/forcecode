@@ -2,6 +2,21 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.13.0] - 2026-08-08
+
+### Added
+
+- Added a persistent four-terminal fleet: terminal 1 is the permanent manager/design director, while `/terminal add`, `remove`, `task`, and `status` control up to three visible read-only workers with shared reports.
+- Added one-call fleet orchestration so an explicitly authorized manager can create/reuse one to three workers, distribute independent tasks, and apply per-worker temporary thinking/output budgets.
+- Added dependency-free Chrome DevTools controls and AI tools for opening, reading, clicking, and typing in an isolated local Chrome profile without accessing cookies or browser storage.
+- Added a streaming-only YouTube queue with AI-assisted search, ordered playback, startup playback, and official iframe controls. Media is never downloaded and ads are not bypassed.
+- Added official CLI subscription bridges for Claude, Codex, Cline, and Gemini. They reuse vendor-managed sign-in without copying tokens or credentials and run in advisory/read-only mode.
+
+### Fixed
+
+- Subscription replies now use chat-style history records instead of corrupting the transcript by extending it with dictionary keys.
+- Automatic model recovery now respects a default-on `model_lock`; managers and workers cannot change the provider or model unless the user explicitly selects one.
+
 ## [7.12.12] - 2026-08-08
 
 ### Fixed

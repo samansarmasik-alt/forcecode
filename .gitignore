@@ -32,6 +32,17 @@ out/
 *.class
 *.egg-info/
 
+# Local AI/MCP integrations and generated code intelligence
+graphify-out/
+.claude/
+.codex/
+.mcp.json
+
+# Local reproduction and cost-analysis artifacts
+repro_*.py
+repro_*.jsonl
+docs/TOKEN_*.md
+
 # Editors and operating systems
 .idea/
 .vscode/

@@ -30,3 +30,31 @@ Use concise, imperative commits such as `fix: preserve streamed tool output` or 
 ## Security & Agent Instructions
 
 Never commit API keys, `.forgecode/`, `.force/`, logs, or `force-memory-export.json`. Keep changes scoped, preserve existing Python/BAT behavior, and update documentation plus tests whenever commands or configuration change.
+
+<!-- vi3ecode:plugin:graphify:guidance:begin -->
+## Graphify code intelligence (active)
+
+The `vi3ecode-graphify` MCP server serves this project's code graph: modules,
+dependencies, communities, and PR impact. Tools: query_graph, get_node,
+get_neighbors, get_community, shortest_path, god_nodes, graph_stats, list_prs,
+get_pr_impact, triage_prs. If your harness defers or hides MCP tools, load them
+first (tool search for "graphify") instead of assuming they are missing.
+
+Make the graph your first investigation step, not a fallback:
+- Before any repo-wide text search (grep/glob over unknown files), run
+  query_graph on the symbol or path, then get_neighbors for its callers and
+  dependents.
+- Before editing a module others may import — including while fixing a failing
+  test or reviewing a diff — check get_neighbors to scope the blast radius; use
+  get_pr_impact or triage_prs for branch/PR-level work.
+- For architecture, ownership, or "where does X live" questions, start from
+  query_graph, get_community, god_nodes, or graph_stats.
+
+Treat graph results as a map: verify the relevant source files before editing
+because source code remains authoritative. Skip the graph only when the task
+already names the exact files and nothing else depends on the lines you change.
+If you finish a multi-file task without a single Graphify query, state in one
+line why the graph was not needed. If the server is unavailable or stale,
+continue from source and say so. Never run Graphify build or update commands
+yourself; Vi3ecode owns graph maintenance.
+<!-- vi3ecode:plugin:graphify:guidance:end -->
