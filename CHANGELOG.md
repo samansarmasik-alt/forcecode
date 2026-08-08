@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.13.1] - 2026-08-08
+
+### Fixed
+
+- Fixed the Cline subscription bridge to use Cline CLI's documented headless JSON contract, explicit no-auto-approval plan mode, and visible-message extraction. Added `/subscriptions setup cline` to open the official `cline auth` flow before `/subscriptions use cline` and `/test`.
+
 ## [7.13.0] - 2026-08-08
 
 ### Added

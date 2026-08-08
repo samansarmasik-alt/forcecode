@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.13.0-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.13.1-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
@@ -268,7 +268,7 @@ The streaming music queue uses the official YouTube iframe player and never down
 
 `/music on` enables startup playback when a queue exists. ForceCode does not block or bypass YouTube ads; an ad-free session requires the user's own YouTube Premium account.
 
-Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only; install and authenticate the vendor CLI separately, then verify it with `/test`.
+Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. For Cline, run `/subscriptions setup cline` once to launch the official `cline auth` wizard, then `/subscriptions use cline` and `/test`. Cline runs in safe plan mode with `--json` output; ForgeCode extracts its visible `say.text` responses instead of exposing JSON events. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only.
 
 Request history is also kept under a rolling input budget (`input_budget_tokens`, default 24,000; `efficiency=max` caps it at 12,000). Old tool rounds are compacted before the next billed API request, and empty-response retries use a reduced transcript.
 

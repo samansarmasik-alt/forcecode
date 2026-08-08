@@ -5684,6 +5684,26 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             self.assertNotIn("shell", run.call_args.kwargs)
             self.assertEqual(run.call_args.kwargs["stdin"], forgecode.subprocess.DEVNULL)
 
+    def test_cline_subscription_uses_safe_json_headless_contract_and_extracts_visible_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("cline-subscription")
+            completed = mock.Mock(
+                returncode=0,
+                stdout='{"type":"say","text":"draft","partial":true}\n{"type":"say","text":"Cline hazır"}\n',
+                stderr="",
+            )
+            with mock.patch.object(forgecode.shutil, "which", return_value="cline.exe"), mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ) as run:
+                reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+            command = run.call_args.args[0]
+            self.assertEqual(reply.text, "Cline hazır")
+            self.assertIn("--json", command)
+            self.assertIn("--plan", command)
+            self.assertIn("--auto-approve", command)
+            self.assertIn("false", command)
+
     def test_new_commands_are_discoverable(self):
         for command in ("/terminal", "/browser", "/music", "/subscriptions"):
             self.assertIn(command, forgecode.COMMANDS)

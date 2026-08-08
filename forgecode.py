@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.13.0"
+VERSION = "7.13.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -210,7 +210,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     # call the vendor's already-authenticated official CLI as a child process.
     "claude-subscription": {"label": "Claude subscription (official CLI)", "mode": "subscription", "url": "", "model": "claude-subscription", "env": "", "key": False, "command": ["claude", "-p", "--output-format", "text", "--permission-mode", "plan"]},
     "codex-subscription": {"label": "ChatGPT/Codex subscription (official CLI)", "mode": "subscription", "url": "", "model": "codex-subscription", "env": "", "key": False, "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"]},
-    "cline-subscription": {"label": "Cline subscription (official CLI)", "mode": "subscription", "url": "", "model": "cline-subscription", "env": "", "key": False, "command": ["cline", "-p"]},
+    "cline-subscription": {"label": "Cline subscription (official CLI)", "mode": "subscription", "url": "", "model": "cline-subscription", "env": "", "key": False, "command": ["cline", "--json", "--auto-approve", "false", "--plan"], "output": "jsonl", "setup": ["cline", "auth"]},
     "gemini-subscription": {"label": "Gemini subscription (official CLI)", "mode": "subscription", "url": "", "model": "gemini-subscription", "env": "", "key": False, "command": ["gemini", "-p"]},
 }
 
@@ -2533,12 +2533,30 @@ class SubscriptionCLIProvider(Provider):
         if completed.returncode != 0:
             detail = redact_sensitive((completed.stderr or completed.stdout).strip())[:1200]
             raise ApiError(f"Subscription CLI failed ({command[0]}, exit {completed.returncode}): {detail}")
-        text = completed.stdout.strip()
+        text = self._visible_output(preset, completed.stdout)
         if not text:
             raise ApiError(f"Subscription CLI returned no visible response: {command[0]}")
         if on_text:
             on_text(text)
         return ModelReply(text, [], Usage(0, 0, 0, 1), {"role": "assistant", "content": text})
+
+    @staticmethod
+    def _visible_output(preset: dict[str, Any], raw: str) -> str:
+        """Extract final visible text from vendor CLIs without exposing JSON traces."""
+        if preset.get("output") != "jsonl":
+            return raw.strip()
+        messages: list[str] = []
+        for line in raw.splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict) or item.get("type") != "say" or item.get("partial"):
+                continue
+            value = str(item.get("text") or "").strip()
+            if value and (not messages or messages[-1] != value):
+                messages.append(value)
+        return "\n".join(messages).strip()
 
 
 def make_provider(cfg: Config) -> Provider:
@@ -13654,7 +13672,7 @@ def subscription_status_text(cfg: Config) -> str:
         installed = bool(shutil.which(command))
         active = "*" if cfg.data.get("provider") == slug else " "
         rows.append(f" {active} {name:<7} · {'hazır' if installed else 'CLI bulunamadı'} · {command}")
-    rows.append("Kullanım: /subscriptions use <claude|codex|cline|gemini> · ardından /test")
+    rows.append("Kullanım: /subscriptions setup <cline> | use <claude|codex|cline|gemini> | ardından /test")
     return "\n".join(rows)
 
 
@@ -15493,7 +15511,22 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f"{C.RED}YouTube müzik: {exc}{C.RESET}")
     elif cmd == "/subscriptions":
         arguments = line[len(parts[0]):].strip().split()
-        if len(arguments) >= 2 and arguments[0].casefold() == "use":
+        if len(arguments) >= 2 and arguments[0].casefold() == "setup":
+            selected = SUBSCRIPTION_PROVIDERS.get(arguments[1].casefold())
+            preset = PROVIDERS.get(selected or "", {})
+            setup = [str(part) for part in preset.get("setup", [])]
+            if not selected or not setup:
+                print("Bu abonelik için otomatik kurulum yok. Kullanım: /subscriptions setup cline")
+            elif not shutil.which(setup[0]):
+                print(f"{C.YELLOW}{setup[0]} CLI bulunamadı. Önce resmî Cline CLI'ını kurun.{C.RESET}")
+            else:
+                print("Cline kimlik doğrulaması açılıyor; tamamlayınca bu terminale dönün.")
+                try:
+                    code = subprocess.run(setup, cwd=str(agent.root), check=False).returncode
+                    print("Cline kurulumu tamamlandı. /subscriptions use cline ve /test çalıştırın." if code == 0 else f"Cline auth çıkış kodu: {code}")
+                except OSError as exc:
+                    print(f"{C.RED}Cline auth başlatılamadı: {exc}{C.RESET}")
+        elif len(arguments) >= 2 and arguments[0].casefold() == "use":
             selected = SUBSCRIPTION_PROVIDERS.get(arguments[1].casefold())
             if not selected:
                 print("Kullanım: /subscriptions use <claude|codex|cline|gemini>")
