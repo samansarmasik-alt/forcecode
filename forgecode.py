@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.15.0"
+VERSION = "7.15.1"
 
 _UI_LANGUAGE = "tr"
 
@@ -13358,8 +13358,48 @@ class LiveStreamTerminal:
         self.input_active = False
         self._direct = not (ANSI and sys.stdout.isatty())
 
+    def _dashboard_v2(self) -> None:
+        if not self.agent or self._direct:
+            return
+        try:
+            width, height = os.get_terminal_size().columns, os.get_terminal_size().lines
+        except OSError:
+            return
+        if width < 64 or height < 14:
+            return
+        left, right = max(40, width - 31), 28
+        def fit(value: object, size: int) -> str:
+            return safe_terminal_text(str(value)).replace("\n", " ")[:size].ljust(size)
+        fleet = {int(row.get("id", 0)): row for row in TerminalFleet(self.agent.root, self.agent.cfg).state().get("terminals", []) if isinstance(row, dict)}
+        activity = self.agent.activity_lines[-max(3, min(8, height - 10)):]
+        stream = single_line_stream_preview(self._current, left - 6) if self._started else "Ready - describe a task or use /help"
+        sys.stdout.write("\033[2J\033[H")
+        brand = f"  FORGECODE {VERSION}"
+        meta = f"{self.agent.cfg.data['provider']}/{self.agent.cfg.data['model']}  |  {self.agent.session_name}  |  ${self.agent.session_cost_usd:.4f}"
+        sys.stdout.write(f"{C.BOLD}{C.CYAN}{fit(brand, left)}{C.RESET}   {C.DIM}{fit('AGENT FLEET', right)}{C.RESET}\n")
+        sys.stdout.write(f"{C.DIM}{fit('  '+meta, left)}   {fit('● T1  manager  online', right)}{C.RESET}\n")
+        sys.stdout.write(f"{C.DIM}{fit('  '+('─'*(left-4)), left)}   {'─'*right}{C.RESET}\n")
+        for index in range(max(len(activity), 4)):
+            worker_id = index + 2
+            worker = fleet.get(worker_id, {})
+            if worker_id > 4:
+                worker_text = ""
+            elif not worker:
+                worker_text = f"○ T{worker_id}  available"
+            else:
+                mode = "window" if worker.get("visible") else "headless"
+                worker_text = f"● T{worker_id}  {worker.get('role','worker')}  {worker.get('status','ready')}  {mode}"
+            line = activity[index] if index < len(activity) else (stream if index == 0 else "")
+            sys.stdout.write(f"{fit('  '+('› ' if line else '')+line, left)}   {C.DIM}{fit(worker_text, right)}{C.RESET}\n")
+        sys.stdout.write(f"{C.DIM}{fit('  '+('─'*(left-4)), left)}   {'─'*right}{C.RESET}\n")
+        queue = "".join(self.prompt_queue.buffer) or "type to steer  |  /queue to enqueue"
+        sys.stdout.write(f"{C.BOLD}{C.CYAN}  ASK > {C.RESET}{fit(queue, width-8)}\n")
+        sys.stdout.write(f"{C.DIM}  F2 mode   F3 think   F5 efficiency   /terminal   /music   /help{C.RESET}\n")
+        sys.stdout.flush()
+
     def dashboard(self) -> None:
         """Render a persistent two-column command center, never a one-off banner."""
+        return self._dashboard_v2()
         if not self.agent or self._direct:
             return
         try:

@@ -3373,6 +3373,25 @@ class StreamingAndModelMenuTests(unittest.TestCase):
             renderer.finish()
         self.assertIn("düşünme ›", output.getvalue())
 
+    def test_command_center_renders_compact_fleet(self):
+        class TtyBuffer(io.StringIO):
+            def isatty(self):
+                return True
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            output = TtyBuffer()
+            terminal_size = os.terminal_size((100, 24))
+            with mock.patch.object(forgecode, "ANSI", True), mock.patch.object(
+                forgecode.os, "get_terminal_size", return_value=terminal_size
+            ), mock.patch.object(sys, "stdout", output):
+                forgecode.LiveStreamTerminal(forgecode.QueuedPromptInput(render=False), agent).dashboard()
+            rendered = output.getvalue()
+            self.assertIn("AGENT FLEET", rendered)
+            self.assertIn("T2  available", rendered)
+            self.assertIn("ASK >", rendered)
+
     def test_system_prompt_reserves_one_final_response_after_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

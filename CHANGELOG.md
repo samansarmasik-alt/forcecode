@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.15.1] - 2026-08-08
+
+### Changed
+
+- Redesigned the Command Center with a quieter SaaS-style hierarchy: dominant work feed, compact persistent fleet rail, restrained separators, clean prompt dock, and responsive support down to 64 terminal columns.
+
 ## [7.15.0] - 2026-08-08
 
 ### Added
