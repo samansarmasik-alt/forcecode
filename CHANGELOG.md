@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.13.4] - 2026-08-08
+
+### Added
+
+- Terminal fleet workers now run headless by default, keep their shared manager status, and can be opened visibly only on explicit request with `/terminal add <role> visible`.
+
 ## [7.13.3] - 2026-08-08
 
 ### Fixed

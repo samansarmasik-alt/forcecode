@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.13.3"
+VERSION = "7.13.4"
 
 _UI_LANGUAGE = "tr"
 
@@ -2903,6 +2903,7 @@ def normalize_tool_arguments(name: str, args: Any) -> dict[str, Any]:
             "action": str(source.get("action") or "status").strip().lower(),
             "terminal": str(source.get("terminal") or ""),
             "role": str(source.get("role") or "explore"),
+            "visible": bool(source.get("visible", False)),
             "task": str(source.get("task") or ""),
             "thinking": str(source.get("thinking") or ""),
             "output_cap": int(source.get("output_cap") or 0),
@@ -6952,7 +6953,7 @@ class WorkspaceTools:
         """Backward-compatible alias — hiçbir yolda AttributeError üretmez."""
         return self.execute(name, args)
 
-    def tool_manage_terminal(self, action: str, terminal: str = "", role: str = "explore", task: str = "",
+    def tool_manage_terminal(self, action: str, terminal: str = "", role: str = "explore", visible: bool = False, task: str = "",
                              thinking: str = "", output_cap: int = 0,
                              assignments: list[dict[str, Any]] | None = None) -> str:
         fleet = TerminalFleet(self.root, self.cfg)
@@ -6967,7 +6968,7 @@ class WorkspaceTools:
             if not approved:
                 return rejection
         if action == "add":
-            item = fleet.add(role)
+            item = fleet.add(role, visible=visible)
             return f"Terminal {item['id']} opened · role {item['role']} · pid {item['pid']}"
         if action == "remove":
             return "Stop requested" if fleet.remove(int(terminal)) else "Terminal not found"
@@ -10475,7 +10476,7 @@ class TerminalFleet:
                           "terminals": [manager, *workers[: self.MAX_TERMINALS - 1]]})
             self._save(state)
 
-    def add(self, role: str = "explore") -> dict[str, Any]:
+    def add(self, role: str = "explore", visible: bool = False) -> dict[str, Any]:
         role = normalize_subagent_role(role, fallback="explore")
         with self._thread_lock, self._file_lock():
             state = self.state()
@@ -10487,11 +10488,15 @@ class TerminalFleet:
             command = [sys.executable, str(pathlib.Path(__file__).resolve()), str(self.root),
                        "--fleet-worker", str(terminal_id), "--session", session]
             kwargs: dict[str, Any] = {"cwd": str(self.root)}
-            if os.name == "nt":
+            if visible and os.name == "nt":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+            elif not visible:
+                kwargs.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+                if os.name == "nt":
+                    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             process = subprocess.Popen(command, **kwargs)
             record = {"id": terminal_id, "role": role, "session": session, "pid": process.pid,
-                      "status": "starting", "queue": [], "reports": [], "stop_requested": False,
+                      "status": "starting", "visible": bool(visible), "queue": [], "reports": [], "stop_requested": False,
                       "thinking_mode": str(self.cfg.data.get("thinking_mode", "off")), "output_cap": 1800}
             state["terminals"].append(record)
             self._save(state)
@@ -15490,7 +15495,8 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             if action in {"status", "list"}:
                 print(fleet.status_text())
             elif action == "add":
-                record = fleet.add(arguments[1] if len(arguments) > 1 else "explore")
+                visible = len(arguments) > 2 and arguments[2].casefold() in {"visible", "ekranli", "ekranlı"}
+                record = fleet.add(arguments[1] if len(arguments) > 1 else "explore", visible=visible)
                 print(f"{C.GREEN}Terminal {record['id']} açılıyor:{C.RESET} {record['role']} · pid {record['pid']}")
             elif action == "remove" and len(arguments) > 1:
                 removed = fleet.remove(int(arguments[1]))

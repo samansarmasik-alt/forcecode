@@ -5599,7 +5599,9 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             with mock.patch.object(forgecode.subprocess, "Popen", return_value=process) as popen:
                 worker = fleet.add("review")
             self.assertEqual(worker["id"], 2)
+            self.assertFalse(worker["visible"])
             self.assertIn("--fleet-worker", popen.call_args.args[0])
+            self.assertEqual(popen.call_args.kwargs["stdout"], forgecode.subprocess.DEVNULL)
             self.assertEqual(fleet.enqueue("2", "inspect API"), 1)
             task = fleet.claim(2)
             self.assertIsNotNone(task)
