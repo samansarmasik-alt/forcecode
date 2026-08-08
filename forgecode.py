@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.14.0"
+VERSION = "7.15.0"
 
 _UI_LANGUAGE = "tr"
 
@@ -13347,8 +13347,9 @@ class QueuedPromptInput:
 class LiveStreamTerminal:
     """Show streamed drafts transiently; commit only the final Agent answer."""
 
-    def __init__(self, prompt_queue: QueuedPromptInput):
+    def __init__(self, prompt_queue: QueuedPromptInput, agent: Agent | None = None):
         self.prompt_queue = prompt_queue
+        self.agent = agent
         self._lock = threading.RLock()
         self._current = ""
         self._started = False
@@ -13356,6 +13357,41 @@ class LiveStreamTerminal:
         self.streamed_any = False
         self.input_active = False
         self._direct = not (ANSI and sys.stdout.isatty())
+
+    def dashboard(self) -> None:
+        """Render a persistent two-column command center, never a one-off banner."""
+        if not self.agent or self._direct:
+            return
+        try:
+            width, height = os.get_terminal_size().columns, os.get_terminal_size().lines
+        except OSError:
+            return
+        if width < 80 or height < 18:
+            return
+        left, right = max(48, width * 2 // 3), width - max(48, width * 2 // 3) - 3
+        def fit(value: object, size: int) -> str:
+            return safe_terminal_text(str(value)).replace("\n", " ")[:size].ljust(size)
+        fleet = {int(row.get("id", 0)): row for row in TerminalFleet(self.agent.root, self.agent.cfg).state().get("terminals", []) if isinstance(row, dict)}
+        activity = self.agent.activity_lines[-max(3, min(7, height - 13)):]
+        stream = single_line_stream_preview(self._current, left - 6) if self._started else "Ready — describe a task or use /help"
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write(f"{C.CYAN}╔{'═'*left}╤{'═'*right}╗{C.RESET}\n")
+        sys.stdout.write(f"{C.CYAN}║{C.RESET}{fit(' FORGECODE // COMMAND CENTER', left)}{C.CYAN}│{C.RESET}{fit(' LIVE TERMINALS', right)}{C.CYAN}║{C.RESET}\n")
+        connection = f" {self.agent.cfg.data['provider']}/{self.agent.cfg.data['model']}  ·  ${self.agent.session_cost_usd:.4f}  ·  {self.agent.session_name}"
+        sys.stdout.write(f"{C.CYAN}║{C.RESET}{fit(connection, left)}{C.CYAN}│{C.RESET}{fit(' T1  MANAGER  ·  ONLINE', right)}{C.CYAN}║{C.RESET}\n")
+        sys.stdout.write(f"{C.CYAN}╟{'─'*left}┼{'─'*right}╢{C.RESET}\n")
+        for index in range(max(len(activity), 4)):
+            worker_id = index + 2
+            worker = fleet.get(worker_id, {})
+            worker_text = '' if worker_id > 4 else ('EMPTY · /terminal add <role>' if not worker else f"{worker.get('role','worker')} · {worker.get('status','ready')} · {'VISIBLE' if worker.get('visible') else 'HEADLESS'}")
+            line = activity[index] if index < len(activity) else (stream if index == 0 else '')
+            sys.stdout.write(f"{C.CYAN}║{C.RESET}{fit(' ' + line, left)}{C.CYAN}│{C.RESET}{fit(' T'+str(worker_id)+'  '+worker_text, right)}{C.CYAN}║{C.RESET}\n")
+        sys.stdout.write(f"{C.CYAN}╟{'─'*left}┼{'─'*right}╢{C.RESET}\n")
+        queue = ''.join(self.prompt_queue.buffer) or 'type to steer · /queue to enqueue'
+        sys.stdout.write(f"{C.CYAN}║{C.RESET}{fit(' INPUT  '+queue, width)}{C.CYAN}║{C.RESET}\n")
+        sys.stdout.write(f"{C.CYAN}║{C.RESET}{fit(' F2 mode · F3 think · F5 efficiency · /music · /terminal · /dashboard', width)}{C.CYAN}║{C.RESET}\n")
+        sys.stdout.write(f"{C.CYAN}╚{'═'*width}╝{C.RESET}\n")
+        sys.stdout.flush()
 
     def _erase(self) -> None:
         if not (ANSI and sys.stdout.isatty() and self._transient_lines):
@@ -13366,6 +13402,9 @@ class LiveStreamTerminal:
         self._transient_lines = 0
 
     def _render(self) -> None:
+        if self.agent and not self._direct:
+            self.dashboard()
+            return
         if not self._started and not self.input_active:
             return
         # This is visible draft/progress text, not hidden chain-of-thought and
@@ -13462,6 +13501,11 @@ class LiveStreamTerminal:
             if self._direct:
                 self._current = ""
                 self._started = False
+                return
+            if self.agent and not self._direct:
+                self._current = ""
+                self._started = False
+                self.dashboard()
                 return
             if self._started:
                 self._erase()
@@ -16567,7 +16611,7 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
     fleet = TerminalFleet(root, cfg)
     fleet.register_manager(agent.session_name)
     prompt_queue = QueuedPromptInput(render=False)
-    renderer = LiveStreamTerminal(prompt_queue)
+    renderer = LiveStreamTerminal(prompt_queue, agent)
     prompt_queue.on_change = renderer.refresh
     prompt_queue.on_commit = renderer.notice
     prompt_queue.on_steer = renderer.steer_notice
@@ -16577,7 +16621,7 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
     def show_activity(activity_line: str) -> None:
         renderer.activity(activity_line)
     agent.activity_callback = show_activity
-    print_banner(root, cfg, agent.session_name)
+    renderer.dashboard()
     if cfg.data.get("youtube_music_autostart", False):
         try:
             music_state = YouTubeMusicPlayer(cfg).state()

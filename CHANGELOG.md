@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.15.0] - 2026-08-08
+
+### Added
+
+- Rebuilt the interactive terminal renderer as a persistent full-screen Command Center. Live activity, stream state, input guidance, session connection data, and manager/three-worker fleet cards now redraw together instead of appearing as a startup banner.
+
 ## [7.14.0] - 2026-08-08
 
 ### Added
