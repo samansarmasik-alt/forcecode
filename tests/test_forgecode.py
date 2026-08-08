@@ -5668,6 +5668,22 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             self.assertNotIn("yt-dlp", html)
             self.assertTrue(cfg.data["youtube_music_autostart"])
 
+    def test_chrome_controller_uses_loopback_devtools_origin_and_reads_fragmented_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            controller = forgecode.ChromeController(cfg)
+            process = mock.Mock()
+            with mock.patch.object(controller, "_chrome", return_value="chrome.exe"), mock.patch.object(
+                controller, "_json", side_effect=[OSError("not running"), {"Browser": "Chrome"}]
+            ), mock.patch.object(forgecode.subprocess, "Popen", return_value=process) as popen:
+                self.assertEqual(controller.ensure(), "started")
+            command = popen.call_args.args[0]
+            self.assertIn("--remote-debugging-address=127.0.0.1", command)
+            self.assertIn("--remote-allow-origins=http://127.0.0.1:9222", command)
+        sock = mock.Mock()
+        sock.recv.side_effect = [b"ab", b"c", b""]
+        self.assertEqual(forgecode.ChromeController._recv_exact(sock, 3), b"abc")
+
     def test_subscription_provider_uses_signed_in_cli_without_shell_or_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = forgecode.Config(pathlib.Path(tmp))

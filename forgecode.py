@@ -66,7 +66,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.13.2"
+VERSION = "7.13.3"
 
 _UI_LANGUAGE = "tr"
 
@@ -10670,7 +10670,8 @@ class ChromeController:
                 raise ValueError("Chrome was not found. Install Chrome or add it to PATH.")
             profile = self.cfg.home / "chrome-control-profile"
             profile.mkdir(parents=True, exist_ok=True)
-            subprocess.Popen([executable, f"--remote-debugging-port={self.port}",
+            subprocess.Popen([executable, f"--remote-debugging-address={self.host}",
+                f"--remote-debugging-port={self.port}", f"--remote-allow-origins=http://{self.host}:{self.port}",
                 f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check", "about:blank"])
             for _ in range(30):
                 time.sleep(0.1)
@@ -10693,42 +10694,69 @@ class ChromeController:
         return self._json("/json/new?" + urllib.parse.quote(url, safe=""), method="PUT")
 
     @staticmethod
+    def _recv_exact(sock: socket.socket, size: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                raise ValueError("Chrome DevTools connection closed")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
     def _ws_call(ws_url: str, method: str, params: dict[str, Any] | None = None) -> Any:
         parsed = urllib.parse.urlsplit(ws_url)
         sock = socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 80), timeout=5)
-        key = base64.b64encode(os.urandom(16)).decode("ascii")
-        request = (f"GET {parsed.path}?{parsed.query} HTTP/1.1\r\nHost: {parsed.netloc}\r\nUpgrade: websocket\r\n"
-                   f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
-        sock.sendall(request.encode("ascii"))
-        header = b""
-        while b"\r\n\r\n" not in header:
-            header += sock.recv(4096)
-        if b" 101 " not in header.split(b"\r\n", 1)[0]:
+        try:
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            request = (f"GET {parsed.path}?{parsed.query} HTTP/1.1\r\nHost: {parsed.netloc}\r\nUpgrade: websocket\r\n"
+                       f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                       f"Origin: http://{parsed.hostname or '127.0.0.1'}:{parsed.port or 80}\r\n\r\n")
+            sock.sendall(request.encode("ascii"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                header += ChromeController._recv_exact(sock, 1)
+            status = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+            if " 101 " not in status:
+                raise ValueError(f"Chrome DevTools WebSocket handshake failed: {status[:240]}")
+
+            def send_frame(opcode: int, payload: bytes) -> None:
+                mask = os.urandom(4)
+                size = len(payload)
+                if size < 126:
+                    prefix = bytes([0x80 | opcode, 0x80 | size])
+                elif size <= 0xFFFF:
+                    prefix = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", size)
+                else:
+                    prefix = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack("!Q", size)
+                sock.sendall(prefix + mask + bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload)))
+
+            payload = json.dumps({"id": 1, "method": method, "params": params or {}}).encode("utf-8")
+            send_frame(0x1, payload)
+            while True:
+                first = ChromeController._recv_exact(sock, 2)
+                opcode, length = first[0] & 0x0F, first[1] & 0x7F
+                if length == 126:
+                    length = struct.unpack("!H", ChromeController._recv_exact(sock, 2))[0]
+                elif length == 127:
+                    length = struct.unpack("!Q", ChromeController._recv_exact(sock, 8))[0]
+                data = ChromeController._recv_exact(sock, length)
+                if opcode == 0x9:  # ping
+                    send_frame(0xA, data)
+                    continue
+                if opcode == 0x8:
+                    raise ValueError("Chrome DevTools closed the WebSocket")
+                if opcode != 0x1:
+                    continue
+                message = json.loads(data.decode("utf-8", errors="replace"))
+                if message.get("id") == 1:
+                    if message.get("error"):
+                        raise ValueError(str(message["error"]))
+                    return message.get("result", {})
+        finally:
             sock.close()
-            raise ValueError("Chrome DevTools WebSocket handshake failed")
-        payload = json.dumps({"id": 1, "method": method, "params": params or {}}).encode("utf-8")
-        mask = os.urandom(4)
-        size = len(payload)
-        prefix = bytes([0x81, 0x80 | size]) if size < 126 else bytes([0x81, 0x80 | 126]) + struct.pack("!H", size)
-        sock.sendall(prefix + mask + bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload)))
-        while True:
-            first = sock.recv(2)
-            if len(first) < 2:
-                raise ValueError("Chrome DevTools connection closed")
-            length = first[1] & 0x7F
-            if length == 126:
-                length = struct.unpack("!H", sock.recv(2))[0]
-            elif length == 127:
-                length = struct.unpack("!Q", sock.recv(8))[0]
-            data = b""
-            while len(data) < length:
-                data += sock.recv(length - len(data))
-            message = json.loads(data.decode("utf-8", errors="replace"))
-            if message.get("id") == 1:
-                sock.close()
-                if message.get("error"):
-                    raise ValueError(str(message["error"]))
-                return message.get("result", {})
 
     def evaluate(self, expression: str, tab_id: str = "") -> Any:
         tabs = self.tabs()

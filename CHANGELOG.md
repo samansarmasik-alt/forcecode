@@ -2,6 +2,12 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [7.13.3] - 2026-08-08
+
+### Fixed
+
+- Hardened Chrome DevTools control for the music player and browser tools: explicit loopback/origin setup, fragmented WebSocket reads, ping handling, large frames, deterministic cleanup, and diagnostic handshake status.
+
 ## [7.13.2] - 2026-08-08
 
 ### Fixed
