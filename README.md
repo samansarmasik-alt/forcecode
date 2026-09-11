@@ -12,7 +12,7 @@ A local-first terminal coding agent that can understand a project, edit real fil
 
 **22+ providers · local models · custom APIs · isolated execution · verified results**
 
-[![Version](https://img.shields.io/badge/version-7.15.1-8b7cff?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-8.0.0a2-8b7cff?style=for-the-badge)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-66dfff?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11-4f8cff?style=for-the-badge&logo=windows11&logoColor=white)](#quick-start)
 [![License](https://img.shields.io/badge/license-MIT-65f0a5?style=for-the-badge)](LICENSE)
@@ -75,6 +75,23 @@ Most coding assistants stop after producing plausible code. ForceCode is built a
 | Stops at failure | Debugs, repairs, retries, and reports evidence |
 
 <img src="docs/assets/feature-atlas.svg" alt="ForceCode capability atlas showing twelve coordinated product systems" width="100%" />
+
+---
+
+## Mission Control
+
+ForceCode 8 introduces one control surface over goals, ForceFlow, VibeCode, checkpoints, and verification evidence. A mission keeps its own flow identity, so paused work can be inspected or resumed without consuming tasks from another flow.
+
+```text
+/mission Build and verify the release
+/mission
+/mission list
+/mission show <flow-id>
+/mission resume <flow-id>
+/mission long Build, test, review, and package the complete product
+```
+
+The status view derives an ordered task graph, progress, changed files, and missing verification gates from the existing crash-safe stores. It does not duplicate execution state. See [Mission Control architecture](docs/MISSION_CONTROL.md).
 
 ---
 
@@ -268,9 +285,13 @@ The streaming music queue uses the official YouTube iframe player and never down
 
 `/music on` enables startup playback when a queue exists. ForceCode does not block or bypass YouTube ads; an ad-free session requires the user's own YouTube Premium account.
 
-Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. For Cline, run `/subscriptions setup cline` once to launch the official `cline auth` wizard, then `/subscriptions use cline` and `/test`. Cline runs in safe plan mode with `--json` output; ForgeCode extracts its visible `say.text` responses instead of exposing JSON events. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only.
+Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. Run `/subscriptions setup <provider>` to start the provider's official sign-in flow: Claude uses `claude auth login`, Codex uses `codex login`, and Cline uses `cline auth`. Claude subscription mode deliberately ignores only conflicting Anthropic API environment variables in its child process, so it uses the signed-in subscription rather than a metered API key; your environment is never changed. Cline runs in safe plan mode with `--json` output; ForgeCode extracts its visible `say.text` responses instead of exposing JSON events. On Windows, common official CLI install locations are also detected when the terminal has an outdated PATH. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only.
 
-Request history is also kept under a rolling input budget (`input_budget_tokens`, default 24,000; `efficiency=max` caps it at 12,000). Old tool rounds are compacted before the next billed API request, and empty-response retries use a reduced transcript.
+For subscription-backed model selection, `/model` now offers Claude's `default`, `sonnet`, `opus`, and `haiku` aliases and passes the chosen alias to the official Claude CLI for that request. Cline and Codex keep the model selected by their own setup unless you explicitly set a valid model ID with `/model <model-id>`; the ID is then passed to the official CLI for that request.
+
+Transient provider errors (timeouts, 429/5xx, temporary capacity, connection resets, and equivalent official-CLI errors) are retried at most twice with compacted context and exponential backoff. Permanent authentication, model, and request errors are not retried, so a bad provider configuration cannot create a retry loop.
+
+Request history is kept under a rolling input budget (`input_budget_tokens`, default 48,000; `efficiency=max` caps it at 12,000) and the model sees its full recent working history instead of a short turn window. Old tool rounds are compacted before the next billed API request, individual tool results are preserved up to ~16k characters, and empty-response retries keep a meaningful working tail rather than collapsing to the last messages.
 
 ---
 
@@ -431,13 +452,13 @@ Skill Scout can search the public skills.sh catalog using generic project labels
 | Provider setup | `/providers`, `/provider`, `/subscriptions`, `/key`, `/models`, `/model`, `/test` |
 | Custom APIs | `/connect`, `/protocol`, `/route`, `/endpoint`, `/profiles` |
 | Safety | `/autopilot smart\|on\|off`, `/sandbox`, `/doctor`, `/diagnostics` |
-| Execution | `/plan`, `/debug`, `/confidence`, `/engine` |
+| Execution | `/plan`, `/debug`, `/engine` |
 | Continuity | `/goal`, `/resume`, `/sessions`, `/memory`, `/remember`, `/init` |
 | ForceContext | `/force-context-init`, `/force-context-scan`, `/force-context-update` |
 | Code intelligence | `/graph`, `/impact`, `/review`, `/mcp` |
 | Skills and agents | `/skills`, `/skill`, `/agents`, `/delegate`, `/team`, `/terminal` |
 | Browser and media | `/browser`, `/music` |
-| Long work | `/vibe`, `/watchdog`, `/retry`, `/queue` |
+| Mission work | `/mission`, `/vibe`, `/watchdog`, `/retry`, `/queue` |
 | Visibility | `/status`, `/usage`, `/history`, `/context`, `/activity`, `/dashboard` |
 | Interface | `/language en`, `/language tr`, `/help`, `/clear`, `/exit` |
 
@@ -498,7 +519,7 @@ Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for beha
 
 ## Project status
 
-Current development version: **v7.12.0**
+Current development version: **v8.0.0a2**
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and technical details.
 

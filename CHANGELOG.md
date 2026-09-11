@@ -2,6 +2,107 @@
 
 All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
 
+## [8.0.0a2] - 2026-09-11
+
+### Changed
+
+- Internal refactor: core runtime split into dedicated modules (`forgecode_stores`, `forgecode_providers`, `forgecode_config`, `forgecode_queues`, `forgecode_mcp`, `forgecode_sandbox`, `forgecode_context`, `forgecode_workspace`, `forgecode_base`, `forgecode_skills`). Behavior is unchanged.
+- Release metadata (`pyproject.toml`, README badge and status line) aligned to the runtime `forgecode.VERSION`.
+
+## [8.0.0a1] - 2026-09-04
+
+### Added
+
+- Mission Control: `/mission <hedef>` starts a verified ForceFlow under a stable mission id; `/mission long <hedef>` routes long autonomous work through the existing VibeCode checkpoint engine.
+- `/mission`, `/mission list`, `/mission show <id>`, and `/mission resume <id>` expose an ordered task graph, progress, changed-file evidence, missing verification gates, and flow-specific resume without duplicating queue state.
+- A dependency-free `_forgecode_mission` read-model module provides immutable, bounded mission projections suitable for the terminal today and a Studio client later.
+
+### Changed
+
+- ForceFlow queue execution can be scoped to one `flow_id`, preventing a resumed mission from consuming unresolved tasks owned by another flow.
+- Windows and macOS/Linux installers now deploy the Mission Control runtime module with `forgecode.py`.
+
+## [7.17.1] - 2026-08-23
+
+### Fixed
+
+- "Bakıyorum" ama bakmama hatası: model bir mesajda inceleme niyeti anons edip ("bakıyorum/inceliyorum", "let me check") aynı turda hiç araç çağırmıyorsa artık tur o metinle sonlanmıyor — ajana `ACTION ANNOUNCED BUT NOTHING EXECUTED` düzeltmesi gönderilip tur devam ettiriliyor (en fazla 2 nudge, sonra metin olduğu gibi geçirilir). Yeni `_has_unfulfilled_action_intent` dedektörü yalnızca bitmemiş-eylem kalıplarını (şimdiki zaman/gelecek zaman/emir) yakalar; "kontrol ettim", "checked the logs" gibi kanıta dayalı geçmiş-zaman cevapları asla tetiklemez.
+- SYSTEM_PROMPT'a açık kural eklendi: inceleme anonsu ile araç çağrısı aynı mesajda bulunmalıdır.
+
+## [7.17.0] - 2026-08-22
+
+### Changed
+
+- Agent quality parity pass — the model now keeps its working memory instead of restarting half-blind every few rounds:
+  - Rolling input budget raised from 24,000 to 48,000 tokens (power floor 36k → 64k, `efficiency=off` cap 60k → 100k); the balanced turn window no longer drops everything older than 3 turns.
+  - Per-message compaction threshold raised from 4,000 to 16,000 characters, and already-trimmed messages are never re-trimmed (the old `endswith("]")` heuristic could skip valid trims forever).
+  - Transient/stall retries keep a 16-message working tail at up to 32k tokens instead of collapsing to the last 4 messages at 12k.
+- Output budgets: balanced-mode build/debug/refactor turns use the full configured `max_tokens` (8192) instead of being min-chained to 4096/6144; chat answers get 1,024 tokens; custom Anthropic proxy non-artifact caps raised to 2048/4096/8192. Subagent reports: default cap 3,000 tokens (parallel delegations 2,500), orchestrator plan request 900 tokens, fleet worker fallback 3,500, subagent watchdog default 30 s → 60 s; Anthropic thinking budgets: low 2,048 / medium 8,192 token ceilings.
+- Tool visibility: `read_file` returns up to 800 lines in balanced mode (2,000 with efficiency off), `search` up to 300 hits with 400-char lines, `list_files` up to 1,000 entries, and tool output truncation in balanced mode raised from 16,000 to 28,000 characters.
+- Steering no longer amnesiaes the session: an interrupted turn keeps `completed_turns`, so the next prompt continues on top of real history plus the saved resume summary.
+
+### Fixed
+
+- The identical-tool-call kill switch now warns once before aborting: the third identical call injects a "REPEATED TOOL CALL" correction and only a fourth identical round ends the task. Legitimately repeated calls (re-running tests after a fix) survive.
+- The Turkish thinking-trace filter no longer treats any answer containing "onar" (e.g. "onarıldı", "onarım gerekebilir") as hidden reasoning; only actual announcement forms ("onarıyorum") match.
+
+## [7.16.0] - 2026-08-22
+
+### Added
+
+- Engine (backend): transport retries now use exponential backoff with bounded jitter (`retry_jitter_ratio`, default 0.25) and honor the server's `Retry-After` header on HTTP 429/5xx, capped by the existing retry budget.
+- Engine: `usage.jsonl` rows can persist the per-request cost (`cost_usd`) alongside token counts for post-hoc spend analysis; every main request path now records it.
+- UI: ANSI theme system with `dark` and `light` palettes (`ui_theme`, `/theme dark|light`); light theme swaps hard-to-read hues and everything degrades to plain text when color is off.
+- UI: markdown-lite renderer for final answers — fenced code frames with language tags, headings, bold, and inline code (`ui_markdown`, `/markdown on|off`); disabled mode returns output byte-for-byte unchanged.
+- UI: compact per-turn telemetry line showing input/output token deltas, turn cost, and the serving provider/model.
+- Commands: `/theme`, `/markdown`, `/commands` (grouped command index also appended to `/help`).
+
+### Changed
+
+- `/help` now ends with a grouped command index so 90+ commands are discoverable by category.
+- Removed the confidence-score system: the per-turn `Güven skoru` line, the `ConfidenceEngine` scorer, and the `/confidence` command are gone. The verification gate (`missing_evidence`, `verification_passed` in `.forgecode/last-run.json`) remains the single pass/fail contract.
+
+### Fixed
+
+- Empty-success recovery is now a three-stage ladder instead of repeating one strategy: stage 1 resends compacted context with thinking off, stage 2 additionally disables streaming (buffered JSON defeats proxy stream bugs), and stage 3 strips tools so the turn still returns a usable text answer. Transport settings (`thinking_mode`, `streaming_enabled`) are always restored afterwards.
+
+## [7.15.6] - 2026-08-08
+
+### Fixed
+
+- Log-driven reliability pass: empty-success transport glitches (HTTP 200 with no content/tool call, blank or non-JSON bodies) are now diagnosed as retryable `empty-response` findings instead of `unknown`, so they no longer count as severe errors in the confidence score.
+- Raised the dedicated empty-success recovery budget from one attempt to two; both attempts resend a compacted context with thinking disabled before the turn can fail.
+- `verify_artifacts` now explains that zero-byte files cannot be verified and must be written first or removed from the verification list.
+
+## [7.15.5] - 2026-08-08
+
+### Fixed
+
+- Bounded every append-only log: `history.jsonl`, `sessions/*.jsonl`, and `usage.jsonl` are now trimmed to their newest rows when they grow past a size threshold, matching the existing event-log rotation.
+- Added pruning of oldest completed/skipped tasks in `.forgecode/tasks.json` so long-running projects no longer accumulate finished task records forever.
+- Added the `session_log_max_lines` setting (default 2000) to control the durable per-session turn log cap via `/set`.
+- Quota/limit errors now hand off to a configured backup connection immediately instead of first consuming same-provider transient retries.
+
+## [7.15.4] - 2026-08-08
+
+### Fixed
+
+- Added bounded task-level recovery for transient provider and official-CLI failures. The agent compacts context and retries at most twice, then surfaces the actual configuration error instead of looping.
+
+## [7.15.3] - 2026-08-08
+
+### Fixed
+
+- Fixed subscription model selection: Claude aliases are selectable and forwarded to the official CLI, and explicit Cline/Codex model IDs are now forwarded with their CLI model options.
+- Preserved Cline and Codex configured models unless the user explicitly changes them, instead of exposing non-functional subscription placeholders as model choices.
+
+## [7.15.2] - 2026-08-08
+
+### Fixed
+
+- Fixed Claude Code subscription OAuth by removing `--bare`, using `claude auth login`, and preventing only conflicting Anthropic API credentials from overriding the signed-in subscription in the child process.
+- Made subscription setup feedback provider-specific and added common Windows CLI install-location detection for terminals started with an outdated PATH.
+
 ## [7.15.1] - 2026-08-08
 
 ### Changed

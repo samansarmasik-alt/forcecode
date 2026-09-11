@@ -1,6 +1,7 @@
 import importlib.util
 import collections
 import copy
+import inspect
 import io
 import json
 import os
@@ -1041,6 +1042,64 @@ class GoalAndHistoryTests(unittest.TestCase):
             history = forgecode.HistoryStore(pathlib.Path(tmp))
             history.record("hello", "world", forgecode.Usage(10, 2))
             self.assertEqual(history.recent()[0]["user"], "hello")
+
+    def test_history_store_trims_oversized_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history = forgecode.HistoryStore(pathlib.Path(tmp))
+            history.trim_max_rows = 3
+            history.trim_threshold_bytes = 10
+            for index in range(6):
+                history.record(f"u{index}", "a", forgecode.Usage())
+            rows = [line for line in history.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(rows), 3)
+            self.assertIn('"u5"', rows[-1])
+
+    def test_usage_store_trims_oversized_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = forgecode.UsageStore(pathlib.Path(tmp) / "home")
+            store.trim_max_rows = 2
+            store.trim_threshold_bytes = 10
+            for _ in range(5):
+                store.record("custom", "m", forgecode.Usage(1, 1))
+            rows = [line for line in store.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(rows), 2)
+            self.assertLessEqual(store.path.stat().st_size, 1000)
+
+    def test_session_turn_log_trims_to_configured_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data["session_log_max_lines"] = 105
+            store = forgecode.SessionStore(root, "main", cfg)
+            store.SESSION_TRIM_THRESHOLD_BYTES = 50
+            for index in range(110):
+                store.record_turn(f"soru {index}", "yanit", forgecode.Usage(1, 1))
+            rows = [line for line in store.session_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(rows), 105)
+            self.assertIn("soru 5", rows[0])
+            self.assertIn("soru 109", rows[-1])
+
+    def test_task_store_prunes_oldest_finished_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = forgecode.TaskQueueStore(pathlib.Path(tmp))
+            queue.max_finished_tasks = 2
+            first = queue.add("old task one")
+            second = queue.add("old task two")
+            queue.add("active task")
+            queue.update(first, "completed")
+            queue.update(second, "skipped")
+            fourth = queue.add("old task four")
+            queue.update(fourth, "completed")
+            fifth = queue.add("old task five")
+            queue.update(fifth, "completed")
+            queue.save()
+            reloaded = forgecode.TaskQueueStore(pathlib.Path(tmp))
+            statuses = [task["status"] for task in reloaded.tasks]
+            titles = [task["title"] for task in reloaded.tasks]
+            self.assertNotIn("old task one", titles)
+            self.assertNotIn("old task two", titles)
+            self.assertIn("active task", titles)
+            self.assertEqual(len([s for s in statuses if s in {"completed", "skipped"}]), 2)
 
     def test_session_history_and_memory_survive_agent_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2313,7 +2372,7 @@ class DynamicOrchestratorTests(unittest.TestCase):
             self.assertEqual(agent.session_usage.input_tokens, 30)
             call = provider.request.call_args.args
             self.assertEqual(call[2], [])
-            self.assertEqual(call[3], 420)
+            self.assertEqual(call[3], 900)
             self.assertIn("PROJECT FILE MAP", call[1][0]["content"])
 
     def test_ask_runs_live_ai_plan_then_injects_parallel_reports_into_main_request(self):
@@ -2598,7 +2657,7 @@ class OutcomeGuardTests(unittest.TestCase):
             answer = agent.ask("Create created.txt with complete content")
             self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "complete")
             self.assertIn("created.txt", answer)
-            self.assertEqual(provider.request.call_args_list[0].args[3], 4096)
+            self.assertEqual(provider.request.call_args_list[0].args[3], 6144)
             self.assertEqual(provider.request.call_args_list[1].args[3], 8192)
             self.assertTrue(callable(provider.request.call_args_list[0].args[5]))
             recovery_messages = json.dumps(provider.request.call_args_list[1].args[1], ensure_ascii=False)
@@ -3882,7 +3941,10 @@ class UnlimitedAgentAndDelegationPolicyTests(unittest.TestCase):
             agent.provider = provider
             answer = agent.ask("Dosyaları incele")
             self.assertIn("aynı araç çağrısını", answer)
-            self.assertEqual(provider.request.call_count, 3)
+            # 3rd identical round gets a warning nudge; kill switch fires on the 4th.
+            self.assertEqual(provider.request.call_count, 4)
+            sent = json.dumps(provider.request.call_args[0][1], ensure_ascii=False)
+            self.assertIn("REPEATED TOOL CALL", sent)
 
 
 class ForceGraphIntegrationTests(unittest.TestCase):
@@ -4252,21 +4314,30 @@ class ExecutionKernelTests(unittest.TestCase):
         self.assertEqual(first.signature, second.signature)
         self.assertEqual(second.occurrences, 2)
 
-    def test_verification_and_confidence_are_evidence_based(self):
+    def test_debugging_engine_classifies_empty_success_as_retryable_transport_glitch(self):
+        engine = forgecode.DebuggingEngine()
+        finding = engine.diagnose(
+            "api",
+            forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi"),
+        )
+        self.assertEqual(finding.category, "empty-response")
+        self.assertTrue(finding.retryable)
+        blank = engine.diagnose("api", forgecode.ApiError("API boş veya JSON olmayan yanıt döndürdü"))
+        self.assertEqual(blank.category, "empty-response")
+
+    def test_verification_is_evidence_based_and_confidence_is_gone(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cfg = self.make_cfg(root)
             kernel = forgecode.ExecutionKernel(root, cfg)
             state = kernel.begin("Fix API error", True, False, False, {})
             missing = kernel.verifier.evaluate(state, [], "done", True, False)
-            low, _ = kernel.confidence.score(state, [], "done", True)
             kernel.observe_tool(state, "write_file", "OK")
             kernel.observe_tool(state, "run_command", "exit_code=0\npassed")
             complete = kernel.verifier.evaluate(state, ["api.py"], "fixed", True, False)
-            high, _ = kernel.confidence.score(state, ["api.py"], "fixed", True)
             self.assertIn("no project artifact was created or changed", missing)
             self.assertEqual(complete, [])
-            self.assertGreater(high, low)
+            self.assertFalse(hasattr(kernel, "confidence"))
 
     def test_execution_report_is_persisted_without_hidden_reasoning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4279,10 +4350,10 @@ class ExecutionKernelTests(unittest.TestCase):
             persisted = forgecode.load_json(root / ".forgecode" / "last-run.json", {})
             self.assertEqual(report["run_id"], persisted["run_id"])
             self.assertNotIn("thought", json.dumps(persisted).lower())
-            self.assertIn("confidence_breakdown", persisted)
+            self.assertNotIn("confidence", json.dumps(persisted).lower())
             self.assertEqual(persisted["force_graph"], {"available": False, "consulted": False})
 
-    def test_agent_injects_execution_contract_and_exposes_last_confidence(self):
+    def test_agent_injects_execution_contract_and_omits_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cfg = self.make_cfg(root)
@@ -4294,7 +4365,7 @@ class ExecutionKernelTests(unittest.TestCase):
             sent_messages = provider.request.call_args.args[1]
             self.assertIn("FORGECODE EXECUTION CONTRACT", json.dumps(sent_messages, ensure_ascii=False))
             self.assertIn("Açıklama", answer)
-            self.assertIn("confidence", agent.last_execution_report)
+            self.assertNotIn("confidence", agent.last_execution_report)
 
     def test_agent_requests_one_real_final_instead_of_warning_after_completed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5454,6 +5525,83 @@ class ThinkingChannelRegressionTests(unittest.TestCase):
             self.assertNotIn("Hata yakalandı", result)
 
 
+class UnfulfilledIntentRegressionTests(unittest.TestCase):
+    def test_intent_detector_matches_unfinished_inspection_claims(self):
+        positives = [
+            "Log dosyalarına bakıyorum, sonucu yazacağım.",
+            "Şimdi config'i inceleyeceğim.",
+            "Hataları kontrol ediyorum.",
+            "Kaydı okuyorum, sonra özet çıkaracağım.",
+            "Bakalım ne çıkmış.",
+            "Let me check the logs.",
+            "I'm looking into it now, give me a second.",
+            "I'll inspect the failing module.",
+        ]
+        for text in positives:
+            with self.subTest(text=text):
+                self.assertTrue(forgecode._has_unfulfilled_action_intent(text))
+                self.assertTrue(forgecode._has_unfulfilled_action_intent(text.lower()))
+
+    def test_intent_detector_ignores_past_tense_and_normal_answers(self):
+        negatives = [
+            "",
+            "kısa",
+            "Kontrol ettim, hata yok.",
+            "Dosyayı inceledim ve sorunu buldum: satır 42 eksikti.",
+            "Let me know if you need anything else.",
+            "Build passed and all tests are green.",
+            "Rapor hazır, özet aşağıda.",
+            "checked the logs, found nothing",
+        ]
+        for text in negatives:
+            with self.subTest(text=text):
+                self.assertFalse(forgecode._has_unfulfilled_action_intent(text))
+
+    def _make_agent(self, root):
+        cfg = forgecode.Config(root / "home")
+        cfg.data.update({"auto_subagents": False, "power_mode": "off", "watchdog_enabled": False})
+        agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+        agent._power_active = False
+        return agent
+
+    @staticmethod
+    def _text_reply(text):
+        return forgecode.ModelReply(
+            text,
+            [],
+            forgecode.Usage(),
+            [{"type": "text", "text": text}],
+        )
+
+    def test_ask_nudges_when_reply_claims_inspection_without_tool_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            agent = self._make_agent(root)
+            claimed = self._text_reply("Session loglarına bakıyorum, durumu birazdan özetleyeceğim.")
+            real = self._text_reply("Sonuç: log temiz, hata kaydı yok.")
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=[claimed, real]) as req:
+                result = agent.ask("son loga bakar mısın")
+            self.assertEqual(req.call_count, 2)
+            self.assertIn("Sonuç", result)
+            self.assertNotIn("bakıyorum", result)
+            user_texts = [
+                forgecode.portable_message_text(m)
+                for m in agent.messages
+                if isinstance(m, dict) and m.get("role") == "user"
+            ]
+            self.assertTrue(any("ACTION ANNOUNCED BUT NOTHING EXECUTED" in t for t in user_texts))
+
+    def test_ask_returns_announced_text_after_two_nudges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            agent = self._make_agent(root)
+            claimed = self._text_reply("Loglara bakıyorum ve kontrol ediyorum.")
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=[claimed, claimed, claimed]) as req:
+                result = agent.ask("kısa durum özeti")
+            self.assertEqual(req.call_count, 3)
+            self.assertIn("bakıyorum", result)
+
+
 class WorkspaceToolsDispatchRegressionTests(unittest.TestCase):
     def test_dispatch_alias_exists_and_forwards(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5500,6 +5648,115 @@ class WorkspaceToolsDispatchRegressionTests(unittest.TestCase):
             # must not have crashed with dispatch AttributeError
             self.assertNotIn("dispatch", result.lower())
             self.assertNotIn("AttributeError", result)
+
+    def test_empty_success_recovery_tolerates_two_consecutive_empty_responses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({
+                "auto_subagents": False,
+                "power_mode": "off",
+                "watchdog_enabled": False,
+                "retry_backoff_seconds": 0,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+            agent._power_active = False
+            final_reply = forgecode.ModelReply(
+                "işlem doğrulandı",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "işlem doğrulandı"}],
+            )
+            empty_error = forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=[empty_error, empty_error, final_reply]), mock.patch.object(
+                agent, "_compact_retry_messages", wraps=agent._compact_retry_messages
+            ) as compact:
+                result = agent.ask("durum özeti ver")
+            self.assertIn("doğrulandı", result)
+            self.assertEqual(compact.call_count, 2)
+
+    def _ladder_agent(self, root: pathlib.Path) -> forgecode.Agent:
+        cfg = forgecode.Config(root / "home")
+        cfg.data.update({
+            "auto_subagents": False,
+            "power_mode": "off",
+            "watchdog_enabled": False,
+            "retry_backoff_seconds": 0,
+        })
+        agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+        agent._power_active = False
+        return agent
+
+    def test_empty_success_ladder_second_stage_disables_streaming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._ladder_agent(pathlib.Path(tmp))
+            final_reply = forgecode.ModelReply(
+                "işlem doğrulandı",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "işlem doğrulandı"}],
+            )
+            empty_error = forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
+            observed_streaming: list[bool] = []
+
+            def fake_request(tools, output_limit, web_search):
+                observed_streaming.append(bool(agent.cfg.data.get("streaming_enabled", True)))
+                if len(observed_streaming) < 3:
+                    raise empty_error
+                return final_reply
+
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=fake_request):
+                result = agent.ask("durum özeti ver")
+            self.assertIn("doğrulandı", result)
+            # initial attempt and stage-1 stream; stage-2 must switch to buffered JSON
+            self.assertEqual(observed_streaming, [True, True, False])
+            # transport settings are restored for the next turn
+            self.assertTrue(agent.cfg.data.get("streaming_enabled", True))
+
+    def test_empty_success_ladder_final_stage_strips_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._ladder_agent(pathlib.Path(tmp))
+            final_reply = forgecode.ModelReply(
+                "işlem doğrulandı",
+                [],
+                forgecode.Usage(),
+                [{"type": "text", "text": "işlem doğrulandı"}],
+            )
+            empty_error = forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
+            observed_tools: list[int] = []
+
+            def fake_request(tools, output_limit, web_search):
+                observed_tools.append(len(list(tools)))
+                if len(observed_tools) < 4:
+                    raise empty_error
+                return final_reply
+
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=fake_request), mock.patch.object(
+                agent, "_compact_retry_messages", wraps=agent._compact_retry_messages
+            ) as compact:
+                result = agent.ask("durum özeti ver")
+            self.assertIn("doğrulandı", result)
+            self.assertEqual(len(observed_tools), 4)
+            self.assertEqual(observed_tools[-1], 0)
+            for earlier in observed_tools[:3]:
+                self.assertGreaterEqual(earlier, observed_tools[-1])
+            self.assertEqual(compact.call_count, 3)
+
+    def test_empty_success_ladder_exhaustion_restores_transport_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._ladder_agent(pathlib.Path(tmp))
+            agent.cfg.data["retry_attempts"] = 1
+            empty_error = forgecode.ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
+
+            def always_empty(tools, output_limit, web_search):
+                raise empty_error
+
+            with mock.patch.object(agent, "_request_with_heartbeat", side_effect=always_empty), mock.patch.object(
+                agent, "activate_backup", return_value=False
+            ), mock.patch.object(agent, "_recover_custom_endpoint", return_value=False):
+                with self.assertRaises(forgecode.ApiError):
+                    agent.ask("durum özeti ver")
+            self.assertTrue(agent.cfg.data.get("streaming_enabled", True))
 
 
 class EfficiencyBenchmarkRegressionGuardsTests(unittest.TestCase):
@@ -5711,16 +5968,117 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             cfg.select_provider("claude-subscription")
             cfg.data["_runtime_project_root"] = tmp
             completed = mock.Mock(returncode=0, stdout="ready", stderr="")
-            with mock.patch.object(forgecode.shutil, "which", return_value="claude.exe"), mock.patch.object(
-                forgecode.subprocess, "run", return_value=completed
-            ) as run:
+            with mock.patch.dict(forgecode.os.environ, {"ANTHROPIC_API_KEY": "metered", "ANTHROPIC_AUTH_TOKEN": "token"}), \
+                mock.patch.object(forgecode.shutil, "which", return_value="claude.exe"), \
+                mock.patch.object(forgecode.subprocess, "run", return_value=completed) as run:
                 reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
             self.assertFalse(cfg.requires_key())
             self.assertEqual(cfg.mode(), "subscription")
             self.assertEqual(reply.text, "ready")
             self.assertNotIn("shell", run.call_args.kwargs)
-            self.assertEqual(run.call_args.kwargs["stdin"], forgecode.subprocess.DEVNULL)
+            self.assertIn("MESSAGES:", run.call_args.kwargs["input"])
+            self.assertNotEqual(run.call_args.kwargs.get("stdin"), forgecode.subprocess.DEVNULL)
             self.assertEqual(run.call_args.kwargs["cwd"], tmp)
+            self.assertNotIn("--bare", run.call_args.args[0])
+            self.assertNotIn("ANTHROPIC_API_KEY", run.call_args.kwargs["env"])
+            self.assertNotIn("ANTHROPIC_AUTH_TOKEN", run.call_args.kwargs["env"])
+            self.assertIn("--model", run.call_args.args[0])
+            self.assertIn("default", run.call_args.args[0])
+
+    def test_claude_subscription_setup_uses_official_login(self):
+        self.assertEqual(forgecode.PROVIDERS["claude-subscription"]["setup"], ["claude", "auth", "login"])
+        self.assertNotIn("--bare", forgecode.PROVIDERS["claude-subscription"]["command"])
+
+    def test_subscription_model_picker_exposes_claude_aliases_and_forwards_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("claude-subscription")
+            cfg.data["_runtime_project_root"] = tmp
+            self.assertEqual(forgecode.fetch_models(cfg), ["default", "sonnet", "opus", "haiku"])
+            cfg.set_value("model", "opus")
+            completed = mock.Mock(returncode=0, stdout="ready", stderr="")
+            with mock.patch.object(forgecode.shutil, "which", return_value="claude.exe"), mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ) as run:
+                forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+            self.assertEqual(run.call_args.args[0][-2:], ["opus", mock.ANY])
+
+    def test_explicit_codex_subscription_model_is_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("codex-subscription")
+            cfg.data["_runtime_project_root"] = tmp
+            cfg.set_value("model", "gpt-5-codex")
+            completed = mock.Mock(
+                returncode=0,
+                stdout='{"type":"item.completed","item":{"type":"agent_message","text":"ready"}}\n',
+                stderr="",
+            )
+            with mock.patch.dict(forgecode.os.environ, {"OPENAI_API_KEY": "metered", "CODEX_API_KEY": "metered"}), \
+                mock.patch.object(forgecode.shutil, "which", return_value="codex.exe"), mock.patch.object(
+                forgecode.subprocess, "run", return_value=completed
+            ) as run:
+                reply = forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+            self.assertEqual(reply.text, "ready")
+            self.assertEqual(run.call_args.args[0][-3:], ["--model", "gpt-5-codex", "-"])
+            self.assertIn("MESSAGES:", run.call_args.kwargs["input"])
+            self.assertNotEqual(run.call_args.kwargs.get("stdin"), forgecode.subprocess.DEVNULL)
+            self.assertIn("--json", run.call_args.args[0])
+            self.assertIn("--ephemeral", run.call_args.args[0])
+            self.assertNotIn("OPENAI_API_KEY", run.call_args.kwargs["env"])
+            self.assertNotIn("CODEX_API_KEY", run.call_args.kwargs["env"])
+
+    def test_codex_subscription_keeps_a_process_timeout_when_watchdog_is_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("codex-subscription")
+            cfg.data.update({"_runtime_project_root": tmp, "watchdog_enabled": False})
+            timeout = forgecode.subprocess.TimeoutExpired("codex", 180)
+            with mock.patch.object(forgecode.shutil, "which", return_value="codex.exe"), mock.patch.object(
+                forgecode.subprocess, "run", side_effect=timeout
+            ) as run:
+                with self.assertRaises(forgecode.ApiError) as raised:
+                    forgecode.make_provider(cfg).request("system", [{"role": "user", "content": "hi"}], [])
+            self.assertIn("timed out", str(raised.exception))
+            self.assertEqual(run.call_args.kwargs["timeout"], 180)
+
+    def test_subscription_watchdog_allows_quiet_cli_startup_until_total_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = forgecode.Config(pathlib.Path(tmp))
+            cfg.select_provider("codex-subscription")
+            cfg.data.update({
+                "first_response_timeout_seconds": 5,
+                "timeout_seconds": 20,
+                "request_total_timeout_seconds": 180,
+            })
+            first, idle, total = forgecode.request_watchdog_limits(cfg)
+            self.assertEqual((first, idle, total), (180.0, 180.0, 180.0))
+
+    def test_transient_provider_failure_resumes_once_without_a_retry_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root)
+            cfg.data.update({
+                "auto_subagents": False, "forcegraph_auto_enabled": False, "sandbox_enabled": False,
+                "retry_attempts": 2, "retry_backoff_seconds": 0,
+            })
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+
+            class RecoveringProvider:
+                def __init__(self):
+                    self.calls = 0
+
+                def request(self, *args, **kwargs):
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise forgecode.ApiError("API 503: temporarily unavailable")
+                    return forgecode.ModelReply("recovered", [], forgecode.Usage(), {"role": "assistant", "content": "recovered"})
+
+            provider = RecoveringProvider()
+            agent.provider = provider
+            self.assertEqual(agent.ask("selam"), "recovered")
+            self.assertEqual(provider.calls, 2)
+            self.assertTrue(any("Sağlayıcı geçici hata verdi" in line for line in agent.activity_lines))
 
     def test_cline_subscription_uses_safe_json_headless_contract_and_extracts_visible_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5743,8 +6101,488 @@ class FleetBrowserMusicSubscriptionTests(unittest.TestCase):
             self.assertIn("false", command)
 
     def test_new_commands_are_discoverable(self):
-        for command in ("/terminal", "/browser", "/music", "/subscriptions"):
+        for command in ("/terminal", "/browser", "/music", "/subscriptions", "/theme", "/markdown", "/commands"):
             self.assertIn(command, forgecode.COMMANDS)
+
+
+class MissionControlTests(unittest.TestCase):
+    def test_mission_projection_derives_graph_progress_and_evidence(self):
+        tasks = [
+            {
+                "id": "plan", "flow_id": "mission-a", "title": "Plan API",
+                "objective": "Ship the API", "status": "completed",
+                "changed_files": ["api.py"], "summary": "API plan verified",
+            },
+            {
+                "id": "test", "flow_id": "mission-a", "title": "Test API",
+                "objective": "Ship the API", "status": "failed",
+                "changed_files": ["api.py", "test_api.py"],
+                "missing_evidence": ["integration test failed"],
+            },
+        ]
+
+        view = forgecode.build_mission_views(tasks)[0]
+
+        self.assertEqual(view.status, "blocked")
+        self.assertEqual((view.completed_tasks, view.total_tasks, view.progress_percent), (1, 2, 50))
+        self.assertEqual(view.tasks[1].depends_on, ("plan",))
+        self.assertEqual(view.changed_files, ("api.py", "test_api.py"))
+        self.assertEqual(view.missing_evidence, ("integration test failed",))
+        rendered = forgecode.render_mission(view)
+        self.assertIn("MISSION mission-a · blocked", rendered)
+        self.assertIn("✓ plan → ! test", rendered)
+
+    def test_mission_selector_uses_active_flow_and_rejects_ambiguous_prefix(self):
+        tasks = [
+            {"id": "a", "flow_id": "same-one", "title": "Old", "status": "completed"},
+            {"id": "b", "flow_id": "same-two", "title": "Current", "status": "paused"},
+        ]
+
+        self.assertEqual(forgecode.select_mission(tasks).flow_id, "same-two")
+        self.assertEqual(forgecode.select_mission(tasks, "1").flow_id, "same-one")
+        self.assertIsNone(forgecode.select_mission(tasks, "same"))
+
+    def test_mission_projection_is_json_serializable(self):
+        view = forgecode.build_mission_views([
+            {"id": "one", "flow_id": "json", "title": "Ship", "status": "pending"},
+        ])[0]
+
+        encoded = json.dumps(view.to_dict())
+
+        self.assertIn('"flow_id": "json"', encoded)
+
+    def test_forceflow_queue_can_resume_one_mission_without_touching_another(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            unrelated = agent.task_queue.add("Leave this pending", flow_id="other")
+            selected = agent.task_queue.add("Create mission.txt", flow_id="selected")
+
+            def fake_ask(prompt, on_tool=None):
+                self.assertIn("Create mission.txt", prompt)
+                agent.tools.tool_write_file("mission.txt", "verified")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 1.0,
+                }
+                return "Mission task verified."
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                result = forgecode.run_forceflow_queue(agent, agent.task_queue, 1, flow_id="selected")
+
+            self.assertTrue(result.completed)
+            self.assertEqual(agent.task_queue.find(selected["id"])["status"], "completed")
+            self.assertEqual(agent.task_queue.find(unrelated["id"])["status"], "pending")
+
+    def test_explicit_mission_resume_preserves_its_remaining_task_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            cfg.data.update({"auto_approve_writes": True, "auto_subagents": False})
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            first, second = agent.task_queue.add_many(
+                ["Create first.txt", "Create second.txt"],
+                flow_id="keep-graph", objective="Ship both files",
+            )
+            agent.task_queue.update(first, "failed", error="interrupted")
+
+            def fake_ask(prompt, on_tool=None):
+                target = "first.txt" if "Create first.txt" in prompt else "second.txt"
+                agent.tools.tool_write_file(target, "verified")
+                agent.last_execution_report = {
+                    "missing_evidence": [], "successful_tools": ["write_file"], "confidence": 1.0,
+                }
+                return "Verified " + target
+
+            with mock.patch.object(agent, "ask", side_effect=fake_ask):
+                forgecode.run_automatic_forceflow(agent, "Ship both files", flow_id="keep-graph")
+
+            tasks = agent.task_queue.flow_tasks("keep-graph")
+            self.assertEqual([task["id"] for task in tasks], [first["id"], second["id"]])
+            self.assertEqual([task["status"] for task in tasks], ["completed", "completed"])
+
+    def test_mission_command_starts_forceflow_and_persists_goal_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+
+            def fake_flow(selected_agent, prompt, on_tool=None, force_web=False, flow_id=""):
+                task = selected_agent.task_queue.add(prompt, flow_id=flow_id, objective=prompt)
+                selected_agent.task_queue.update(
+                    task, "completed", changed_files=["mission.txt"], summary="verified",
+                )
+                return "Mission completed."
+
+            output = io.StringIO()
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_automatic_forceflow", side_effect=fake_flow
+            ), mock.patch.object(sys, "stdout", output):
+                self.assertTrue(forgecode.handle_command("/mission Build the release", agent, cfg, goals))
+
+            persisted = forgecode.GoalStore(root).goals[0]
+            self.assertTrue(persisted["done"])
+            self.assertEqual(persisted["mission"]["mode"], "flow")
+            self.assertEqual(persisted["mission"]["flow_id"], persisted["id"])
+            self.assertIn("MISSION " + persisted["id"], output.getvalue())
+
+    def test_mission_resume_targets_the_same_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            goal = goals.add("Repair release")
+            forgecode._link_mission_goal(goals, goal, "flow", "resume-me")
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            task = agent.task_queue.add("Repair release", flow_id="resume-me", objective="Repair release")
+            agent.task_queue.update(task, "failed", error="verification failed")
+
+            def fake_flow(selected_agent, prompt, on_tool=None, force_web=False, flow_id=""):
+                self.assertEqual(flow_id, "resume-me")
+                selected_agent.task_queue.update(task, "completed", error="", missing_evidence=[])
+                return "Resumed and verified."
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_automatic_forceflow", side_effect=fake_flow
+            ), mock.patch.object(sys, "stdout", io.StringIO()):
+                forgecode.handle_command("/mission resume resume-me", agent, cfg, goals)
+
+            self.assertTrue(forgecode.GoalStore(root).goals[0]["done"])
+
+    def test_mission_resume_recovers_when_planning_was_interrupted_before_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            goal = goals.add("Plan and ship release")
+            forgecode._link_mission_goal(goals, goal, "flow", goal["id"])
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+
+            def fake_flow(selected_agent, prompt, on_tool=None, force_web=False, flow_id=""):
+                self.assertEqual(flow_id, goal["id"])
+                task = selected_agent.task_queue.add(prompt, flow_id=flow_id, objective=prompt)
+                selected_agent.task_queue.update(task, "completed", summary="verified")
+                return "Planning resumed and mission verified."
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_automatic_forceflow", side_effect=fake_flow
+            ), mock.patch.object(sys, "stdout", io.StringIO()):
+                forgecode.handle_command(f"/mission resume {goal['id']}", agent, cfg, goals)
+
+            persisted = forgecode.GoalStore(root).goals[0]
+            self.assertTrue(persisted["done"])
+            self.assertEqual(persisted["mission"]["flow_id"], goal["id"])
+
+    def test_mission_list_keeps_a_pre_task_planning_checkpoint_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            goal = goals.add("Plan first")
+            forgecode._link_mission_goal(goals, goal, "flow", goal["id"])
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            output = io.StringIO()
+
+            with mock.patch.object(sys, "stdout", output):
+                forgecode.handle_command("/mission list", agent, cfg, goals)
+
+            self.assertIn(f"[{goal['id']}] planning · Plan first", output.getvalue())
+
+    def test_completed_mission_cannot_restart_after_task_receipts_are_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            goal = goals.add("Already shipped")
+            forgecode._link_mission_goal(goals, goal, "flow", goal["id"])
+            goals.complete(goal["id"])
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            output = io.StringIO()
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_automatic_forceflow"
+            ) as run_flow, mock.patch.object(sys, "stdout", output):
+                forgecode.handle_command(f"/mission resume {goal['id']}", agent, cfg, goals)
+
+            run_flow.assert_not_called()
+            self.assertIn("zaten completed", output.getvalue())
+
+    def test_long_mission_can_retry_after_preflight_failed_before_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            goal = goals.add("Build overnight")
+            forgecode._link_mission_goal(goals, goal, "vibe", "")
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+
+            def fake_vibe(selected_agent, objective, on_tool=None, resume=False):
+                self.assertEqual(objective, "Build overnight")
+                self.assertFalse(resume)
+                selected_agent.vibe_session.state = {
+                    "id": "vibe-new", "flow_id": "flow-new", "status": "completed",
+                    "objective": objective,
+                }
+                task = selected_agent.task_queue.add(objective, flow_id="flow-new", objective=objective)
+                selected_agent.task_queue.update(task, "completed", summary="verified")
+                return mock.Mock(completed=True, summary="Vibe mission verified.")
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_vibecode", side_effect=fake_vibe
+            ), mock.patch.object(sys, "stdout", io.StringIO()):
+                forgecode.handle_command(f"/mission resume {goal['id']}", agent, cfg, goals)
+
+            persisted = forgecode.GoalStore(root).goals[0]
+            self.assertTrue(persisted["done"])
+            self.assertEqual(persisted["mission"]["flow_id"], "flow-new")
+            self.assertEqual(persisted["mission"]["vibe_session_id"], "vibe-new")
+
+    def test_long_mission_preflight_failure_never_links_a_stale_completed_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            agent.vibe_session.state = {
+                "id": "old-session", "flow_id": "old-flow", "status": "completed",
+                "objective": "Build overnight",
+            }
+
+            blocked = mock.Mock(completed=False, summary="Sandbox is unavailable.")
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_vibecode", return_value=blocked
+            ), mock.patch.object(sys, "stdout", io.StringIO()):
+                forgecode.handle_command("/mission long Build overnight", agent, cfg, goals)
+
+            persisted = forgecode.GoalStore(root).goals[0]
+            self.assertFalse(persisted["done"])
+            self.assertEqual(persisted["mission"]["flow_id"], "")
+            self.assertEqual(persisted["mission"]["vibe_session_id"], "")
+
+    def test_long_mission_preflight_interrupt_never_links_a_stale_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            agent.vibe_session.state = {
+                "id": "old-session", "flow_id": "old-flow", "status": "completed",
+                "objective": "Build overnight",
+            }
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                forgecode, "run_vibecode", side_effect=KeyboardInterrupt
+            ), mock.patch.object(sys, "stdout", io.StringIO()):
+                forgecode.handle_command("/mission long Build overnight", agent, cfg, goals)
+
+            persisted = forgecode.GoalStore(root).goals[0]
+            self.assertEqual(persisted["mission"]["flow_id"], "")
+            self.assertEqual(persisted["mission"]["vibe_session_id"], "")
+
+    def test_long_mission_does_not_overwrite_a_paused_vibe_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            goals = forgecode.GoalStore(root)
+            agent = forgecode.Agent(root, cfg, goals, lambda _: False)
+            agent.vibe_session.state = {
+                "status": "paused", "owner_pid": 0,
+                "flow_id": "existing", "objective": "Existing work",
+            }
+
+            with mock.patch.object(cfg, "requires_key", return_value=False), mock.patch.object(
+                sys, "stdout", io.StringIO()
+            ):
+                forgecode.handle_command("/mission long New work", agent, cfg, goals)
+
+            self.assertEqual(forgecode.GoalStore(root).goals, [])
+
+    def test_release_metadata_and_installers_include_mission_runtime(self):
+        root = MODULE_PATH.parent
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        windows_installer = (root / "install-force.ps1").read_text(encoding="utf-8")
+        unix_installer = (root / "install-force.sh").read_text(encoding="utf-8")
+
+        self.assertIn(f'version = "{forgecode.VERSION}"', pyproject)
+        self.assertIn(f"version-{forgecode.VERSION}", readme)
+        self.assertIn("_forgecode_mission.py", windows_installer)
+        self.assertIn("_forgecode_mission.py", unix_installer)
+
+    def test_legacy_single_file_cli_still_starts_without_mission_module(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            portable = root / "forgecode.py"
+            portable.write_bytes(MODULE_PATH.read_bytes())
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+
+            result = forgecode.subprocess.run(
+                [sys.executable, str(portable), "--version"],
+                cwd=str(root), env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"forgecode {forgecode.VERSION}", result.stdout)
+
+
+class UIEngineUpgradeTests(unittest.TestCase):
+    def _cfg(self):
+        return forgecode.Config(pathlib.Path(tempfile.mkdtemp()))
+
+    def test_transport_retry_uses_exponential_jitter_and_honors_retry_after(self):
+        cfg = self._cfg()
+        cfg.data.update({"retry_attempts": 3, "retry_backoff_seconds": 0.5})
+        sleeps = []
+        with mock.patch.object(forgecode.random, "uniform", lambda a, b: (a + b) / 2), \
+             mock.patch.object(forgecode.time, "sleep", sleeps.append), \
+             mock.patch.object(
+                 forgecode, "post_json",
+                 side_effect=[
+                     forgecode.ApiError("API 503: busy"),
+                     forgecode.ApiError("API 429: slow down", retry_after=3.0),
+                     {"ok": True},
+                 ],
+             ):
+            result = forgecode.post_json_with_retry(cfg, "https://api.test", {}, {}, 5)
+        self.assertEqual(result, {"ok": True})
+        # attempt 1: base 0.5 * 2^0 jittered to midpoint 0.5
+        # attempt 2: base 1.0 jittered to 1.0, lifted to Retry-After 3.0
+        self.assertEqual(sleeps, [0.5, 3.0])
+
+    def test_usage_row_records_cost_usd_when_provided(self):
+        home = pathlib.Path(tempfile.mkdtemp())
+        store = forgecode.UsageStore(home)
+        store.record("prov", "model-x", forgecode.Usage(10, 20, 0, 1), cost_usd=0.5123456)
+        row = json.loads(store.path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(row["cost_usd"], 0.512346)
+        store.record("prov", "model-x", forgecode.Usage(1, 2, 0, 1))
+        row = json.loads(store.path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertNotIn("cost_usd", row)
+
+    def test_markdown_lite_renders_fences_headings_bold_and_inline_code(self):
+        text = "# Başlık\n**kalın** ve `kod`\n```python\nprint(1)\n```\nson"
+        with mock.patch.object(forgecode, "ANSI", True):
+            palette = forgecode.ui_palette(None)
+            rendered = forgecode.render_markdown_lite(text, palette)
+        self.assertIn("\x1b[1m\x1b[35mBaşlık\x1b[0m", rendered)
+        self.assertIn("\x1b[1mkalın\x1b[0m", rendered)
+        self.assertIn("\x1b[35mkod\x1b[0m", rendered)
+        self.assertNotIn("`kod`", rendered)
+        self.assertIn("python", rendered)
+        self.assertIn("print(1)", rendered)
+        self.assertIn("son", rendered)
+
+    def test_markdown_lite_passthrough_without_palette_or_ansi(self):
+        text = "# Başlık\n**kalın**"
+        self.assertEqual(forgecode.render_markdown_lite(text, None), text)
+        empty = {key: "" for key in forgecode.UI_THEMES["dark"]}
+        self.assertEqual(forgecode.render_markdown_lite(text, empty), text)
+
+    def test_ui_palette_switches_between_dark_and_light_and_clears_when_ansi_off(self):
+        light_cfg = self._cfg()
+        light_cfg.data["ui_theme"] = "light"
+        dark_cfg = self._cfg()
+        with mock.patch.object(forgecode, "ANSI", True):
+            self.assertEqual(forgecode.ui_palette(dark_cfg)["forge"], "\x1b[36m")
+            self.assertEqual(forgecode.ui_palette(light_cfg)["forge"], "\x1b[34m")
+            self.assertEqual(forgecode.ui_palette(light_cfg)["warn"], "\x1b[31m")
+        with mock.patch.object(forgecode, "ANSI", False):
+            self.assertTrue(all(value == "" for value in forgecode.ui_palette(dark_cfg).values()))
+
+    def test_theme_and_markdown_settings_validate_input(self):
+        cfg = self._cfg()
+        cfg.set_value("ui_theme", "LIGHT")
+        self.assertEqual(cfg.data["ui_theme"], "light")
+        with self.assertRaises(ValueError):
+            cfg.set_value("ui_theme", "blue")
+        cfg.set_value("ui_markdown", "off")
+        self.assertIs(cfg.data["ui_markdown"], False)
+        with self.assertRaises(ValueError):
+            cfg.set_value("retry_jitter_ratio", "1.5")
+        cfg.set_value("retry_jitter_ratio", "0.5")
+        self.assertEqual(float(cfg.data["retry_jitter_ratio"]), 0.5)
+
+    def test_turn_status_line_formats_delta_and_suppresses_empty_turns(self):
+        before = (100, 50, 0.0)
+        usage = forgecode.Usage(1100, 250, 0, 1)
+        line = forgecode.turn_status_line(before, usage, 0.003, "prov", "model-x")
+        self.assertIn("+1.0k giriş", line)
+        self.assertIn("+200 çıkış", line)
+        self.assertIn("$0.003000", line)
+        self.assertIn("prov/model-x", line)
+        self.assertEqual(forgecode.turn_status_line(before, forgecode.Usage(100, 50, 0, 0), 0.0, "p", "m"), "")
+
+    def test_grouped_command_index_covers_every_registered_command(self):
+        listed = set()
+        for commands in forgecode.COMMAND_GROUPS.values():
+            listed.update(commands)
+        missing = [name for name in forgecode.COMMANDS if name not in listed]
+        self.assertEqual(missing, [])
+        index = forgecode.grouped_command_index()
+        self.assertIn("/theme", index)
+        self.assertIn("Komut dizini", index)
+
+
+class AgentQualityParityTests(unittest.TestCase):
+    """Context/output budget parity with peer coding agents (v7.17.0)."""
+
+    def test_balanced_turn_window_keeps_full_working_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            agent.completed_turns = [
+                [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]
+                for i in range(6)
+            ]
+            self.assertEqual(agent._prepare_turn(), 12)
+
+    def test_input_budget_default_raises_quality_floor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            self.assertEqual(agent._input_budget_tokens(), 48000)
+
+    def test_compaction_trims_tool_results_at_16k_not_4k(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: False)
+            agent.messages.append({"role": "user", "content": "x" * 20000})
+            agent.messages.append({"role": "assistant", "content": "ok"})
+            agent.messages.append({"role": "user", "content": "devam"})
+            agent._compact_messages_for_token_budget(max_input_tokens=4000)
+            trimmed = [str(m.get("content", "")) for m in agent.messages if str(m.get("content", "")).startswith("x")]
+            if trimmed:
+                self.assertGreater(len(trimmed[0]), 15000)
+
+    def test_token_budget_engine_gives_full_output_in_balanced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            engine = forgecode.TokenBudgetEngine()
+            build = engine.allocate(cfg, "api oluştur", "build", False)
+            chat = engine.allocate(cfg, "selam", "chat", False)
+            self.assertEqual(build["output"], int(cfg.data["max_tokens"]))
+            self.assertEqual(chat["output"], 1024)
+
+    def test_steering_preserves_completed_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cfg = forgecode.Config(root / "home")
+            agent = forgecode.Agent(root, cfg, forgecode.GoalStore(root), lambda _: True)
+            agent._current_baseline = agent.tools.snapshot()
+            agent.completed_turns = [[{"role": "user", "content": "önceki tur"}]]
+            agent.remember_interruption("siteyi düzelt", "önce hatayı açıkla", reason="steer")
+            self.assertEqual(agent.completed_turns, [[{"role": "user", "content": "önceki tur"}]])
+
+    def test_delegate_report_budget_is_agent_grade(self):
+        default_cap = inspect.signature(forgecode.Agent.delegate).parameters["output_cap"].default
+        self.assertEqual(default_cap, 3000)
 
 
 if __name__ == "__main__":

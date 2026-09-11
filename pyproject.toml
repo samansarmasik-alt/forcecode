@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forgecode-cli"
-version = "7.15.1"
+version = "8.0.0a2"
 description = "A lightweight, dependency-free terminal coding agent for Windows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,7 +23,7 @@ classifiers = [
 forgecode = "forgecode:main"
 
 [tool.setuptools]
-py-modules = ["forgecode"]
+py-modules = ["forgecode", "_forgecode_mission"]
 
 [tool.unittest]
 start-directory = "tests"

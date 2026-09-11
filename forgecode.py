@@ -16,6 +16,7 @@ import ctypes
 import ctypes.wintypes
 import datetime as dt
 import difflib
+import email.utils
 import fnmatch
 import getpass
 import hashlib
@@ -27,6 +28,7 @@ import locale
 import os
 import pathlib
 import platform
+import random
 import re
 import shlex
 import shutil
@@ -44,6 +46,18 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+try:
+    from _forgecode_mission import build_mission_views, render_mission, render_mission_list, select_mission
+    MISSION_RUNTIME_AVAILABLE = True
+except ModuleNotFoundError as exc:
+    if exc.name != "_forgecode_mission":
+        raise
+    # Preserve the historical portable `forgecode.py` startup path. Mission
+    # commands explain the incomplete upgrade, while every legacy command and
+    # `--version` continue to work until the companion module is installed.
+    MISSION_RUNTIME_AVAILABLE = False
+    build_mission_views = render_mission = render_mission_list = select_mission = None
 
 
 # Keep the real host path class stable even in tests that emulate Windows by
@@ -66,7 +80,7 @@ SILENT_EXECUTION_BANNED_PHRASES = (
 )
 
 APP_NAME = "ForgeCode"
-VERSION = "7.15.1"
+VERSION = "8.0.0a2"
 
 _UI_LANGUAGE = "tr"
 
@@ -208,9 +222,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "freemodel": {"label": "FreeModel (resmî API)", "mode": "chat", "url": "https://api.freemodel.dev/v1", "model": "auto", "env": "FREEMODEL_API_KEY", "key": True},
     # Subscription adapters never copy browser cookies or OAuth tokens. They
     # call the vendor's already-authenticated official CLI as a child process.
-    "claude-subscription": {"label": "Claude Code subscription (official CLI)", "mode": "subscription", "url": "", "model": "claude-subscription", "env": "", "key": False, "command": ["claude", "-p", "--output-format", "text", "--permission-mode", "plan", "--bare"], "setup": ["claude"]},
-    "codex-subscription": {"label": "ChatGPT/Codex subscription (official CLI)", "mode": "subscription", "url": "", "model": "codex-subscription", "env": "", "key": False, "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"], "setup": ["codex", "login"]},
-    "cline-subscription": {"label": "Cline subscription (official CLI)", "mode": "subscription", "url": "", "model": "cline-subscription", "env": "", "key": False, "command": ["cline", "--json", "--auto-approve", "false", "--plan"], "output": "jsonl", "setup": ["cline", "auth"]},
+    "claude-subscription": {"label": "Claude Code subscription (official CLI)", "mode": "subscription", "url": "", "model": "default", "env": "", "key": False, "command": ["claude", "-p", "--output-format", "text", "--permission-mode", "plan"], "setup": ["claude", "auth", "login"], "models": ["default", "sonnet", "opus", "haiku"], "model_arg": ["--model"]},
+    "codex-subscription": {"label": "ChatGPT/Codex subscription (official CLI)", "mode": "subscription", "url": "", "model": "configured", "env": "", "key": False, "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "--color", "never", "--json"], "output": "jsonl", "setup": ["codex", "login"], "model_arg": ["--model"]},
+    "cline-subscription": {"label": "Cline subscription (official CLI)", "mode": "subscription", "url": "", "model": "configured", "env": "", "key": False, "command": ["cline", "--json", "--auto-approve", "false", "--plan"], "output": "jsonl", "setup": ["cline", "auth"], "model_arg": ["--model"]},
     "gemini-subscription": {"label": "Gemini subscription (official CLI)", "mode": "subscription", "url": "", "model": "gemini-subscription", "env": "", "key": False, "command": ["gemini", "-p"], "setup": ["gemini"]},
 }
 
@@ -233,6 +247,47 @@ class C:
     YELLOW = "\033[33m" if ANSI else ""
     RED = "\033[31m" if ANSI else ""
     MAGENTA = "\033[35m" if ANSI else ""
+
+
+def _raw_ansi(code: str) -> str:
+    return code if ANSI else ""
+
+
+# Raw SGR codes; ui_palette() gates them behind the runtime ANSI flag so
+# themes stay testable and degrade to plain text when color is off.
+UI_THEMES: dict[str, dict[str, str]] = {
+    "dark": {
+        "user": "\033[35m",
+        "forge": "\033[36m",
+        "accent": "\033[35m",
+        "ok": "\033[32m",
+        "warn": "\033[33m",
+        "err": "\033[31m",
+        "dim": "\033[2m",
+        "bold": "\033[1m",
+        "reset": "\033[0m",
+    },
+    # Light terminals need darker hues; yellow is unreadable on white.
+    "light": {
+        "user": "\033[32m",
+        "forge": "\033[34m",
+        "accent": "\033[34m",
+        "ok": "\033[32m",
+        "warn": "\033[31m",
+        "err": "\033[31m",
+        "dim": "\033[2m",
+        "bold": "\033[1m",
+        "reset": "\033[0m",
+    },
+}
+
+
+def ui_palette(cfg: "Config | None" = None) -> dict[str, str]:
+    """Semantic ANSI palette for the active ui_theme (all empty strings when ANSI is off)."""
+    if not ANSI:
+        return {key: "" for key in next(iter(UI_THEMES.values()))}
+    name = str(cfg.data.get("ui_theme", "dark")).lower() if cfg is not None and isinstance(getattr(cfg, "data", None), dict) else "dark"
+    return dict(UI_THEMES.get(name, UI_THEMES["dark"]))
 
 
 def atomic_json(path: pathlib.Path, value: Any) -> None:
@@ -284,6 +339,8 @@ def migrate_legacy_app_home(destination: pathlib.Path) -> None:
 DEFAULT_CONFIG: dict[str, Any] = {
     "config_version": 31,
     "ui_language": "tr",
+    "ui_theme": "dark",
+    "ui_markdown": True,
     "ui_language_selected": False,
     "provider": "anthropic",
     "model": "claude-sonnet-4-5",
@@ -321,11 +378,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "vibe_command_timeout_seconds": 1200,
     "retry_attempts": 2,
     "retry_backoff_seconds": 0.5,
+    "retry_jitter_ratio": 0.25,
     "max_tool_output_chars": 30000,
-    # A request is billed again after every tool round.  Keep the rolling
-    # provider transcript deliberately small instead of waiting until it has
-    # grown to a model-sized (and very expensive) 120k-token emergency cap.
-    "input_budget_tokens": 24000,
+    # Rolling provider transcript ceiling. Quality parity with peer coding
+    # agents needs the model to keep its own earlier tool results; 48k tokens
+    # still bounds cost per tool round while avoiding mid-task context loss.
+    "input_budget_tokens": 48000,
     "auto_approve_writes": False,
     "auto_approve_commands": False,
     "input_price_per_million": 0.0,
@@ -342,7 +400,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "power_mode": "auto",
     "subagent_max_per_turn": 3,
     "auto_subagents": True,
-    "subagent_timeout_seconds": 30,
+    "subagent_timeout_seconds": 60,
     "custom_auth_mode": "auto",
     "web_project_mode": "auto",
     "work_mode": "auto",
@@ -374,6 +432,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "history_context_chars": 7000,
     "event_log_enabled": True,
     "event_log_max_lines": 2000,
+    # Durable per-session turn log cap (rows kept after each write).
+    "session_log_max_lines": 2000,
     "session_name": "main",
     "team_parallel": True,
     "team_max_workers": 3,
@@ -634,11 +694,15 @@ class Config:
             value = raw.lower()
             if value not in {"tr", "en"}:
                 raise ValueError("ui_language must be tr or en")
+        elif name == "ui_theme":
+            value = raw.lower()
+            if value not in {"dark", "light"}:
+                raise ValueError("ui_theme must be dark or light")
         elif name == "max_agent_steps":
             if int(raw) != 0:
                 raise ValueError("Sabit ajan adım sınırı kaldırıldı; max_agent_steps yalnızca 0 (sınırsız) olabilir")
             value = 0
-        elif name in {"max_tokens", "input_budget_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "stall_first_response_seconds", "stall_stream_idle_seconds", "stall_retry_attempts", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb", "vibe_max_hours", "vibe_review_cycles", "vibe_failure_retries", "vibe_retry_delay_seconds", "vibe_command_timeout_seconds", "skill_scout_min_security", "skill_scout_min_relevance", "skill_scout_max_auto_install", "skill_scout_max_project_skills", "skill_scout_cooldown_hours", "mcp_timeout_seconds", "chrome_debug_port"}:
+        elif name in {"max_tokens", "input_budget_tokens", "timeout_seconds", "first_response_timeout_seconds", "stream_idle_timeout_seconds", "request_total_timeout_seconds", "retry_budget_seconds", "preflight_timeout_seconds", "stall_first_response_seconds", "stall_stream_idle_seconds", "stall_retry_attempts", "goal_max_rounds", "flow_max_tasks", "flow_max_rounds", "flow_repair_rounds", "retry_attempts", "max_tool_output_chars", "web_max_results", "thinking_budget_tokens", "subagent_max_per_turn", "subagent_timeout_seconds", "memory_max_items", "history_context_turns", "history_context_chars", "event_log_max_lines", "session_log_max_lines", "team_max_workers", "sandbox_max_file_mb", "sandbox_max_transfer_mb", "vibe_max_hours", "vibe_review_cycles", "vibe_failure_retries", "vibe_retry_delay_seconds", "vibe_command_timeout_seconds", "skill_scout_min_security", "skill_scout_min_relevance", "skill_scout_max_auto_install", "skill_scout_max_project_skills", "skill_scout_cooldown_hours", "mcp_timeout_seconds", "chrome_debug_port"}:
             value: Any = int(raw)
             zero_allowed = {"flow_repair_rounds", "sandbox_max_transfer_mb", "stall_retry_attempts"}
             if value < 0 or (value == 0 and name not in zero_allowed):
@@ -685,7 +749,7 @@ class Config:
             sandbox_maximums = {"sandbox_max_file_mb": 1024, "sandbox_max_transfer_mb": 4096}
             if name in sandbox_maximums and value > sandbox_maximums[name]:
                 raise ValueError(f"{name} en fazla {sandbox_maximums[name]} olabilir")
-        elif name in {"temperature", "retry_backoff_seconds", "input_price_per_million", "output_price_per_million"}:
+        elif name in {"temperature", "retry_backoff_seconds", "retry_jitter_ratio", "input_price_per_million", "output_price_per_million"}:
             value = float(raw)
             if value < 0:
                 raise ValueError("Değer negatif olamaz")
@@ -693,7 +757,9 @@ class Config:
                 raise ValueError("temperature 0 ile 1 arasında olmalı")
             if name == "retry_backoff_seconds" and value > 10:
                 raise ValueError("retry_backoff_seconds 0 ile 10 arasında olmalı")
-        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "stall_guard_enabled", "forcegraph_auto_enabled", "mcp_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "model_lock", "skills_enabled", "skill_auto_select", "skill_scout_enabled", "vibe_mode", "youtube_music_autostart", "manager_design_mode"}:
+            if name == "retry_jitter_ratio" and value > 1:
+                raise ValueError("retry_jitter_ratio 0 ile 1 arasında olmalı")
+        elif name in {"auto_approve_writes", "auto_approve_commands", "setup_complete", "ui_language_selected", "ui_markdown", "auto_subagents", "autopilot_mode", "smart_autopilot_mode", "persistent_memory_enabled", "event_log_enabled", "team_parallel", "backup_enabled", "backup_active", "streaming_enabled", "watchdog_enabled", "stall_guard_enabled", "forcegraph_auto_enabled", "mcp_enabled", "sandbox_enabled", "sandbox_network_enabled", "sandbox_auto_transfer", "sandbox_snapshot_enabled", "flow_quality_gate", "auto_model_switch", "model_lock", "skills_enabled", "skill_auto_select", "skill_scout_enabled", "vibe_mode", "youtube_music_autostart", "manager_design_mode"}:
             if raw.lower() not in {"true", "false", "on", "off", "1", "0", "yes", "no"}:
                 raise ValueError("true veya false kullanın")
             value = raw.lower() in {"true", "on", "1", "yes"}
@@ -756,6 +822,17 @@ class Config:
             if self.data.get("provider") == "custom":
                 self.data["custom_endpoint_path"] = inferred_custom_route(raw_url)
         self.save()
+
+
+# --- cerrahi bölünme adım 4: config canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_config import (
+    Config as _NewConfig,
+    )  # type: ignore
+    Config = _NewConfig
+except ModuleNotFoundError:
+    pass
 
 
 PROFILE_FIELDS = (
@@ -913,84 +990,122 @@ def delete_connection_profile(cfg: Config, raw_name: str) -> bool:
     return True
 
 
-@dataclass
-class Usage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cached_tokens: int = 0
-    requests: int = 0
+try:
+    from forgecode_stores import HistoryStore, SessionStore, Usage, UsageStore, safe_session_name, trim_jsonl_file
+except ModuleNotFoundError:  # portable tek-dosya çalıştırma fallback'i
+    @dataclass
+    class Usage:
+        input_tokens: int = 0
+        output_tokens: int = 0
+        cached_tokens: int = 0
+        requests: int = 0
 
-    def add(self, other: "Usage") -> None:
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.cached_tokens += other.cached_tokens
-        self.requests += other.requests
+        def add(self, other: "Usage") -> None:
+            self.input_tokens += other.input_tokens
+            self.output_tokens += other.output_tokens
+            self.cached_tokens += other.cached_tokens
+            self.requests += other.requests
 
-    def cost(self, cfg: Config) -> float:
-        return (
-            self.input_tokens * float(cfg.data["input_price_per_million"])
-            + self.output_tokens * float(cfg.data["output_price_per_million"])
-        ) / 1_000_000
+        def cost(self, cfg: Config) -> float:
+            return (
+                self.input_tokens * float(cfg.data["input_price_per_million"])
+                + self.output_tokens * float(cfg.data["output_price_per_million"])
+            ) / 1_000_000
 
 
-class UsageStore:
-    def __init__(self, home: pathlib.Path):
-        self.path = home / "usage.jsonl"
-
-    def record(self, provider: str, model: str, usage: Usage) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        row = {
-            "time": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "provider": provider,
-            "model": model,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cached_tokens": usage.cached_tokens,
-        }
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    def total(self) -> Usage:
-        result = Usage()
+    def trim_jsonl_file(path: pathlib.Path, max_rows: int, max_bytes: int) -> None:
+        """Keep an append-only JSONL log bounded by rewriting only the newest rows."""
         try:
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                row = json.loads(line)
-                result.add(Usage(int(row.get("input_tokens", 0)), int(row.get("output_tokens", 0)), int(row.get("cached_tokens", 0)), 1))
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
-        return result
-
-
-class HistoryStore:
-    def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "history.jsonl"
-
-    def record(self, user_text: str, assistant_text: str, usage: Usage) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        row = {
-            "time": dt.datetime.now().isoformat(timespec="seconds"),
-            "user": user_text,
-            "assistant": assistant_text,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-        }
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    def recent(self, limit: int = 10) -> list[dict[str, Any]]:
-        try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            if path.stat().st_size <= max_bytes:
+                return
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            return []
-        rows: list[dict[str, Any]] = []
-        for line in lines[-limit:]:
+            return
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                for line in lines[-max(1, int(max_rows)):]:
+                    f.write(line + "\n")
+            tmp.replace(path)
+        except OSError:
             try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
-        return rows
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+    class UsageStore:
+        TRIM_MAX_ROWS = 4000
+        TRIM_THRESHOLD_BYTES = 1_000_000
+
+        def __init__(self, home: pathlib.Path):
+            self.path = home / "usage.jsonl"
+            self.trim_max_rows = self.TRIM_MAX_ROWS
+            self.trim_threshold_bytes = self.TRIM_THRESHOLD_BYTES
+
+        def record(self, provider: str, model: str, usage: Usage, cost_usd: float | None = None) -> None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            row = {
+                "time": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "provider": provider,
+                "model": model,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cached_tokens": usage.cached_tokens,
+            }
+            if cost_usd is not None:
+                row["cost_usd"] = round(float(cost_usd), 6)
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            trim_jsonl_file(self.path, self.trim_max_rows, self.trim_threshold_bytes)
+
+        def total(self) -> Usage:
+            result = Usage()
+            try:
+                for line in self.path.read_text(encoding="utf-8").splitlines():
+                    row = json.loads(line)
+                    result.add(Usage(int(row.get("input_tokens", 0)), int(row.get("output_tokens", 0)), int(row.get("cached_tokens", 0)), 1))
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
+            return result
+
+
+    class HistoryStore:
+        TRIM_MAX_ROWS = 1000
+        TRIM_THRESHOLD_BYTES = 1_000_000
+
+        def __init__(self, root: pathlib.Path):
+            self.path = root / ".forgecode" / "history.jsonl"
+            self.trim_max_rows = self.TRIM_MAX_ROWS
+            self.trim_threshold_bytes = self.TRIM_THRESHOLD_BYTES
+
+        def record(self, user_text: str, assistant_text: str, usage: Usage) -> None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            row = {
+                "time": dt.datetime.now().isoformat(timespec="seconds"),
+                "user": user_text,
+                "assistant": assistant_text,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            }
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            trim_jsonl_file(self.path, self.trim_max_rows, self.trim_threshold_bytes)
+
+        def recent(self, limit: int = 10) -> list[dict[str, Any]]:
+            try:
+                lines = self.path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return []
+            rows: list[dict[str, Any]] = []
+            for line in lines[-limit:]:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+            return rows
 
 
 def safe_session_name(raw: str) -> str:
@@ -1052,6 +1167,8 @@ class SessionStore:
                 rows.append(row)
         return rows
 
+    SESSION_TRIM_THRESHOLD_BYTES = 2_000_000
+
     def record_turn(self, user: str, assistant: str, usage: Usage, changed_files: list[str] | None = None) -> None:
         if not self.cfg.data.get("persistent_memory_enabled", True):
             return
@@ -1068,6 +1185,8 @@ class SessionStore:
         }
         with self._lock:
             self._append_jsonl(self.session_path, row)
+            max_rows = max(100, int(self.cfg.data.get("session_log_max_lines", 2000)))
+            trim_jsonl_file(self.session_path, max_rows, self.SESSION_TRIM_THRESHOLD_BYTES)
 
     def recent_turns(self, limit: int = 10) -> list[dict[str, Any]]:
         return self._read_jsonl(self.session_path, max(1, limit))
@@ -1135,11 +1254,7 @@ class SessionStore:
             self._append_jsonl(self.event_path, row)
             try:
                 max_lines = max(100, int(self.cfg.data.get("event_log_max_lines", 2000)))
-                if self.event_path.stat().st_size > 2_000_000:
-                    rows = self._read_jsonl(self.event_path, max_lines)
-                    tmp = self.event_path.with_suffix(".jsonl.tmp")
-                    tmp.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
-                    tmp.replace(self.event_path)
+                trim_jsonl_file(self.event_path, max_lines, 2_000_000)
             except OSError:
                 pass
 
@@ -1166,8 +1281,20 @@ class SessionStore:
             return []
 
 
-class ApiError(RuntimeError):
+try:  # cerrahi bölünme adım 2: canonical stores modülü varsa onu kullan
+    from forgecode_stores import SessionStore as _CanonicalSessionStore
+    from forgecode_stores import safe_session_name as _canonical_safe_session_name
+
+    SessionStore = _CanonicalSessionStore
+    safe_session_name = _canonical_safe_session_name
+except ModuleNotFoundError:
     pass
+
+
+class ApiError(RuntimeError):
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = max(0.0, float(retry_after)) if retry_after is not None else None
 
 
 class RequestStallError(ApiError):
@@ -1180,12 +1307,37 @@ class RequestStallError(ApiError):
         self.safe_to_retry = bool(safe_to_retry)
 
 
-class SteeringInterrupt(RuntimeError):
-    """User supplied a replacement instruction while an API call was active."""
+try:
+    from forgecode_base import SteeringInterrupt
+except ModuleNotFoundError:
+    class SteeringInterrupt(RuntimeError):
+        """User supplied a replacement instruction while an API call was active."""
 
-    def __init__(self, prompt: str):
-        super().__init__(prompt)
-        self.prompt = prompt
+        def __init__(self, prompt: str):
+            super().__init__(prompt)
+            self.prompt = prompt
+
+
+def _retry_after_hint(headers: Any) -> float | None:
+    """Parse a Retry-After header (seconds or HTTP-date) into seconds."""
+    try:
+        raw = headers.get("Retry-After") if headers is not None else None
+    except AttributeError:
+        return None
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        target = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, (target - dt.datetime.now(dt.timezone.utc)).total_seconds())
 
 
 def api_error_message(body: str) -> str:
@@ -1290,7 +1442,7 @@ def post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeou
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:2000]
         message = api_error_message(body)
-        raise ApiError(f"API {exc.code}: {message}") from exc
+        raise ApiError(f"API {exc.code}: {message}", retry_after=_retry_after_hint(exc.headers)) from exc
     except urllib.error.URLError as exc:
         raise ApiError(f"Bağlantı hatası: {exc.reason}") from exc
     except (TimeoutError, json.JSONDecodeError) as exc:
@@ -1307,7 +1459,8 @@ def is_transient_api_error(exc: ApiError) -> bool:
         return True
     return any(marker in message for marker in (
         "api 408", "api 429", "api 500", "api 502", "api 503", "api 504",
-        "connection reset", "connection aborted", "temporarily unavailable",
+        "connection reset", "connection aborted", "temporarily unavailable", "service unavailable",
+        "rate limit", "rate_limit", "too many requests", "overloaded", "capacity exceeded",
         "bağlantı hatası", "remote end closed", "timed out", "timeout",
         "zaman aşımı",
     ))
@@ -1321,9 +1474,19 @@ def _request_cancelled() -> bool:
     return bool(event is not None and event.is_set())
 
 
+def _transient_retry_delay(backoff: float, attempt: int, jitter_ratio: float) -> float:
+    """Exponential backoff with bounded jitter: base * 2^(attempt-1), ±ratio."""
+    base = min(max(0.0, backoff) * (2 ** max(0, attempt - 1)), 30.0)
+    ratio = max(0.0, min(1.0, float(jitter_ratio)))
+    if ratio <= 0.0 or base <= 0.0:
+        return base
+    return random.uniform(base * (1.0 - ratio), base * (1.0 + ratio))
+
+
 def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int | float | None) -> dict[str, Any]:
     attempts = max(1, min(5, int(cfg.data.get("retry_attempts", 2))))
     backoff = max(0.0, min(10.0, float(cfg.data.get("retry_backoff_seconds", 0.5))))
+    jitter_ratio = float(cfg.data.get("retry_jitter_ratio", 0.25))
     unbounded = not watchdog_enabled(cfg)
     budget = float("inf") if unbounded else max(1.0, float(cfg.data.get("retry_budget_seconds", 120)))
     deadline = time.monotonic() + budget
@@ -1341,7 +1504,11 @@ def post_json_with_retry(cfg: Config, url: str, headers: dict[str, str], payload
             last_error = exc
             if attempt >= attempts or not is_transient_api_error(exc):
                 raise
-            delay = min(backoff * attempt, max(0.0, deadline - time.monotonic()))
+            delay = _transient_retry_delay(backoff, attempt, jitter_ratio)
+            retry_hint = getattr(exc, "retry_after", None)
+            if retry_hint is not None:
+                delay = max(delay, float(retry_hint))
+            delay = min(delay, max(0.0, deadline - time.monotonic()))
             cancel_event = getattr(_REQUEST_RUNTIME, "cancel_event", None)
             if delay and cancel_event is not None:
                 if cancel_event.wait(delay):
@@ -1415,7 +1582,7 @@ def iter_sse_json(
                         yield event
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:2000]
-        raise ApiError(f"API {exc.code}: {api_error_message(body)}") from exc
+        raise ApiError(f"API {exc.code}: {api_error_message(body)}", retry_after=_retry_after_hint(exc.headers)) from exc
     except urllib.error.URLError as exc:
         raise ApiError(f"Bağlantı hatası: {exc.reason}") from exc
     except (TimeoutError, json.JSONDecodeError) as exc:
@@ -1766,7 +1933,10 @@ def preferred_custom_protocol(model: str) -> str:
 
 def fetch_models(cfg: Config) -> list[str]:
     if cfg.mode() == "subscription":
-        return [str(cfg.data.get("model") or "subscription")]
+        preset = PROVIDERS.get(str(cfg.data.get("provider")), {})
+        current = str(cfg.data.get("model") or preset.get("model") or "default")
+        models = [str(item) for item in preset.get("models", []) if str(item).strip()]
+        return list(dict.fromkeys([current, *models]))
     provider_preset = PROVIDERS.get(str(cfg.data.get("provider")), {})
     if provider_preset.get("models_url"):
         urls = [str(provider_preset["models_url"])]
@@ -1961,6 +2131,12 @@ def request_watchdog_limits(cfg: Config, read_only: bool = False) -> tuple[float
     if not watchdog_enabled(cfg):
         return float("inf"), float("inf"), float("inf")
     transport = max(0.05, float(cfg.data.get("timeout_seconds", 100)))
+    if cfg.mode() == "subscription":
+        # Official subscription CLIs may buffer JSONL until the final answer;
+        # treating their quiet startup as a stalled HTTP stream cuts healthy
+        # Codex/Claude runs at the short first-response limit.
+        total = max(30.0, min(900.0, float(cfg.data.get("request_total_timeout_seconds", 180))))
+        return total, total, total
     first = max(0.05, min(float(cfg.data.get("first_response_timeout_seconds", 60)), transport))
     idle = max(0.05, min(float(cfg.data.get("stream_idle_timeout_seconds", 75)), transport))
     total = max(first, idle, float(cfg.data.get("request_total_timeout_seconds", 180)))
@@ -2243,7 +2419,7 @@ class AnthropicProvider(Provider):
         thinking = cfg.get("thinking_mode", "off")
         if thinking != "off" and int(payload["max_tokens"]) >= 1280:
             requested = int(cfg["thinking_budget_tokens"])
-            requested = min(requested, 1024) if thinking == "low" else min(requested, 2048) if thinking == "medium" else requested
+            requested = min(requested, 2048) if thinking == "low" else min(requested, 8192) if thinking == "medium" else requested
             budget = max(1024, min(requested, max(1024, int(payload["max_tokens"]) - 256)))
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             payload["temperature"] = 1
@@ -2495,6 +2671,30 @@ class OpenAIChatProvider(Provider):
         return ModelReply(str(content), calls, usage, native, finish_reason)
 
 
+def subscription_cli_path(command: str) -> str | None:
+    """Locate an official subscription CLI without relying only on a stale Windows PATH."""
+    found = shutil.which(command)
+    if found:
+        return found
+    if os.name != "nt":
+        return None
+    suffixes = [suffix for suffix in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT").split(";") if suffix]
+    names = [command] if pathlib.Path(command).suffix else [command + suffix.lower() for suffix in suffixes]
+    home = pathlib.Path.home()
+    roots = (
+        home / ".local" / "bin",
+        pathlib.Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "npm",
+        pathlib.Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "Microsoft" / "WinGet" / "Links",
+        home / "scoop" / "shims",
+    )
+    for root in roots:
+        for name in names:
+            candidate = root / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 class SubscriptionCLIProvider(Provider):
     """Use an official, already signed-in vendor CLI without reading tokens."""
 
@@ -2504,7 +2704,7 @@ class SubscriptionCLIProvider(Provider):
         command = [str(part) for part in preset.get("command", [])]
         if not command:
             raise ApiError("Subscription provider has no official CLI command configured")
-        executable = shutil.which(command[0])
+        executable = subscription_cli_path(command[0])
         if not executable:
             raise ApiError(
                 f"Official {command[0]} CLI is not installed or is not on PATH. Install it from the vendor, "
@@ -2519,6 +2719,12 @@ class SubscriptionCLIProvider(Provider):
             + "\n\nMESSAGES:\n" + transcript[-16000:]
         )
         timeout = api_transport_timeout(self.cfg)
+        if timeout is None:
+            # A disabled API watchdog must not make a vendor CLI subprocess
+            # immortal. Codex JSONL usually emits only its final answer, so
+            # the outer heartbeat cannot observe progress while it runs.
+            configured_total = float(self.cfg.data.get("request_total_timeout_seconds", 180))
+            timeout = max(30.0, min(900.0, configured_total))
         try:
             # Official CLIs need the actual project to give useful answers. Each
             # adapter is constrained to its vendor's read-only/plan mode, while
@@ -2526,10 +2732,28 @@ class SubscriptionCLIProvider(Provider):
             project_root = pathlib.Path(str(self.cfg.data.get("_runtime_project_root") or ".")).resolve()
             if not project_root.is_dir():
                 raise ApiError(f"Subscription workspace is unavailable: {project_root}")
+            environment = os.environ.copy()
+            if self.cfg.data.get("provider") == "claude-subscription":
+                # Subscription mode must not silently fall back to a metered API
+                # credential, which has higher precedence in Claude Code.
+                environment.pop("ANTHROPIC_API_KEY", None)
+                environment.pop("ANTHROPIC_AUTH_TOKEN", None)
+            elif self.cfg.data.get("provider") == "codex-subscription":
+                # Never let the official CLI silently switch this bridge to a
+                # metered API credential. OAuth/subscription auth stays in the
+                # CLI's own account store.
+                environment.pop("OPENAI_API_KEY", None)
+                environment.pop("CODEX_API_KEY", None)
+            invocation = [executable, *command[1:]]
+            selected_model = str(self.cfg.data.get("model") or "").strip()
+            model_arg = [str(part) for part in preset.get("model_arg", [])]
+            if model_arg and selected_model and selected_model not in {"configured", "subscription"}:
+                invocation.extend([*model_arg, selected_model])
+            # Read the prompt from stdin to avoid Windows command-line limits.
             completed = subprocess.run(
-                [executable, *command[1:], prompt], cwd=str(project_root), stdin=subprocess.DEVNULL,
+                [*invocation, "-"], cwd=str(project_root), input=prompt,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                timeout=timeout, check=False,
+                timeout=timeout, check=False, env=environment,
             )
         except subprocess.TimeoutExpired as exc:
             raise ApiError(f"Subscription CLI timed out: {command[0]}") from exc
@@ -2554,9 +2778,27 @@ class SubscriptionCLIProvider(Provider):
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(item, dict) or item.get("type") != "say" or item.get("partial"):
+            if not isinstance(item, dict):
                 continue
-            value = str(item.get("text") or "").strip()
+            if item.get("type") == "say":
+                if item.get("partial"):
+                    continue
+                value = str(item.get("text") or "").strip()
+            elif item.get("type") == "item.completed":
+                payload = item.get("item")
+                if not isinstance(payload, dict) or payload.get("type") not in {"agent_message", "message"}:
+                    continue
+                content = payload.get("content")
+                if isinstance(content, list):
+                    value = "\n".join(
+                        str(part.get("text") or "").strip()
+                        for part in content
+                        if isinstance(part, dict) and part.get("text")
+                    ).strip()
+                else:
+                    value = str(payload.get("text") or content or "").strip()
+            else:
+                continue
             if value and (not messages or messages[-1] != value):
                 messages.append(value)
         return "\n".join(messages).strip()
@@ -2570,6 +2812,47 @@ def make_provider(cfg: Config) -> Provider:
     if cfg.mode() == "responses":
         return OpenAIProvider(cfg)
     return OpenAIChatProvider(cfg)
+
+
+# --- cerrahi bölünme adım 3: providers canonical override ---
+# forgecode_providers.py varsa runtime orayı kullanır (tek kaynak).
+# Dosya silinirse yukarıdaki gömülü tanımlar fallback olarak çalışır.
+try:
+    from forgecode_providers import (  # type: ignore
+        AnthropicProvider as _NewAnthropicProvider,
+        ApiError as _NewApiError,
+        ModelReply as _NewModelReply,
+        OpenAIChatProvider as _NewOpenAIChatProvider,
+        OpenAIProvider as _NewOpenAIProvider,
+        Provider as _NewProvider,
+        RequestStallError as _NewRequestStallError,
+        SubscriptionCLIProvider as _NewSubscriptionCLIProvider,
+        compatible_tool_arguments as _new_compat_args,
+        compatible_tool_arguments_with_error as _new_compat_args_err,
+        convert_messages_for_mode as _new_convert_msgs,
+        make_provider as _new_make_provider,
+        portable_message_text as _new_portable_text,
+        subscription_cli_path as _new_sub_cli_path,
+        tool_call_validation_error as _new_tool_validation,
+    )
+
+    ApiError = _NewApiError
+    RequestStallError = _NewRequestStallError
+    ModelReply = _NewModelReply
+    Provider = _NewProvider
+    AnthropicProvider = _NewAnthropicProvider
+    OpenAIProvider = _NewOpenAIProvider
+    OpenAIChatProvider = _NewOpenAIChatProvider
+    SubscriptionCLIProvider = _NewSubscriptionCLIProvider
+    compatible_tool_arguments = _new_compat_args
+    compatible_tool_arguments_with_error = _new_compat_args_err
+    tool_call_validation_error = _new_tool_validation
+    portable_message_text = _new_portable_text
+    convert_messages_for_mode = _new_convert_msgs
+    subscription_cli_path = _new_sub_cli_path
+    make_provider = _new_make_provider  # type: ignore
+except ModuleNotFoundError:
+    pass
 
 
 SUBAGENT_ROLES = ("explore", "review", "plan", "design", "backend", "frontend", "research", "test", "security")
@@ -3872,6 +4155,23 @@ class MCPManager:
         profiles.pop(selected)
         self.cfg.data["mcp_servers"] = profiles
         self.cfg.save()
+
+
+# --- cerrahi bölünme adım 6: mcp canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_mcp import (
+    ForceGraphBridge as _NewForceGraphBridge,
+    MCPStdioClient as _NewMCPStdioClient,
+    MCPHttpClient as _NewMCPHttpClient,
+    MCPManager as _NewMCPManager,
+    )  # type: ignore
+    ForceGraphBridge = _NewForceGraphBridge
+    MCPStdioClient = _NewMCPStdioClient
+    MCPHttpClient = _NewMCPHttpClient
+    MCPManager = _NewMCPManager
+except ModuleNotFoundError:
+    pass
 
 
 def parse_file_view_command(command: str) -> tuple[str, str, int] | None:
@@ -5335,6 +5635,23 @@ class ForceSandboxManager:
             f"snapshot: {'açık' if self.cfg.data.get('sandbox_snapshot_enabled', True) else 'kapalı'}\n"
             f"Çalışma alanı: {self.workspace}\nBekleyen değişiklik: {pending} · son snapshot: {last_snapshot}"
         )
+
+
+# --- cerrahi bölünme adım 7: sandbox canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_sandbox import (
+    SandboxTransferResult as _NewSandboxTransferResult,
+    NativeSandboxProcess as _NewNativeSandboxProcess,
+    WindowsAppContainerRunner as _NewWindowsAppContainerRunner,
+    ForceSandboxManager as _NewForceSandboxManager,
+    )  # type: ignore
+    SandboxTransferResult = _NewSandboxTransferResult
+    NativeSandboxProcess = _NewNativeSandboxProcess
+    WindowsAppContainerRunner = _NewWindowsAppContainerRunner
+    ForceSandboxManager = _NewForceSandboxManager
+except ModuleNotFoundError:
+    pass
 
 
 AI_EDITABLE_SETTINGS = {
@@ -6942,7 +7259,7 @@ class WorkspaceTools:
         limit = int(self.cfg.data["max_tool_output_chars"])
         efficiency = self.cfg.data.get("efficiency_mode", "balanced")
         if efficiency == "balanced":
-            limit = min(limit, 16000)
+            limit = min(limit, 28000)
         elif efficiency == "max":
             limit = min(limit, 6000)
         if len(output) > limit:
@@ -6997,7 +7314,7 @@ class WorkspaceTools:
     def tool_list_files(self, pattern: str = "*") -> str:
         names = [p.relative_to(self.root).as_posix() for p in self.visible_files()]
         matched = [n for n in names if fnmatch.fnmatch(n, pattern) or fnmatch.fnmatch(pathlib.PurePosixPath(n).name, pattern)]
-        result_limit = 150 if self.cfg.data.get("efficiency_mode") == "max" else 500 if self.cfg.data.get("efficiency_mode") == "balanced" else 2000
+        result_limit = 150 if self.cfg.data.get("efficiency_mode") == "max" else 1000 if self.cfg.data.get("efficiency_mode") == "balanced" else 4000
         return "\n".join(sorted(matched)[:result_limit]) or "Dosya bulunamadı."
 
     def tool_read_file(self, path: str, start_line: int = 1, end_line: int = 400) -> str:
@@ -7005,7 +7322,7 @@ class WorkspaceTools:
         if file.stat().st_size > 2_000_000:
             raise ValueError("Dosya 2 MB sınırından büyük")
         lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-        line_limit = 120 if self.cfg.data.get("efficiency_mode") == "max" else 300 if self.cfg.data.get("efficiency_mode") == "balanced" else 1000
+        line_limit = 150 if self.cfg.data.get("efficiency_mode") == "max" else 800 if self.cfg.data.get("efficiency_mode") == "balanced" else 2000
         start = max(1, start_line)
         end = min(len(lines), max(start_line, end_line), start + line_limit - 1)
         return "\n".join(f"{i:>5} | {lines[i-1]}" for i in range(start, end + 1))
@@ -7023,8 +7340,8 @@ class WorkspaceTools:
                 for i, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
                     hay = line if case_sensitive else line.lower()
                     if needle in hay:
-                        hits.append(f"{rel}:{i}: {line[:300]}")
-                        hit_limit = 50 if self.cfg.data.get("efficiency_mode") == "max" else 150 if self.cfg.data.get("efficiency_mode") == "balanced" else 500
+                        hits.append(f"{rel}:{i}: {line[:400]}")
+                        hit_limit = 80 if self.cfg.data.get("efficiency_mode") == "max" else 300 if self.cfg.data.get("efficiency_mode") == "balanced" else 500
                         if len(hits) >= hit_limit:
                             return "\n".join(hits) + "\n… sonuç sınırı"
             except (OSError, UnicodeDecodeError):
@@ -7171,7 +7488,10 @@ class WorkspaceTools:
                 raise ValueError(f"Doğrulama başarısız; dosya yok: {raw_path}")
             payload = target.read_bytes()
             if not payload:
-                raise ValueError(f"Doğrulama başarısız; dosya boş: {raw_path}")
+                raise ValueError(
+                    f"Doğrulama başarısız; dosya boş: {raw_path} "
+                    "(boş dosyalar doğrulanamaz; önce içeriğini yazın veya bu yolu listeden çıkarın)"
+                )
             relative = target.relative_to(self.root).as_posix()
             expected = str(requirements.get(str(raw_path), requirements.get(relative, "")))
             digest = hashlib.sha256(payload).hexdigest()[:16]
@@ -8365,6 +8685,7 @@ commands:
             "max_tool_output_chars": (1000, 100000), "web_max_results": (1, 20),
             "thinking_budget_tokens": (1024, 32000), "subagent_timeout_seconds": (5, 300),
             "history_context_turns": (1, 50), "history_context_chars": (1000, 100000),
+            "session_log_max_lines": (100, 100000),
             "team_max_workers": (1, 3),
         }
         if selected in numeric_limits:
@@ -8380,6 +8701,17 @@ commands:
         after = self.cfg.data.get(selected)
         safe_reason = redact_sensitive(reason).strip()[:500]
         return f"OK: ForgeCode ayarı güncellendi: {selected} = {after!r} (önce: {before!r}). Gerekçe: {safe_reason or 'belirtilmedi'}"
+
+
+# --- cerrahi bölünme adım 9: workspace canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_workspace import (
+    WorkspaceTools as _NewWorkspaceTools,
+    )  # type: ignore
+    WorkspaceTools = _NewWorkspaceTools
+except ModuleNotFoundError:
+    pass
 
 
 class GoalStore:
@@ -8511,8 +8843,11 @@ class TaskQueueStore:
         except (OSError, TypeError, ValueError, OverflowError):
             return False
 
+    MAX_FINISHED_TASKS = 150
+
     def __init__(self, root: pathlib.Path):
         self.path = root / ".forgecode" / "tasks.json"
+        self.max_finished_tasks = self.MAX_FINISHED_TASKS
         raw = load_json(self.path, {"version": 2, "tasks": []})
         source = raw if isinstance(raw, list) else raw.get("tasks", []) if isinstance(raw, dict) else []
         self.tasks: list[dict[str, Any]] = []
@@ -8548,6 +8883,11 @@ class TaskQueueStore:
             self.save()
 
     def save(self) -> None:
+        finished_indexes = [i for i, task in enumerate(self.tasks) if task.get("status") in FLOW_FINAL_STATES]
+        overflow = len(finished_indexes) - max(1, int(self.max_finished_tasks))
+        if overflow > 0:
+            oldest = set(sorted(finished_indexes, key=lambda i: str(self.tasks[i].get("created_at") or ""))[:overflow])
+            self.tasks = [task for index, task in enumerate(self.tasks) if index not in oldest]
         atomic_json(self.path, {"version": 2, "updated_at": dt.datetime.now().isoformat(timespec="seconds"), "tasks": self.tasks})
 
     def add(self, title: str, acceptance: str = "", flow_id: str = "manual", objective: str = "", kind: str = "task") -> dict[str, Any]:
@@ -8600,8 +8940,13 @@ class TaskQueueStore:
                 return task
         return None
 
-    def first_unresolved(self) -> dict[str, Any] | None:
-        return next((task for task in self.tasks if task.get("status") not in FLOW_FINAL_STATES), None)
+    def first_unresolved(self, flow_id: str = "") -> dict[str, Any] | None:
+        selected_flow = str(flow_id).strip()
+        return next((
+            task for task in self.tasks
+            if task.get("status") not in FLOW_FINAL_STATES
+            and (not selected_flow or str(task.get("flow_id", "")) == selected_flow)
+        ), None)
 
     def update(self, task: dict[str, Any], status: str, **fields: Any) -> None:
         if status not in FLOW_FINAL_STATES | FLOW_ACTIVE_STATES:
@@ -8828,6 +9173,19 @@ class VibeSessionStore:
         )
 
 
+# --- cerrahi bölünme adım 5: queues canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_queues import (
+    TaskQueueStore as _NewTaskQueueStore,
+    VibeSessionStore as _NewVibeSessionStore,
+    )  # type: ignore
+    TaskQueueStore = _NewTaskQueueStore
+    VibeSessionStore = _NewVibeSessionStore
+except ModuleNotFoundError:
+    pass
+
+
 @dataclass
 class ForceFlowTaskResult:
     task_id: str
@@ -8926,7 +9284,7 @@ def create_forceflow_plan(agent: "Agent", objective: str, max_tasks: int) -> lis
     )
     agent.session_usage.add(reply.usage)
     agent.session_cost_usd += reply.usage.cost(agent.cfg)
-    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage)
+    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(agent.cfg))
     tasks = parse_forceflow_plan(reply.text, max_tasks)
     if not tasks:
         tasks = [{"title": objective.strip(), "acceptance": "The requested outcome is implemented and verified."}]
@@ -9212,10 +9570,11 @@ def run_forceflow_queue(
     repair_rounds: int = 0,
     max_tasks_to_process: int = 0,
     after_task: Callable[[ForceFlowTaskResult], None] | None = None,
+    flow_id: str = "",
 ) -> ForceFlowRunResult:
     processed: list[ForceFlowTaskResult] = []
     while True:
-        task = store.first_unresolved()
+        task = store.first_unresolved(flow_id)
         if task is None:
             return ForceFlowRunResult(True, processed)
         status = str(task.get("status", "pending"))
@@ -9259,7 +9618,7 @@ def run_forceflow_queue(
         if not result.completed:
             return ForceFlowRunResult(False, processed, result.task_id)
         if max_tasks_to_process > 0 and len(processed) >= max_tasks_to_process:
-            return ForceFlowRunResult(store.first_unresolved() is None, processed)
+            return ForceFlowRunResult(store.first_unresolved(flow_id) is None, processed)
 
 
 _PROJECT_CONTEXT_CACHE: dict[tuple[str, str, bool], tuple[str, float]] = {}
@@ -9348,6 +9707,7 @@ def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool
 
 SYSTEM_PROMPT = """You are ForgeCode, a careful senior software engineering agent operating in the user's project.
 SILENT DIRECT EXECUTION: Never announce intent with phrases like "yapıyorum", "inceliyorum", "düşünüyorum", "çözüyorum" before acting — call the required tool immediately. Commentary must never delay or replace execution.
+If your message says you are checking/reading/inspecting something ("bakıyorum", "inceliyorum", "let me check"), the SAME message must contain the corresponding tool call. An announcement without a tool call ends the turn having done nothing and is treated as a failure.
 Inspect relevant files before changing them. Use tools to make requested changes and run focused verification.
 For coordinated edits to existing files, prefer apply_edits so every exact replacement is validated before any write. Use verify_artifacts for compact existence and hash evidence; UTF-8 sources can also use required-text checks, while compiled/binary artifacts are verified by non-empty size and hash. It complements rather than replaces real tests.
 Use read_file for project file contents; do not invoke cat, type, Get-Content, head, or tail through run_command merely to read a file. If one inspection tool fails, diagnose its returned error instead of cycling through equivalent shell commands.
@@ -9377,7 +9737,7 @@ Project context:
 # commentary must never be counted as the assistant's final result message.
 # Use robust substring markers (casefold) so Turkish variants are never missed,
 # regardless of encoding. The stream consumer also drops thinking deltas.
-_THINKING_MARKERS = ("yapiyorum", "yapıyor", "inceliyorum", "düşünüyorum", "dusunuyorum", "çözüyorum", "cozuyorum", "hata yakaland", "onar")
+_THINKING_MARKERS = ("yapiyorum", "yapıyor", "inceliyorum", "düşünüyorum", "dusunuyorum", "çözüyorum", "cozuyorum", "hata yakaland", "onarıyorum", "onariyorum")
 _THINKING_TRACE_RE = re.compile(r"(yap[i\u0131]yorum|inceliyorum|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum|\u00e7[\u00f6o]z[\u00fc\u0131]yorum|hata yakaland|onar[\u0131i]yorum)", re.IGNORECASE)
 _THINKING_STRIP_RE = re.compile(r"^\s*(hata yakaland.*?onar[\u0131i]yorum|hata yakaland.*|onar[\u0131i]yorum.*|yap[i\u0131]yorum.*|inceliyorum.*|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum.*|\u00e7[\u00f6o]z[\u00fc\u0131]yorum.*)[\r\n]+", re.IGNORECASE | re.DOTALL)
 _GENERIC_THINKING_LINE_RE = re.compile(r"^\s*(yap[i\u0131]yorum|inceliyorum|d[\u00fc\u0131]s[\u00fc\u0131]n[\u00fc\u0131]yorum|\u00e7[\u00f6o]z[\u00fc\u0131]yorum|onar[\u0131i]yorum)\b[^\r\n]*[\r\n]+", re.IGNORECASE)
@@ -9432,6 +9792,34 @@ def _strip_thinking_prefix(text: str) -> str:
     if stripped.strip().casefold() in {"hata yakalandı — onarıyorum", "hata yakalandı - onariyorum", "yapıyorum", "inceliyorum", "onarıyorum", "düşünüyorum", "çözüyorum"}:
         return ""
     return str(text)
+
+# Announced-but-unexecuted inspection: a final message claiming the model is
+# "looking/checking/reading" something WITHOUT any tool call in the same
+# response means nothing was actually examined. Only unfinished-action forms
+# (present continuous, future, hortative) match; past tense ("kontrol ettim",
+# "checked X") is a legitimate evidence-backed answer and never matches.
+_ACTION_INTENT_RE = re.compile(
+    r"("
+    r"bak[iı]yorum|bakaca[gğ][iı]m|bakal[ıi]m"
+    r"|inceliyorum|inceleyece[gğ]im|inceleyelim"
+    r"|kontrol ediyorum|kontrol edece[gğ]im|kontrol edelim"
+    r"|okuyorum"
+    r"|ara[sş]t[iı]r[iı]yorum|ara[sş]t[iı]raca[gğ][iı]m"
+    r"|a[cç][iı]yorum|a[cç]aca[gğ][iı]m"
+    r"|deniyorum|deneyece[gğ]im"
+    r"|let me (check|look|read|inspect|see|dig)"
+    r"|i('| a)?m (checking|looking|reading|inspecting)"
+    r"|i'?ll (check|look|read|inspect|dig)"
+    r"|going to (check|look|read|inspect)"
+    r")",
+    re.IGNORECASE,
+)
+
+def _has_unfulfilled_action_intent(text: str) -> bool:
+    stripped = str(text).strip()
+    if len(stripped) < 8:
+        return False
+    return bool(_ACTION_INTENT_RE.search(stripped))
 
 COMPACT_PROXY_SYSTEM_PROMPT = """You are ForgeCode, a coding agent working in the user's local project.
 SILENT DIRECT EXECUTION: Never announce intent before acting — call tools immediately without "yapıyorum/inceliyorum" preamble.
@@ -10010,6 +10398,19 @@ class ForceContext:
         return "\n".join(output)
 
 
+# --- cerrahi bölünme adım 8: context+skills canonical override ---
+# Canonical modül varsa runtime orayı kullanır; silinirse yukarıdaki gömülü tanımlar fallback.
+try:
+    from forgecode_context import (
+    LegacyForceContext as _NewLegacyForceContext,
+    ForceContext as _NewForceContext,
+    )  # type: ignore
+    LegacyForceContext = _NewLegacyForceContext
+    ForceContext = _NewForceContext
+except ModuleNotFoundError:
+    pass
+
+
 @dataclass
 class PlanStep:
     id: str
@@ -10066,8 +10467,6 @@ class ExecutionState:
     inspections_after_mutation: int = 0
     successful_checks: int = 0
     errors: list[DebugFinding] = field(default_factory=list)
-    confidence: float = 0.0
-    confidence_breakdown: dict[str, float] = field(default_factory=dict)
     missing_evidence: list[str] = field(default_factory=list)
 
 
@@ -10103,11 +10502,11 @@ class TokenBudgetEngine:
         elif artifact_task:
             # Tool arguments contain the actual file body. A small generic
             # answer cap can cut JSON midway and make write_file appear broken.
-            output = min(maximum, 4096 if efficiency == "max" else 6144)
+            output = min(maximum, 6144) if efficiency == "max" else maximum
         elif task_type == "chat":
-            output = min(maximum, 512)
+            output = min(maximum, 512 if efficiency == "max" else 1024)
         else:
-            output = min(maximum, 2048 if efficiency == "max" else 4096)
+            output = min(maximum, 2048 if efficiency == "max" else maximum)
         context = 900 if efficiency == "max" else 2200 if efficiency == "balanced" else 5000
         planning = 160 if efficiency == "max" else 320
         debugging = 240 if task_type == "debug" else 120
@@ -10175,6 +10574,10 @@ class DebuggingEngine:
     def diagnose(self, tool: str, error: str) -> DebugFinding:
         text = str(error).casefold()
         rules = (
+            # Empty-success transport glitches were classified "unknown", which
+            # both misreported the activity feed and unfairly counted them as
+            # severe errors in the confidence score.
+            ("empty-response", ("görünür içerik veya araç çağrısı", "boş veya json olmayan yanıt"), "Retry once with compacted context; repeated empty successes mean the proxy/model is returning unusable responses, so switch model or provider.", True),
             ("path", ("outside", "dışına", "path", "directory", "folder"), "Use a project-relative file path and inspect the target before retrying.", False),
             ("tool-contract", ("unexpected keyword", "required", "unknown tool", "bilinmeyen", "kullanılamaz"), "Use only a supplied tool and its exact schema; do not retry the same arguments.", False),
             ("authentication", ("401", "403", "api key", "unauthorized", "forbidden"), "Stop blind retries; verify provider, endpoint, protocol, and authentication mode.", False),
@@ -10222,29 +10625,8 @@ class VerificationEngine:
         return missing
 
 
-class ConfidenceEngine:
-    """Score evidence quality; confidence never substitutes for verification."""
-
-    def score(self, state: ExecutionState, changed_files: list[str], final_text: str,
-              requires_artifacts: bool) -> tuple[float, dict[str, float]]:
-        breakdown = {"plan": 0.15, "answer": 0.10 if final_text.strip() else 0.0,
-                     "artifacts": 0.0, "inspection": 0.0, "verification": 0.0, "reliability": 0.0}
-        if requires_artifacts:
-            breakdown["artifacts"] = 0.20 if changed_files else 0.0
-            breakdown["inspection"] = 0.15 if state.inspections_after_mutation else 0.0
-            breakdown["verification"] = 0.25 if state.successful_checks else 0.0
-        else:
-            breakdown["answer"] += 0.40
-            breakdown["inspection"] = 0.15 if state.successful_tools else 0.0
-        severe = sum(1 for error in state.errors if error.category in {"authentication", "permission", "unknown"})
-        breakdown["reliability"] = max(0.0, 0.15 - min(0.15, severe * 0.075))
-        score = max(0.0, min(1.0, sum(breakdown.values()) - min(0.2, len(state.missing_evidence) * 0.06)))
-        state.confidence, state.confidence_breakdown = score, breakdown
-        return score, breakdown
-
-
 class ExecutionKernel:
-    """Coordinate planning, debugging, verification, confidence, and run receipts."""
+    """Coordinate planning, debugging, verification, and run receipts."""
 
     def __init__(self, root: pathlib.Path, cfg: Config):
         self.root, self.cfg = root, cfg
@@ -10252,7 +10634,6 @@ class ExecutionKernel:
         self.planner = PlanningEngine(self.budgets)
         self.debugger = DebuggingEngine()
         self.verifier = VerificationEngine()
-        self.confidence = ConfidenceEngine()
 
     def begin(self, prompt: str, requires_artifacts: bool, read_only: bool, power: bool,
               baseline: dict[str, tuple[int, int]]) -> ExecutionState:
@@ -10288,15 +10669,13 @@ class ExecutionKernel:
     def finish(self, state: ExecutionState, changed_files: list[str], final_text: str,
                requires_artifacts: bool, requires_multifile_web: bool) -> dict[str, Any]:
         missing = self.verifier.evaluate(state, changed_files, final_text, requires_artifacts, requires_multifile_web)
-        score, breakdown = self.confidence.score(state, changed_files, final_text, requires_artifacts)
-        level = "high" if score >= 0.8 else "medium" if score >= 0.6 else "low"
         report = {"run_id": state.run_id, "started_at": state.started_at,
                   "finished_at": dt.datetime.now().isoformat(timespec="seconds"),
                   "task_type": state.plan.task_type, "plan": [step.__dict__ for step in state.plan.steps],
                   "verification_expected": state.plan.verification_expected,
-                  "token_budget": state.plan.token_budget, "confidence": round(score, 3),
-                  "confidence_level": level, "verification_passed": not missing,
-                  "confidence_breakdown": breakdown, "missing_evidence": missing,
+                  "token_budget": state.plan.token_budget,
+                  "verification_passed": not missing,
+                  "missing_evidence": missing,
                   "successful_tools": state.successful_tools[-100:],
                   "successful_checks": state.successful_checks,
                   "mutations": state.mutations[-100:],
@@ -10968,12 +11347,12 @@ class Agent:
 
     def _input_budget_tokens(self) -> int:
         """Return the rolling request budget, including the system prompt."""
-        configured = max(4000, min(120_000, int(self.cfg.data.get("input_budget_tokens", 24000))))
-        efficiency_cap = {"max": 12000, "balanced": 24000, "off": 60000}.get(
-            str(self.cfg.data.get("efficiency_mode", "balanced")), 24000
+        configured = max(4000, min(120_000, int(self.cfg.data.get("input_budget_tokens", 48000))))
+        efficiency_cap = {"max": 12000, "balanced": 48000, "off": 100_000}.get(
+            str(self.cfg.data.get("efficiency_mode", "balanced")), 48000
         )
         if self._power_active:
-            efficiency_cap = max(efficiency_cap, 36000)
+            efficiency_cap = max(efficiency_cap, 64000)
         return min(configured, efficiency_cap)
 
     def _compact_messages_for_token_budget(self, max_input_tokens: int | None = None) -> None:
@@ -11004,8 +11383,8 @@ class Agent:
             for idx, m in enumerate(self.messages[:-1]):
                 if isinstance(m, dict) and m.get("role") in ("user", "tool"):
                     content = str(m.get("content", ""))
-                    if len(content) > 4000 and not content.endswith("]"):
-                        m["content"] = content[:4000] + f"\n… [kırpıldı: {len(content)-4000} karakter token bütçesi için]"
+                    if len(content) > 16000 and "[kırpıldı" not in content:
+                        m["content"] = content[:16000] + f"\n… [kırpıldı: {len(content)-16000} karakter token bütçesi için]"
                         dropped = True
                         break
             if dropped:
@@ -11057,7 +11436,6 @@ class Agent:
             f"request_watchdog={request_watchdog_status_text(self.cfg)}\n"
             "\nLatest execution-kernel receipt:\n" + json.dumps({
                 "run_id": execution.get("run_id"), "task_type": execution.get("task_type"),
-                "confidence": execution.get("confidence"), "confidence_level": execution.get("confidence_level"),
                 "verification_passed": execution.get("verification_passed"),
                 "missing_evidence": execution.get("missing_evidence", []), "errors": execution.get("errors", [])[-8:],
             }, ensure_ascii=False, indent=2) +
@@ -11104,11 +11482,14 @@ class Agent:
         return min(4.0, 0.5 * (2 ** max(0, attempt)))
 
     def _compact_retry_messages(self) -> None:
-        """Idempotent retry: strip stale full context before re-send."""
-        # Keep only last assistant+user pair; drop earlier full-context tool dumps
-        if len(self.messages) > 4:
-            self.messages = self.messages[-4:]
-        self._compact_messages_for_token_budget(max_input_tokens=min(12000, self._input_budget_tokens()))
+        """Idempotent retry: trim stale bulk before re-send without going blind.
+
+        Keeps a meaningful working tail (16 messages) so a transient transport
+        error does not wipe the model's own earlier tool results mid-task.
+        """
+        if len(self.messages) > 16:
+            self.messages = self.messages[-16:]
+        self._compact_messages_for_token_budget(max_input_tokens=min(32000, self._input_budget_tokens()))
         # Invalidate cached prefix so next system() reuses pruned context
         self._system_cache = ""
         self._system_cache_key = None
@@ -11271,7 +11652,8 @@ class Agent:
         message = "İstek canlı yönlendirmeyle değiştirildi; görünür ilerleme bağlamı kaydedildi" if reason == "steer" else "İstek kullanıcı tarafından durduruldu; devam bağlamı kaydedildi"
         self.session_store.log_event(event, message, {"files": changed, "queued": bool(queued_next), "visible_partial": bool(partial_output)})
         self.messages.clear()
-        self.completed_turns.clear()
+        # completed_turns is deliberately preserved: steering must redirect the
+        # work, not amnesia it. The resume summary rides on top of real history.
         self._system_cache = ""
         return summary
 
@@ -11291,6 +11673,21 @@ class Agent:
         if mode in {"anthropic", "chat"}:
             return [{"role": "user", "content": "Reply with only: OK"}]
         return [{"role": "user", "content": [{"type": "input_text", "text": "Reply with only: OK"}]}]
+
+    def _backup_eligible(self, cause: ApiError | BaseException | str) -> bool:
+        if not is_limit_or_quota_error(cause):
+            return False
+        if not self.cfg.data.get("backup_enabled") or self.cfg.data.get("backup_active"):
+            return False
+        backup = self.cfg.data.get("backup_connection", {})
+        if not isinstance(backup, dict) or not backup.get("provider"):
+            return False
+        current = connection_state(self.cfg)
+        same_connection = all(
+            str(current.get(field, "")) == str(backup.get(field, ""))
+            for field in ("provider", "model", "base_url")
+        )
+        return not (same_connection and not self.cfg.data.get("backup_api_key"))
 
     def activate_backup(self, cause: ApiError | BaseException | str) -> bool:
         if not is_limit_or_quota_error(cause):
@@ -11640,12 +12037,13 @@ class Agent:
 
     def _prepare_turn(self) -> int:
         mode = self.cfg.data.get("efficiency_mode", "balanced")
-        if self._power_active:
-            self.messages = [item for turn in self.completed_turns[-6:] for item in turn]
+        if self._power_active or mode == "balanced":
+            # Full working memory: the per-request token compaction is the only
+            # limiter. A 3-6 turn window made the model lose its own earlier
+            # tool results and re-do finished work.
+            self.messages = [item for turn in self.completed_turns for item in turn]
         elif mode == "max":
             self.messages = []
-        elif mode == "balanced":
-            self.messages = [item for turn in self.completed_turns[-3:] for item in turn]
         self._system_cache = ""
         self.subagent_calls = 0
         return len(self.messages)
@@ -11678,7 +12076,7 @@ class Agent:
 
     def _remember_turn(self, start: int) -> None:
         self.completed_turns.append(self.messages[start:])
-        self.completed_turns = self.completed_turns[-8:]
+        self.completed_turns = self.completed_turns[-24:]
 
     def _effective_tools(self, prompt: str) -> list[dict[str, Any]]:
         if is_simple_conversation(prompt):
@@ -11868,7 +12266,7 @@ class Agent:
             return "ask", f"AI güvenlik kontrolü kullanılamadı: {type(exc).__name__}."
         self.session_usage.add(reply.usage)
         self.session_cost_usd += reply.usage.cost(self.cfg)
-        self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage)
+        self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(self.cfg))
         raw = reply.text.strip()
         parsed: Any = None
         try:
@@ -11932,16 +12330,16 @@ class Agent:
             "\n\nPROJECT FILE MAP:\n" + "\n".join(file_map)
         )
         try:
-            reply = self._standalone_request("Orkestratör", system, user, 420)
+            reply = self._standalone_request("Orkestratör", system, user, 900)
         except ApiError as first_exc:
             if self.activate_backup(first_exc):
                 try:
-                    reply = self._standalone_request("Orkestratör", system, user, 420)
+                    reply = self._standalone_request("Orkestratör", system, user, 900)
                 except ApiError:
                     reply = None
             elif self._recover_custom_endpoint(first_exc):
                 try:
-                    reply = self._standalone_request("Orkestratör", system, user, 420)
+                    reply = self._standalone_request("Orkestratör", system, user, 900)
                 except ApiError:
                     reply = None
             else:
@@ -11951,7 +12349,7 @@ class Agent:
             return self._fallback_delegations(prompt, limit) if self._explicit_subagent_request(prompt) else []
         self.session_usage.add(reply.usage)
         self.session_cost_usd += reply.usage.cost(self.cfg)
-        self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage)
+        self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(self.cfg))
         assignments = parse_delegation_plan(reply.text, limit)
         if not assignments and self._explicit_subagent_request(prompt):
             assignments = self._fallback_delegations(prompt, limit)
@@ -11976,7 +12374,7 @@ class Agent:
         else:
             self.messages.append({"role": "user", "content": [{"type": "input_text", "text": text}]})
 
-    def delegate(self, role: str, task: str, output_cap: int = 1200, team_run_id: str = "") -> str:
+    def delegate(self, role: str, task: str, output_cap: int = 3000, team_run_id: str = "") -> str:
         if self.read_only:
             return "ERROR: İç içe subagent çağrısı engellendi."
         with self._team_lock:
@@ -12073,8 +12471,8 @@ class Agent:
         self.subagent_calls = 0
         def invoke(item: dict[str, str]) -> str:
             if team_run_id:
-                return self.delegate(item["role"], item["task"], 1000, team_run_id)
-            return self.delegate(item["role"], item["task"], 1000)
+                return self.delegate(item["role"], item["task"], 2500, team_run_id)
+            return self.delegate(item["role"], item["task"], 2500)
 
         if not self.cfg.data.get("team_parallel", True):
             reports = []
@@ -12290,7 +12688,7 @@ class Agent:
         # truncate file contents inside a write_file JSON argument.
         output_limit = min(output_limit, execution_state.plan.token_budget["output"])
         if self.cfg.data.get("provider") == "custom" and self.cfg.mode() == "anthropic" and not self._power_active:
-            proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+            proxy_limit = output_limit if requires_artifacts else 2048 if efficiency == "max" else 4096 if efficiency == "balanced" else 8192
             output_limit = min(output_limit, proxy_limit)
         active_tools = self._effective_tools(original_prompt)
         if not self.read_only:
@@ -12312,14 +12710,15 @@ class Agent:
         repeated_tool_rounds = 0
         stall_recovery_attempts = 0
         empty_success_retries = 0
+        transient_recovery_attempts = 0
+        loop_nudges = 0
+        intent_nudges = 0
 
         def finalize_execution(answer_text: str, changed: list[str]) -> None:
             artifact_requirement = requires_artifacts and not configuration_changed
             self.last_execution_report = self.execution_kernel.finish(
                 execution_state, changed, answer_text, artifact_requirement, requires_multifile_web
             )
-            self._emit_activity(f"Güven skoru: {self.last_execution_report['confidence']:.0%} · "
-                                f"eksik kanıt {len(self.last_execution_report['missing_evidence'])}")
 
         def plain_chat_fallback(exc: ApiError) -> ModelReply | None:
             nonlocal active_tools
@@ -12351,34 +12750,49 @@ class Agent:
                 execution_state.errors.append(api_finding)
                 self._emit_activity(f"Hata ayıklama motoru: {api_finding.category} · tekrar {'uygun' if api_finding.retryable else 'sınırlı'}")
                 empty_retry_ok = False
-                if is_empty_success_api_error(exc) and empty_success_retries < 1:
-                    empty_success_retries += 1
-                    step_number = max(0, step_number - 1)
-                    self._emit_activity("Boş yanıt alındı · tek seferlik yeniden deneniyor (thinking kapalı)")
-                    # A successful-but-empty response is commonly a proxy
-                    # transport glitch. Do not resend the same expensive full
-                    # transcript: keep only the newest useful interaction.
-                    self._compact_retry_messages()
+                if is_empty_success_api_error(exc):
                     saved_thinking = self.cfg.data.get("thinking_mode", "off")
-                    self.cfg.data["thinking_mode"] = "off"
-                    self._system_cache = ""
-                    try:
-                        reply = self._request_with_heartbeat(active_tools, output_limit, web_search)
-                        self.cfg.data["thinking_mode"] = saved_thinking
-                        self._system_cache = ""
-                        empty_retry_ok = True
-                    except ApiError as retry_exc:
-                        self.cfg.data["thinking_mode"] = saved_thinking
-                        self._system_cache = ""
-                        exc = retry_exc
-                        api_finding = self.execution_kernel.debugger.diagnose("api", str(exc))
-                        execution_state.errors.append(api_finding)
+                    saved_streaming = self.cfg.data.get("streaming_enabled", True)
+                    stage_labels = (
+                        "bağlam küçültüldü · thinking kapalı",
+                        "akış kapatıldı · tek parça yanıt",
+                        "araçlar çıkarıldı · düz sohbet",
+                    )
+                    while not empty_retry_ok and empty_success_retries < 3:
+                        empty_success_retries += 1
+                        stage = empty_success_retries
+                        self._emit_activity(
+                            f"Boş yanıt kurtarma {stage}/3 · {stage_labels[stage - 1]}"
+                        )
+                        # A successful-but-empty response is commonly a proxy
+                        # transport glitch. Do not resend the same expensive full
+                        # transcript: keep only the newest useful interaction.
+                        # Each stage changes exactly one transport property so a
+                        # stubborn proxy gets three genuinely different requests.
+                        self._compact_retry_messages()
+                        self.cfg.data["thinking_mode"] = "off"
+                        if stage >= 2:
+                            self.cfg.data["streaming_enabled"] = False
+                        stage_tools = [] if stage >= 3 else active_tools
+                        try:
+                            reply = self._request_with_heartbeat(stage_tools, output_limit, web_search)
+                            empty_retry_ok = True
+                            if stage >= 3:
+                                active_tools = []
+                        except ApiError as retry_exc:
+                            exc = retry_exc
+                            api_finding = self.execution_kernel.debugger.diagnose("api", str(exc))
+                            execution_state.errors.append(api_finding)
+                        finally:
+                            self.cfg.data["thinking_mode"] = saved_thinking
+                            self.cfg.data["streaming_enabled"] = saved_streaming
+                            self._system_cache = ""
                 if empty_retry_ok:
                     # Boş yanıt tek seferlik toparlandı — normal başarı akışına düş (usage/messages/tool handling ortak blokta yapılacak).
                     stall_recovery_attempts = 0
                     self.session_usage.add(reply.usage)
                     self.session_cost_usd += reply.usage.cost(self.cfg)
-                    self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage)
+                    self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(self.cfg))
                     if self.cfg.mode() == "anthropic":
                         self.messages.append({"role": "assistant", "content": reply.native_output})
                     elif self.cfg.mode() in {"chat", "subscription"}:
@@ -12407,6 +12821,18 @@ class Agent:
                     # en temiz yol: reply'yi zaten işledik, bir sonraki adım için loop başına dönmeden tool handling'i burada yap.
                     # Bu yüzden ortak bloktaki ikinci eklemeyi atlamak için aşağıya düşmek yerine burada tool handling'i de yapıp continue ediyoruz.
                     if not reply.tool_calls:
+                        if intent_nudges < 2 and final_text.strip() and _has_unfulfilled_action_intent(final_text):
+                            intent_nudges += 1
+                            final_text = ""
+                            self._emit_activity(f"niyet anonsu ama araç yok · düzeltme {intent_nudges}/2")
+                            self._append_user(
+                                "ACTION ANNOUNCED BUT NOTHING EXECUTED: your message says you are checking/reading "
+                                "something, but it contained no tool call, so nothing was actually examined. Call the "
+                                "needed tool now (read_file, search_files, run_command, ...) or give the complete final "
+                                "answer from evidence you already have. Never narrate an action without executing it in "
+                                "the same response."
+                            )
+                            continue
                         changed_files = self.tools.changed_since(baseline)
                         active_processes = self.tools.active_process_ids()
                         if active_processes and process_completion_nudges < 2:
@@ -12467,6 +12893,22 @@ class Agent:
                         if name in {"write_file", "write_files", "replace_text", "apply_edits"}:
                             mutation_seen = True
                     continue
+                transient_retry_limit = max(0, min(2, int(self.cfg.data.get("retry_attempts", 2)) - 1))
+                if (
+                    is_transient_api_error(exc)
+                    and not self._backup_eligible(exc)
+                    and transient_recovery_attempts < transient_retry_limit
+                ):
+                    transient_recovery_attempts += 1
+                    step_number = max(0, step_number - 1)
+                    delay = self._backoff_delay(transient_recovery_attempts - 1)
+                    self._emit_activity(
+                        f"Sağlayıcı geçici hata verdi · bağlam küçültülerek devam ediliyor · "
+                        f"{transient_recovery_attempts}/{transient_retry_limit} · {delay:.1f} sn"
+                    )
+                    self._compact_retry_messages()
+                    time.sleep(delay)
+                    continue
                 stall_retry_limit = max(0, min(3, int(self.cfg.data.get("stall_retry_attempts", 1))))
                 if (
                     isinstance(exc, RequestStallError) and exc.safe_to_retry
@@ -12488,7 +12930,7 @@ class Agent:
                     mode = self.cfg.mode()
                     active_tools = self._effective_tools(original_prompt)
                     if mode == "anthropic" and not self._power_active:
-                        proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+                        proxy_limit = output_limit if requires_artifacts else 2048 if efficiency == "max" else 4096 if efficiency == "balanced" else 8192
                         output_limit = min(output_limit, proxy_limit)
                     if self._connection_switched:
                         turn_start = 0
@@ -12504,7 +12946,7 @@ class Agent:
                     mode = self.cfg.mode()
                     active_tools = self._effective_tools(original_prompt)
                     if mode == "anthropic" and not self._power_active:
-                        proxy_limit = output_limit if requires_artifacts else 1024 if efficiency == "max" else 1536 if efficiency == "balanced" else 4096
+                        proxy_limit = output_limit if requires_artifacts else 2048 if efficiency == "max" else 4096 if efficiency == "balanced" else 8192
                         output_limit = min(output_limit, proxy_limit)
                     try:
                         reply = self._request_with_heartbeat(active_tools, output_limit, web_search)
@@ -12536,7 +12978,7 @@ class Agent:
             stall_recovery_attempts = 0
             self.session_usage.add(reply.usage)
             self.session_cost_usd += reply.usage.cost(self.cfg)
-            self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage)
+            self.usage_store.record(self.cfg.data["provider"], self.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(self.cfg))
             if mode == "anthropic":
                 self.messages.append({"role": "assistant", "content": reply.native_output})
             elif mode == "chat":
@@ -12562,6 +13004,18 @@ class Agent:
                 else:
                     final_text = reply.text
             if not reply.tool_calls:
+                if intent_nudges < 2 and final_text.strip() and _has_unfulfilled_action_intent(final_text):
+                    intent_nudges += 1
+                    final_text = ""
+                    self._emit_activity(f"niyet anonsu ama araç yok · düzeltme {intent_nudges}/2")
+                    self._append_user(
+                        "ACTION ANNOUNCED BUT NOTHING EXECUTED: your message says you are checking/reading "
+                        "something, but it contained no tool call, so nothing was actually examined. Call the "
+                        "needed tool now (read_file, search_files, run_command, ...) or give the complete final "
+                        "answer from evidence you already have. Never narrate an action without executing it in "
+                        "the same response."
+                    )
+                    continue
                 changed_files = self.tools.changed_since(baseline)
                 active_processes = self.tools.active_process_ids()
                 if active_processes and process_completion_nudges < 2:
@@ -12700,13 +13154,24 @@ class Agent:
             else:
                 previous_tool_fingerprint = tool_fingerprint
                 repeated_tool_rounds = 0
-            if repeated_tool_rounds >= 2:
+            if repeated_tool_rounds >= 3:
                 changed_files = self.tools.changed_since(baseline)
                 answer = (final_text + "\n\n" if final_text else "") + "Görev durduruldu: model aynı araç çağrısını ilerleme olmadan tekrarlayan bir döngüye girdi. Yapılan değişiklikler korundu; farklı bir talimat veya modelle devam edebilirsiniz."
                 finalize_execution(answer, changed_files)
                 self._record_turn(original_prompt, answer, Usage(self.session_usage.input_tokens - before_in, self.session_usage.output_tokens - before_out), changed_files)
                 self._remember_turn(turn_start)
                 return answer
+            if repeated_tool_rounds == 2 and loop_nudges < 1:
+                # One warning before the kill switch: legitimately repeated
+                # calls (re-running tests after a fix) must survive.
+                loop_nudges += 1
+                self._append_user(
+                    "REPEATED TOOL CALL: you sent the exact same tool call again without new information. "
+                    "Do not send it a third time. Change the approach: inspect the previous result, use different "
+                    "arguments, or skip this step and continue toward the final answer."
+                )
+                self._emit_activity("Döngü koruması: aynı çağrı için uyarı gönderildi · durdurma 3. tekrarda")
+                continue
             tool_results = []
             round_findings: list[DebugFinding] = []
             incomplete_write_call = False
@@ -12893,6 +13358,7 @@ HELP = """Komutlar
   /language <tr|en>      Arayüz dilini değiştir
   /init [ek not]         Projeyi başka bir AI/kod uygulamasına devret
   /dashboard             Proje, hafıza, ekip ve bağlantı paneli
+  /mission [işlem|hedef] Hedefi başlat, görev grafiğini izle veya checkpoint'ten sürdür
   /sandbox               Ok tuşlu ForceSandbox güvenlik ve aktarım menüsü
   /skills [filtre]       Yerleşik ve kurulu Agent Skills listesini göster
   /skill <işlem>         skills.sh Scout veya skill göster/kur/güncelle/yönet
@@ -12909,7 +13375,6 @@ HELP = """Komutlar
   /impact [base]         Değişiklik etki alanı ve test boşluklarını göster
   /review [base]         Grafik destekli ayrıntılı değişiklik incelemesi
   /plan <görev>          Yerel Planlama Motoru planını ve bütçeyi göster
-  /confidence            Son işin güven skorunu ve eksik kanıtını göster
   /debug                  Son işin sınıflandırılmış hata raporunu göster
   /engine                 Yeni yürütme motorunun durumunu göster
   /logs [sayı]           Güvenli operasyon günlüğünü göster
@@ -12979,6 +13444,7 @@ HELP_EN = """Commands
   /language <tr|en>      Change the interface language
   /init [note]           Prepare a portable handoff for another coding AI
   /dashboard             Show project, memory, team, and connection overview
+  /mission [action|goal] Start a goal, inspect its task graph, or resume its checkpoint
   /sandbox               Open the arrow-key ForceSandbox security menu
   /skills [filter]       List built-in and installed Agent Skills
   /skill <action>        Run skills.sh Scout or show/install/manage a skill
@@ -12995,7 +13461,6 @@ HELP_EN = """Commands
   /impact [base]         Show change blast radius and test gaps
   /review [base]         Run detailed graph-assisted change review
   /plan <task>            Preview the local Planning Engine and token budget
-  /confidence             Show the last run's confidence and missing evidence
   /debug                  Show classified failures from the last run
   /engine                 Show the execution engine status
   /logs [count]          Show the redacted operation log
@@ -13061,12 +13526,42 @@ Use Tab/arrow keys for command suggestions. While the model works, type and pres
 """
 
 
+COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
+    "Oturum / Session": ("/mission", "/goal", "/goals", "/resume", "/done", "/sessions", "/session", "/history", "/window", "/clear"),
+    "Model & Bağlantı / Connection": ("/models", "/model", "/connect", "/provider", "/providers", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/key", "/test", "/free", "/thinking", "/temperature", "/stream", "/retry", "/watchdog", "/web", "/search"),
+    "Modlar / Modes": ("/mode", "/autopilot", "/efficiency", "/power", "/vibe", "/team", "/agents", "/agent", "/delegate", "/context", "/activity"),
+    "Araçlar / Tools": ("/init", "/graph", "/impact", "/review", "/plan", "/debug", "/engine", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/skills", "/skill", "/mcp", "/sandbox", "/terminal", "/browser", "/music", "/subscriptions", "/dashboard", "/prompt", "/teamroles", "/agentconfig"),
+    "Görünüm & Sistem / UI & System": ("/theme", "/markdown", "/commands", "/language", "/usage", "/settings", "/set", "/logs", "/diagnostics", "/status", "/queue", "/doctor", "/help", "/exit"),
+}
+
+COMMAND_GROUP_HINTS: dict[str, str] = {
+    "Oturum / Session": "hedefler, geçmiş ve oturum yönetimi",
+    "Model & Bağlantı / Connection": "sağlayıcı, anahtar, protokol ve telemetri",
+    "Modlar / Modes": "çalışma modları ve çoklu ajan",
+    "Araçlar / Tools": "proje, grafik, beceri ve dış araçlar",
+    "Görünüm & Sistem / UI & System": "tema, ayarlar ve tanılama",
+}
+
+
+def grouped_command_index() -> str:
+    """Compact grouped command index derived from COMMAND_GROUPS."""
+    lines = ["Komut dizini / Command index:"]
+    known = set(COMMANDS)
+    for title, commands in COMMAND_GROUPS.items():
+        hint = COMMAND_GROUP_HINTS.get(title, "")
+        listed = [name for name in commands if name in known]
+        lines.append(f"  {title} — {hint}")
+        lines.append("    " + ", ".join(listed))
+    return "\n".join(lines)
+
+
 COMMANDS = [
-    "/goal", "/goals", "/graph", "/mcp", "/language", "/init", "/dashboard", "/sandbox", "/skills", "/skill", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/confidence", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/terminal", "/browser", "/music", "/subscriptions", "/team", "/teamroles", "/agentconfig",
+    "/mission", "/goal", "/goals", "/graph", "/mcp", "/language", "/init", "/dashboard", "/sandbox", "/skills", "/skill", "/prompt", "/memory", "/remember", "/forget", "/force-context-init", "/force-context-scan", "/force-context-update", "/force-memory-stats", "/impact", "/review", "/plan", "/debug", "/engine", "/logs", "/diagnostics", "/sessions", "/session", "/window", "/terminal", "/browser", "/music", "/subscriptions", "/team", "/teamroles", "/agentconfig",
     "/providers", "/provider", "/connect", "/protocol", "/route", "/endpoint", "/profiles", "/profile", "/backup", "/retry", "/watchdog", "/vibe", "/resume", "/done", "/status",
     "/usage", "/history", "/settings", "/set", "/key", "/test",
     "/models", "/model", "/stream", "/queue", "/free", "/web", "/search", "/thinking", "/temperature", "/mode", "/autopilot",
     "/efficiency", "/power", "/context", "/activity", "/agents", "/agent", "/delegate",
+    "/theme", "/markdown", "/commands",
     "/doctor", "/clear", "/help", "/exit",
 ]
 
@@ -13174,6 +13669,71 @@ def safe_terminal_text(text: str) -> str:
     """Prevent model output from injecting cursor controls into the live UI."""
     normalized = str(text).replace("\r\n", "\n").replace("\r", "")
     return "".join(char if char in {"\n", "\t"} or ord(char) >= 32 else "�" for char in normalized)
+
+
+_MD_FENCE_RE = re.compile(r"^```([\w+#.\-]*)\s*$")
+_MD_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*#*\s*$")
+_MD_BOLD_RE = re.compile(r"\*\*(?!\s)(.+?)(?<!\s)\*\*")
+_MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+
+
+def render_markdown_lite(text: str, palette: dict[str, str] | None = None) -> str:
+    """Terminal-friendly markdown: fenced-code frames, headings, bold, inline code.
+
+    Purely cosmetic — when ANSI is off (or palette is empty) the input is
+    returned byte-for-byte unchanged so logs and pipes stay pristine.
+    """
+    if palette is None or not any(palette.values()):
+        return text
+    dim = palette.get("dim", "")
+    accent = palette.get("accent", "")
+    bold = palette.get("bold", "")
+    reset = palette.get("reset", "")
+    out_lines: list[str] = []
+    in_fence = False
+    for raw_line in str(text).split("\n"):
+        fence = _MD_FENCE_RE.match(raw_line.strip())
+        if fence:
+            opening = not in_fence
+            in_fence = not in_fence
+            label = fence.group(1)
+            tag = f"{accent}{label}{reset}" if label and opening else ""
+            out_lines.append(f"{dim}```{tag}{reset}".rstrip() if (dim or accent) else raw_line)
+            continue
+        if in_fence:
+            out_lines.append(raw_line)
+            continue
+        heading = _MD_HEADING_RE.match(raw_line)
+        if heading:
+            out_lines.append(f"{bold}{accent}{heading.group(2)}{reset}")
+            continue
+        line = _MD_BOLD_RE.sub(lambda m: f"{bold}{m.group(1)}{reset}", raw_line)
+        line = _MD_CODE_RE.sub(lambda m: f"{accent}{m.group(1)}{reset}", line)
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def format_token_count(count: int) -> str:
+    value = float(count)
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return f"{int(value)}"
+
+
+def turn_status_line(before: tuple[int, int, float], after_usage: "Usage", cost_delta: float, provider: str, model: str) -> str:
+    """Compact per-turn telemetry line; empty string when the turn used nothing."""
+    delta_in = after_usage.input_tokens - before[0]
+    delta_out = after_usage.output_tokens - before[1]
+    delta_cost = max(0.0, float(cost_delta))
+    if delta_in <= 0 and delta_out <= 0 and delta_cost <= 0.0:
+        return ""
+    parts = [f"+{format_token_count(max(0, delta_in))} giriş", f"+{format_token_count(max(0, delta_out))} çıkış"]
+    if delta_cost > 0:
+        parts.append(f"${delta_cost:.6f}")
+    parts.append(f"{provider}/{model}")
+    return " · ".join(parts)
 
 
 def single_line_stream_preview(text: str, width: int) -> str:
@@ -13816,7 +14376,7 @@ def subscription_status_text(cfg: Config) -> str:
     rows = ["Resmi abonelik CLI köprüleri · tarayıcı çerezi veya erişim anahtarı kopyalanmaz"]
     for name, slug in SUBSCRIPTION_PROVIDERS.items():
         command = str((PROVIDERS.get(slug, {}).get("command") or [name])[0])
-        installed = bool(shutil.which(command))
+        installed = bool(subscription_cli_path(command))
         active = "*" if cfg.data.get("provider") == slug else " "
         rows.append(f" {active} {name:<7} · {'hazır' if installed else 'CLI bulunamadı'} · {command}")
     rows.append("Kullanım: /subscriptions setup <claude|codex|cline|gemini> | use <...> | ardından /test")
@@ -14262,6 +14822,12 @@ def show_dashboard(agent: Agent, cfg: Config, goals: GoalStore) -> None:
     flow_counts = agent.task_queue.counts()
     flow_open = flow_counts["pending"] + flow_counts["running"] + flow_counts["paused"] + flow_counts["failed"]
     print(f" ForceFlow otomatik: {flow_open} açık · {flow_counts['completed']} tamamlandı")
+    mission = select_mission(agent.task_queue.tasks) if MISSION_RUNTIME_AVAILABLE else None
+    if mission is not None:
+        print(
+            f" Mission: {mission.flow_id} · {mission.status} · "
+            f"{mission.completed_tasks}/{mission.total_tasks} görev · /mission"
+        )
     show_usage("Bu pencere", agent.session_usage, cfg, agent.session_cost_usd)
     print("Kısayollar: /sandbox · /mcp · /memory · /sessions · /team · /models · /context · /logs")
 
@@ -14548,10 +15114,11 @@ def run_automatic_forceflow(
     prompt: str,
     on_tool: Callable[[str, dict[str, Any]], None] | None = None,
     force_web: bool = False,
+    flow_id: str = "",
 ) -> str:
     """Plan and execute a verified task chain without exposing queue commands."""
     store = agent.task_queue
-    current = store.first_unresolved()
+    current = store.first_unresolved(flow_id)
     if current is not None and current.get("status") == "running":
         return (
             "Bu proje için başka bir ForceCode işlemi hâlâ görev yürütüyor. "
@@ -14559,7 +15126,7 @@ def run_automatic_forceflow(
         )
     if current is not None:
         flow_objective = str(current.get("objective") or current.get("title") or prompt)
-        if not forceflow_needs_decomposition(flow_objective):
+        if not flow_id and not forceflow_needs_decomposition(flow_objective):
             removed = store.collapse_unresolved_flow(current, flow_objective)
             if removed:
                 agent._emit_activity(
@@ -14589,7 +15156,8 @@ def run_automatic_forceflow(
                 "title": prompt,
                 "acceptance": "The complete user objective is implemented as one cohesive change and deterministic verification passes.",
             }]
-        added = store.add_many(planned, objective=flow_objective)
+        added = store.add_many(planned, flow_id=flow_id or None, objective=flow_objective)
+        flow_id = str(added[0].get("flow_id", ""))
         agent._emit_activity(f"ForceFlow: {len(added)} sıralı görev hazır")
     repair_rounds = int(agent.cfg.data.get("flow_repair_rounds", 3))
     result = run_forceflow_queue(
@@ -14599,6 +15167,7 @@ def run_automatic_forceflow(
         on_tool,
         force_web=force_web,
         repair_rounds=repair_rounds,
+        flow_id=flow_id,
     )
     is_web, require_multifile, _ = forceflow_web_policy(agent, flow_objective)
     if result.completed and is_web and not forceflow_framework_project(agent) and bool(agent.cfg.data.get("flow_quality_gate", True)):
@@ -14615,14 +15184,14 @@ def run_automatic_forceflow(
             agent._emit_activity(
                 f"ForceFlow: site kalite kapısı {len(quality_report.blockers)} sorun buldu · otomatik onarım başlıyor"
             )
-            flow_id = next(
+            repair_flow_id = flow_id or next(
                 (str(item.get("flow_id")) for item in reversed(store.tasks) if item.get("objective") == flow_objective),
                 uuid.uuid4().hex[:8],
             )
             repair_task = store.add(
                 "Repair every deterministic website quality failure and revalidate the complete site",
                 quality_report.render()[:2500],
-                flow_id,
+                repair_flow_id,
                 flow_objective,
                 "quality_repair",
             )
@@ -14633,6 +15202,7 @@ def run_automatic_forceflow(
                 on_tool,
                 force_web=force_web,
                 repair_rounds=repair_rounds,
+                flow_id=repair_flow_id,
             )
             result.processed.extend(repair_result.processed)
             result.completed = repair_result.completed
@@ -14685,7 +15255,7 @@ def create_vibecode_plan(agent: Agent, objective: str, max_tasks: int) -> list[d
     )
     agent.session_usage.add(reply.usage)
     agent.session_cost_usd += reply.usage.cost(agent.cfg)
-    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage)
+    agent.usage_store.record(agent.cfg.data["provider"], agent.cfg.data["model"], reply.usage, cost_usd=reply.usage.cost(agent.cfg))
     tasks = parse_forceflow_plan(reply.text, max_tasks)
     if tasks:
         return tasks
@@ -15199,6 +15769,277 @@ def handle_natural_backend_switch(line: str, agent: Agent) -> str:
     return ""
 
 
+def _mission_goal(goals: GoalStore, flow_id: str) -> dict[str, Any] | None:
+    for goal in goals.goals:
+        mission = goal.get("mission")
+        if isinstance(mission, dict) and str(mission.get("flow_id", "")) == str(flow_id):
+            return goal
+    return None
+
+
+def _select_mission_goal(goals: GoalStore, wanted: str = "") -> dict[str, Any] | None:
+    selected = str(wanted).strip().casefold()
+    linked = [goal for goal in goals.goals if isinstance(goal.get("mission"), dict)]
+    if selected:
+        matches = []
+        for goal in linked:
+            mission = goal["mission"]
+            identifiers = (str(goal.get("id", "")), str(mission.get("flow_id", "")))
+            if any(identifier.casefold() == selected for identifier in identifiers if identifier):
+                return goal
+            if any(identifier.casefold().startswith(selected) for identifier in identifiers if identifier):
+                matches.append(goal)
+        return matches[0] if len(matches) == 1 else None
+    active = next((goal for goal in reversed(linked) if not goal.get("done")), None)
+    return active or (linked[-1] if linked else None)
+
+
+def _select_mission_state(
+    goals: GoalStore,
+    tasks: list[dict[str, Any]],
+    wanted: str = "",
+) -> tuple[Any, dict[str, Any] | None]:
+    goal = _select_mission_goal(goals, wanted)
+    if goal is not None:
+        mission = goal.get("mission", {})
+        flow_id = str(mission.get("flow_id", "")) if isinstance(mission, dict) else ""
+        return (select_mission(tasks, flow_id) if flow_id else None), goal
+    legacy_tasks = [task for task in tasks if str(task.get("flow_id", "manual")) != "manual"]
+    view = select_mission(legacy_tasks, wanted)
+    return view, (_mission_goal(goals, view.flow_id) if view is not None else None)
+
+
+def _link_mission_goal(
+    goals: GoalStore,
+    goal: dict[str, Any],
+    mode: str,
+    flow_id: str,
+    vibe_session_id: str = "",
+) -> None:
+    goal["mission"] = {
+        "mode": "vibe" if mode == "vibe" else "flow",
+        "flow_id": str(flow_id)[:64],
+        "vibe_session_id": str(vibe_session_id)[:64],
+        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    goals.save()
+
+
+def handle_mission_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> None:
+    """Expose ForceFlow and VibeCode through one persistent Mission Control surface."""
+    if not MISSION_RUNTIME_AVAILABLE:
+        print(
+            f"{C.YELLOW}Mission runtime eksik. ForceCode'u installer ile yeniden kurun; "
+            f"eski tek-dosya komutları çalışmaya devam eder.{C.RESET}"
+        )
+        return
+    raw = line[len(line.split(maxsplit=1)[0]):].strip()
+    try:
+        arguments = shlex.split(raw, posix=os.name != "nt") if raw else []
+    except ValueError as exc:
+        print(f"{C.RED}Mission komutu okunamadı: {exc}{C.RESET}")
+        return
+    action = arguments[0].casefold() if arguments else "status"
+    language = str(cfg.data.get("ui_language", "tr"))
+
+    if action in {"status", "durum"} and len(arguments) <= 1:
+        view, goal = _select_mission_state(goals, agent.task_queue.tasks)
+        if view is not None:
+            print(render_mission(view, language))
+        elif goal is not None:
+            mission = goal.get("mission", {})
+            mode = str(mission.get("mode", "flow")) if isinstance(mission, dict) else "flow"
+            print(
+                f"MISSION {goal.get('id', '?')} · planning\n"
+                f"Hedef: {goal.get('text', '')}\n"
+                f"Checkpoint: {mode} · görev planı henüz oluşturulmadı"
+            )
+        else:
+            print(render_mission_list([], language))
+        return
+    if action in {"list", "liste"}:
+        linked_flow_ids = {
+            str(goal.get("mission", {}).get("flow_id", ""))
+            for goal in goals.goals if isinstance(goal.get("mission"), dict)
+        }
+        mission_tasks = [
+            task for task in agent.task_queue.tasks
+            if str(task.get("flow_id", "")) in linked_flow_ids
+            or str(task.get("flow_id", "manual")) != "manual"
+        ]
+        views = build_mission_views(mission_tasks)
+        output = render_mission_list(views, language)
+        visible_flow_ids = {view.flow_id for view in views}
+        planning = []
+        for goal in goals.goals:
+            mission = goal.get("mission", {})
+            if not isinstance(mission, dict):
+                continue
+            flow_id = str(mission.get("flow_id", ""))
+            if not flow_id or flow_id not in visible_flow_ids:
+                status = "completed" if goal.get("done") else "planning"
+                planning.append(f" - [{goal.get('id', '?')}] {status} · {str(goal.get('text', ''))[:120]}")
+        print(output + (("\n" + "\n".join(planning)) if planning else ""))
+        return
+    if action in {"show", "göster", "goster"}:
+        wanted = arguments[1] if len(arguments) > 1 else ""
+        view, goal = _select_mission_state(goals, agent.task_queue.tasks, wanted)
+        if view is not None:
+            print(render_mission(view, language))
+        elif goal is not None:
+            print(f"MISSION {goal.get('id', '?')} · planning\nHedef: {goal.get('text', '')}")
+        else:
+            print("Mission bulunamadı.")
+        return
+
+    if action in {"resume", "devam", "sürdür", "surdur"}:
+        wanted = arguments[1] if len(arguments) > 1 else ""
+        view, goal = _select_mission_state(goals, agent.task_queue.tasks, wanted)
+        if view is None and goal is None:
+            print("Sürdürülebilecek mission bulunamadı.")
+            return
+        if goal is not None and goal.get("done"):
+            print(f"Mission {goal.get('id', '?')} zaten completed.")
+            return
+        if view is not None and view.status in {"completed", "stopped"}:
+            print(f"Mission {view.flow_id} zaten {view.status}.")
+            return
+        if cfg.requires_key() and not cfg.key():
+            print(f"{C.YELLOW}Mission aktif; devam etmek için önce /key kullanın.{C.RESET}")
+            return
+        mission_link = goal.get("mission", {}) if isinstance(goal, dict) else {}
+        if not isinstance(mission_link, dict):
+            mission_link = {}
+        mode = str(mission_link.get("mode", "flow"))
+        flow_id = str(mission_link.get("flow_id", "")) or (view.flow_id if view is not None else "")
+        objective = str((goal or {}).get("text", "")) or (view.objective if view is not None else "")
+        if mode != "vibe" and not flow_id and goal is not None:
+            flow_id = str(goal.get("id", ""))
+            _link_mission_goal(goals, goal, mode, flow_id)
+        print(f"{C.CYAN}Mission sürdürülüyor [{flow_id or (goal or {}).get('id', '?')}]:{C.RESET} {objective}")
+        try:
+            vibe_session_id = str(mission_link.get("vibe_session_id", ""))
+            active_vibe_id = str(agent.vibe_session.state.get("id", ""))
+            if mode == "vibe" and vibe_session_id and vibe_session_id != active_vibe_id:
+                print(f"{C.RED}Bu uzun mission'ın checkpoint'i artık etkin değil; başka bir session ile üzerine yazılmış.{C.RESET}")
+                return
+            if (
+                mode == "vibe" and not vibe_session_id
+                and agent.vibe_session.resumable()
+                and str(agent.vibe_session.state.get("objective", "")).strip() != objective.strip()
+            ):
+                print(f"{C.RED}Bu uzun mission için eşleşen checkpoint bulunamadı.{C.RESET}")
+                return
+            if mode == "vibe":
+                resume_vibe = agent.vibe_session.resumable()
+                vibe_before = copy.deepcopy(agent.vibe_session.state)
+                result = run_vibecode(agent, "" if resume_vibe else objective, resume=resume_vibe)
+                answer = result.summary
+                completed = result.completed
+                vibe_after = agent.vibe_session.state
+                checkpoint_matches = bool(
+                    vibe_after.get("id")
+                    and str(vibe_after.get("objective", "")).strip() == objective.strip()
+                    and (resume_vibe or vibe_after != vibe_before)
+                )
+                flow_id = str(vibe_after.get("flow_id", "")) if checkpoint_matches else ""
+                active_vibe_id = str(vibe_after.get("id", "")) if checkpoint_matches else ""
+                if goal is not None and checkpoint_matches:
+                    _link_mission_goal(goals, goal, mode, flow_id, active_vibe_id)
+            else:
+                answer = run_automatic_forceflow(agent, objective, flow_id=flow_id)
+                refreshed = select_mission(agent.task_queue.tasks, flow_id)
+                completed = bool(refreshed and refreshed.status == "completed")
+            if completed and goal is not None:
+                goals.complete(str(goal.get("id", "")))
+            print(answer)
+            refreshed = select_mission(agent.task_queue.tasks, flow_id)
+            if refreshed is not None:
+                print("\n" + render_mission(refreshed, language))
+        except (KeyboardInterrupt, SteeringInterrupt):
+            print(f"\n{C.YELLOW}Mission checkpoint'te duraklatıldı; /mission resume ile sürdürülebilir.{C.RESET}")
+        except ApiError as exc:
+            agent.record_runtime_error("api_error", exc, {"source": "mission_resume", "flow_id": flow_id})
+            print(f"{C.RED}Mission API hatası: {exc}{C.RESET}")
+        return
+
+    long_mode = action in {"long", "uzun"}
+    if action in {"start", "başlat", "baslat", "long", "uzun"}:
+        objective = " ".join(arguments[1:]).strip()
+    else:
+        objective = raw
+    if not objective:
+        print("Kullanım: /mission <hedef> · /mission long <hedef> · /mission resume [id] · /mission list")
+        return
+    if cfg.requires_key() and not cfg.key():
+        print(f"{C.RED}Önce /key ile API anahtarını ayarlayın.{C.RESET}")
+        return
+    if long_mode and agent.vibe_session.resumable():
+        print(
+            f"{C.YELLOW}Bu proje için sürdürülebilir bir uzun mission zaten var. "
+            f"Önce /mission resume kullanın veya /vibe stop ile kapatın.{C.RESET}"
+        )
+        return
+    if cfg.data.get("work_mode") == "plan":
+        cfg.set_value("work_mode", "build")
+        agent._system_cache = ""
+
+    goal = goals.add(objective)
+    mode = "vibe" if long_mode else "flow"
+    flow_id = "" if long_mode else str(goal["id"])
+    _link_mission_goal(goals, goal, mode, flow_id)
+    print(f"{C.CYAN}Mission başlatılıyor [{goal['id']}]:{C.RESET} {objective}")
+
+    def mission_tool(name: str, args: dict[str, Any]) -> None:
+        detail = args.get("path") or args.get("command") or args.get("query") or args.get("task") or ""
+        print(f"{C.DIM}  ↳ {name} {str(detail)[:100]}{C.RESET}")
+
+    try:
+        if long_mode:
+            vibe_before = copy.deepcopy(agent.vibe_session.state)
+            result = run_vibecode(agent, objective, mission_tool)
+            vibe_after = agent.vibe_session.state
+            checkpoint_matches = bool(
+                vibe_after.get("id")
+                and str(vibe_after.get("objective", "")).strip() == objective.strip()
+                and (result.completed or vibe_after != vibe_before)
+            )
+            flow_id = str(vibe_after.get("flow_id", "")) if checkpoint_matches else ""
+            if checkpoint_matches:
+                _link_mission_goal(
+                    goals, goal, mode, flow_id,
+                    str(vibe_after.get("id", "")),
+                )
+            answer = result.summary
+            completed = result.completed
+        else:
+            answer = run_automatic_forceflow(agent, objective, mission_tool, flow_id=flow_id)
+            view = select_mission(agent.task_queue.tasks, flow_id)
+            completed = bool(view and view.status == "completed")
+        if completed:
+            goals.complete(str(goal["id"]))
+        print("\n" + answer)
+        view = select_mission(agent.task_queue.tasks, flow_id)
+        if view is not None:
+            print("\n" + render_mission(view, language))
+    except (KeyboardInterrupt, SteeringInterrupt):
+        if long_mode:
+            vibe_after = agent.vibe_session.state
+            if (
+                vibe_after != vibe_before
+                and str(vibe_after.get("objective", "")).strip() == objective.strip()
+            ):
+                flow_id = str(vibe_after.get("flow_id", ""))
+                _link_mission_goal(
+                    goals, goal, mode, flow_id,
+                    str(vibe_after.get("id", "")),
+                )
+        print(f"\n{C.YELLOW}Mission checkpoint'te duraklatıldı; /mission resume ile sürdürülebilir.{C.RESET}")
+    except ApiError as exc:
+        agent.record_runtime_error("api_error", exc, {"source": "mission_start", "flow_id": flow_id})
+        print(f"{C.RED}Mission API hatası: {exc}{C.RESET}")
+
+
 def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bool:
     parts = line.split(maxsplit=2)
     cmd = parts[0].lower()
@@ -15206,6 +16047,9 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
         return False
     if cmd == "/mcp":
         print(handle_mcp_command(line, agent, cfg))
+        return True
+    if cmd == "/mission":
+        handle_mission_command(line, agent, cfg, goals)
         return True
     if cmd == "/init":
         extra_note = line[len(parts[0]):].strip()
@@ -15428,17 +16272,6 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print("Token bütçesi: " + " · ".join(f"{name}={value}" for name, value in plan.token_budget.items()))
             if plan.risks:
                 print("Riskler: " + "; ".join(plan.risks))
-    elif cmd == "/confidence":
-        report = agent.last_execution_report or load_json(agent.root / ".forgecode" / "last-run.json", {})
-        if not report:
-            print("Henüz tamamlanmış yürütme raporu yok.")
-        else:
-            print(f"{C.BOLD}Güven skoru:{C.RESET} {float(report.get('confidence', 0)):.0%} ({report.get('confidence_level', '?')}) · "
-                  f"doğrulama {'geçti' if report.get('verification_passed') else 'eksik'} · iş {report.get('task_type', '?')} · run {report.get('run_id', '?')}")
-            for name, value in report.get("confidence_breakdown", {}).items():
-                print(f"  {name}: +{float(value):.0%}")
-            missing = report.get("missing_evidence", [])
-            print("Eksik kanıt: " + ("; ".join(missing) if missing else "yok"))
     elif cmd == "/debug":
         report = agent.last_execution_report or load_json(agent.root / ".forgecode" / "last-run.json", {})
         errors = report.get("errors", []) if isinstance(report, dict) else []
@@ -15449,9 +16282,9 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             print(f"- {item.get('category')} [{item.get('signature')}] · tekrar {item.get('occurrences')} · {item.get('recovery')}")
     elif cmd == "/engine":
         print(f"{C.BOLD}Forge Execution Kernel{C.RESET} · v1")
-        print("Akış: Planlama Motoru → araç/kanıt günlüğü → Hata Ayıklama Motoru → Doğrulama Kapısı → Güven Skoru")
+        print("Akış: Planlama Motoru → araç/kanıt günlüğü → Hata Ayıklama Motoru → Doğrulama Kapısı")
         print("Planlama ve hata sınıflandırma yerelde çalışır; ek API çağrısı ve gizli düşünce zinciri üretmez.")
-        print("Son rapor: .forgecode/last-run.json · komutlar: /plan · /debug · /confidence")
+        print("Son rapor: .forgecode/last-run.json · komutlar: /plan · /debug")
     elif cmd == "/memory":
         arguments = line[len(parts[0]):].strip().split(maxsplit=3)
         action = arguments[0].casefold() if arguments else ""
@@ -15665,22 +16498,27 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
             setup = [str(part) for part in preset.get("setup", [])]
             if not selected or not setup:
                 print("Bu abonelik için otomatik kurulum yok. Kullanım: /subscriptions setup cline")
-            elif not shutil.which(setup[0]):
-                print(f"{C.YELLOW}{setup[0]} CLI bulunamadı. Önce resmî Cline CLI'ını kurun.{C.RESET}")
+            elif not subscription_cli_path(setup[0]):
+                print(f"{C.YELLOW}{setup[0]} resmi CLI bulunamadı. Uygulamayı CLI'nin kurulu olduğu terminalden yeniden başlatın veya PATH'e ekleyin.{C.RESET}")
             else:
-                print("Cline kimlik doğrulaması açılıyor; tamamlayınca bu terminale dönün.")
+                provider_name = arguments[1].casefold()
+                print(f"{provider_name.title()} kimlik doğrulaması açılıyor; tamamlayınca bu terminale dönün.")
                 try:
-                    code = subprocess.run(setup, cwd=str(agent.root), check=False).returncode
-                    print("Cline kurulumu tamamlandı. /subscriptions use cline ve /test çalıştırın." if code == 0 else f"Cline auth çıkış kodu: {code}")
+                    setup_command = [str(subscription_cli_path(setup[0]) or setup[0]), *setup[1:]]
+                    code = subprocess.run(setup_command, cwd=str(agent.root), check=False).returncode
+                    print(
+                        f"{provider_name.title()} kurulumu tamamlandı. /subscriptions use {provider_name} ve /test çalıştırın."
+                        if code == 0 else f"{provider_name.title()} auth çıkış kodu: {code}. Ayrıntı için giriş ekranındaki hata metnini /logs ile paylaşın."
+                    )
                 except OSError as exc:
-                    print(f"{C.RED}Cline auth başlatılamadı: {exc}{C.RESET}")
+                    print(f"{C.RED}{provider_name.title()} auth başlatılamadı: {redact_sensitive(str(exc))}{C.RESET}")
         elif len(arguments) >= 2 and arguments[0].casefold() == "use":
             selected = SUBSCRIPTION_PROVIDERS.get(arguments[1].casefold())
             if not selected:
                 print("Kullanım: /subscriptions use <claude|codex|cline|gemini>")
             else:
                 command = str(PROVIDERS[selected]["command"][0])
-                if not shutil.which(command):
+                if not subscription_cli_path(command):
                     print(f"{C.YELLOW}{command} resmi CLI bulunamadı. Önce sağlayıcının CLI'sını kurup kendi aboneliğinizle giriş yapın.{C.RESET}")
                 else:
                     cfg.select_provider(selected)
@@ -16120,8 +16958,32 @@ def handle_command(line: str, agent: Agent, cfg: Config, goals: GoalStore) -> bo
                 print("Interface language changed to English." if cfg.data["ui_language"] == "en" else "Arayüz dili Türkçe olarak değiştirildi.")
             except ValueError:
                 print("Usage: /language tr|en")
+    elif cmd == "/theme":
+        if len(parts) < 2:
+            print(f"Tema / Theme: {cfg.data.get('ui_theme', 'dark')} · /theme dark|light")
+        else:
+            try:
+                cfg.set_value("ui_theme", parts[1])
+                label = "light/açık" if cfg.data["ui_theme"] == "light" else "dark/koyu"
+                print(f"Tema uygulandı / Theme applied: {label}")
+            except ValueError:
+                print("Usage: /theme dark|light")
+    elif cmd == "/markdown":
+        if len(parts) < 2:
+            state = "açık/on" if cfg.data.get("ui_markdown", True) else "kapalı/off"
+            print(f"Markdown render: {state} · /markdown on|off")
+        else:
+            raw = parts[1].lower()
+            if raw in {"on", "off", "true", "false", "1", "0", "yes", "no"}:
+                cfg.set_value("ui_markdown", raw)
+                print("Markdown render açık." if cfg.data["ui_markdown"] else "Markdown render kapalı (ham çıktı).")
+            else:
+                print("Usage: /markdown on|off")
+    elif cmd == "/commands":
+        print(grouped_command_index())
     elif cmd == "/help":
-        print(HELP_EN if cfg.data.get("ui_language") == "en" else HELP)
+        extras = f"\n{grouped_command_index()}"
+        print((HELP_EN if cfg.data.get("ui_language") == "en" else HELP) + extras)
     elif cmd == "/goal":
         if len(parts) < 2:
             print("Kullanım: /goal <hedef>")
@@ -16620,7 +17482,7 @@ def run_fleet_worker(root: pathlib.Path, cfg: Config, terminal_id: int, session_
                 "\n\nRemain read-only. Return concise findings, paths, risks, and recommended next action for the manager."
             )
             task_thinking = str(task.get("thinking_mode") or current.get("thinking_mode") or cfg.data.get("thinking_mode", "off"))
-            task_output_cap = int(task.get("output_cap") or current.get("output_cap") or 1800)
+            task_output_cap = int(task.get("output_cap") or current.get("output_cap") or 3500)
             saved_thinking = str(agent.cfg.data.get("thinking_mode", "off"))
             agent.cfg.data["thinking_mode"] = task_thinking
             agent._system_cache = ""
@@ -16736,6 +17598,7 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
                 detail = args.get("path") or args.get("command") or args.get("query") or args.get("task") or ""
                 renderer.activity(f"Araç: {name} {str(detail)[:100]}")
             agent.activity_callback = show_request_activity
+            turn_before = (agent.session_usage.input_tokens, agent.session_usage.output_tokens, agent.session_cost_usd)
             with spinner:
                 if cfg.data.get("vibe_mode", False):
                     cfg.set_value("vibe_mode", "false")
@@ -16753,7 +17616,20 @@ def interactive(root: pathlib.Path, cfg: Config, session_name: str | None = None
             # Streamed text is only a transient draft. The Agent deliberately
             # keeps the latest tool-free response as `answer`; print that
             # complete conversational result exactly once after all tools.
-            print(f"\n{C.BOLD}{C.CYAN}forge ›{C.RESET} {safe_terminal_text(answer)}")
+            palette = ui_palette(cfg)
+            answer_body = safe_terminal_text(answer)
+            if cfg.data.get("ui_markdown", True):
+                answer_body = render_markdown_lite(answer_body, palette)
+            print(f"\n{palette['bold']}{palette['forge']}forge ›{palette['reset']} {answer_body}")
+            turn_line = turn_status_line(
+                turn_before,
+                agent.session_usage,
+                agent.session_cost_usd - turn_before[2],
+                str(cfg.data["provider"]),
+                str(cfg.data["model"]),
+            )
+            if turn_line:
+                print(f"{palette['dim']}  · {turn_line}{palette['reset']}")
             print()
             show_usage("Oturum", agent.session_usage, cfg, agent.session_cost_usd)
             print()
@@ -16903,6 +17779,204 @@ def main(argv: list[str] | None = None) -> int:
     return interactive(root, cfg, session_name=session_name)
 
 
+
+
+# --- cerrahi bölünme adım 4: config canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_config
+    import forgecode_config as _mod_inj_forgecode_config
+    _host_forgecode_config = _sys_inj_forgecode_config.modules[__name__]
+    for _k_forgecode_config in dir(_host_forgecode_config):
+        if _k_forgecode_config.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_config, _k_forgecode_config):
+            try:
+                setattr(_mod_inj_forgecode_config, _k_forgecode_config, getattr(_host_forgecode_config, _k_forgecode_config))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_config, _mod_inj_forgecode_config, _host_forgecode_config, _k_forgecode_config
+except Exception:
+    pass
+
+
+# --- cerrahi bölünme adım 5: queues canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_queues
+    import forgecode_queues as _mod_inj_forgecode_queues
+    _host_forgecode_queues = _sys_inj_forgecode_queues.modules[__name__]
+    for _k_forgecode_queues in dir(_host_forgecode_queues):
+        if _k_forgecode_queues.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_queues, _k_forgecode_queues):
+            try:
+                setattr(_mod_inj_forgecode_queues, _k_forgecode_queues, getattr(_host_forgecode_queues, _k_forgecode_queues))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_queues, _mod_inj_forgecode_queues, _host_forgecode_queues, _k_forgecode_queues
+except Exception:
+    pass
+
+
+# --- cerrahi bölünme adım 6: mcp canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_mcp
+    import forgecode_mcp as _mod_inj_forgecode_mcp
+    _host_forgecode_mcp = _sys_inj_forgecode_mcp.modules[__name__]
+    for _k_forgecode_mcp in dir(_host_forgecode_mcp):
+        if _k_forgecode_mcp.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_mcp, _k_forgecode_mcp):
+            try:
+                setattr(_mod_inj_forgecode_mcp, _k_forgecode_mcp, getattr(_host_forgecode_mcp, _k_forgecode_mcp))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_mcp, _mod_inj_forgecode_mcp, _host_forgecode_mcp, _k_forgecode_mcp
+except Exception:
+    pass
+
+
+# --- cerrahi bölünme adım 7: sandbox canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_sandbox
+    import forgecode_sandbox as _mod_inj_forgecode_sandbox
+    _host_forgecode_sandbox = _sys_inj_forgecode_sandbox.modules[__name__]
+    for _k_forgecode_sandbox in dir(_host_forgecode_sandbox):
+        if _k_forgecode_sandbox.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_sandbox, _k_forgecode_sandbox):
+            try:
+                setattr(_mod_inj_forgecode_sandbox, _k_forgecode_sandbox, getattr(_host_forgecode_sandbox, _k_forgecode_sandbox))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_sandbox, _mod_inj_forgecode_sandbox, _host_forgecode_sandbox, _k_forgecode_sandbox
+except Exception:
+    pass
+
+
+# --- cerrahi bölünme adım 8: context+skills canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_context
+    import forgecode_context as _mod_inj_forgecode_context
+    _host_forgecode_context = _sys_inj_forgecode_context.modules[__name__]
+    for _k_forgecode_context in dir(_host_forgecode_context):
+        if _k_forgecode_context.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_context, _k_forgecode_context):
+            try:
+                setattr(_mod_inj_forgecode_context, _k_forgecode_context, getattr(_host_forgecode_context, _k_forgecode_context))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_context, _mod_inj_forgecode_context, _host_forgecode_context, _k_forgecode_context
+except Exception:
+    pass
+
+
+# --- cerrahi bölünme adım 9: workspace canonical override: globals enjeksiyonu ---
+# Canonical sınıflar verbatim taşındı; metod içi globaller host'tan tamamlanır.
+try:
+    import sys as _sys_inj_forgecode_workspace
+    import forgecode_workspace as _mod_inj_forgecode_workspace
+    _host_forgecode_workspace = _sys_inj_forgecode_workspace.modules[__name__]
+    for _k_forgecode_workspace in dir(_host_forgecode_workspace):
+        if _k_forgecode_workspace.startswith('__'):
+            continue
+        if not hasattr(_mod_inj_forgecode_workspace, _k_forgecode_workspace):
+            try:
+                setattr(_mod_inj_forgecode_workspace, _k_forgecode_workspace, getattr(_host_forgecode_workspace, _k_forgecode_workspace))
+            except Exception:
+                pass
+    del _sys_inj_forgecode_workspace, _mod_inj_forgecode_workspace, _host_forgecode_workspace, _k_forgecode_workspace
+except Exception:
+    pass
+
+
+# --- uyumluluk enjeksiyonu: base/skills eksik globalleri + ANSI canli-proxy ---
+# Neden: base/skills verbatim tasindi; icreferanslar (TOOL_NAME_MAP,
+# adapt_powershell_chain, SUBAGENT_ROLE_ALIASES, UI_THEMES...) host'ta kaldi.
+# Ayrica testler `forgecode.ANSI`'yi patch'liyor; base kopyasi stale kalmamali.
+try:
+    import sys as _sys_compat
+
+    class _LiveHostFlag:
+        """Host globalini canli okuyan truthiness proxy'su (sadece bool baglaminda kullanilir)."""
+
+        def __init__(self, name: str):
+            self._name = name
+            try:
+                import sys as _s
+
+                self._default = bool(getattr(_s.modules[__name__], name))
+            except Exception:
+                self._default = False
+
+        def _get(self):
+            try:
+                import sys as _s
+
+                value = getattr(_s.modules[__name__], self._name)
+            except Exception:
+                return self._default
+            if isinstance(value, _LiveHostFlag):
+                return self._default
+            return value
+
+        def __bool__(self):
+            return bool(self._get())
+
+        def __repr__(self):
+            return repr(self._get())
+
+        def __and__(self, other):
+            return self._get() and other
+
+        def __rand__(self, other):
+            return other and self._get()
+
+        def __or__(self, other):
+            return self._get() or other
+
+        def __ror__(self, other):
+            return other or self._get()
+
+        def __eq__(self, other):
+            return self._get() == other
+
+    _host_compat = _sys_compat.modules[__name__]
+    for _modname_compat in ("forgecode_base", "forgecode_skills"):
+        try:
+            _mod_compat = _sys_compat.modules.get(_modname_compat)
+            if _mod_compat is None:
+                _mod_compat = __import__(_modname_compat)
+            for _k_compat in dir(_host_compat):
+                if _k_compat.startswith("__"):
+                    continue
+                if not hasattr(_mod_compat, _k_compat):
+                    try:
+                        setattr(_mod_compat, _k_compat, getattr(_host_compat, _k_compat))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    try:
+        _base_compat = _sys_compat.modules.get("forgecode_base")
+        if _base_compat is not None:
+            setattr(_base_compat, "ANSI", _LiveHostFlag("ANSI"))
+    except Exception:
+        pass
+    del _sys_compat, _host_compat, _modname_compat, _mod_compat, _k_compat
+    try:
+        del _base_compat
+    except NameError:
+        pass
+except Exception:
+    pass
+
+
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
@@ -16919,3 +17993,380 @@ if __name__ == "__main__":
             except (EOFError, KeyboardInterrupt):
                 pass
         raise SystemExit(1)
+
+
+# --- cerrahi auto-wire: forgecode_base ---
+try:
+    from forgecode_base import (
+        HOST_PATH_TYPE as _New_HOST_PATH_TYPE,
+        _UI_LANGUAGE as _New__UI_LANGUAGE,
+        _EN_UI_REPLACEMENTS as _New__EN_UI_REPLACEMENTS,
+        ANSI as _New_ANSI,
+        UI_THEMES as _New_UI_THEMES,
+        DEFAULT_CONFIG as _New_DEFAULT_CONFIG,
+        set_ui_language as _New_set_ui_language,
+        localize_ui_text as _New_localize_ui_text,
+        _raw_ansi as _New__raw_ansi,
+        ui_palette as _New_ui_palette,
+        atomic_json as _New_atomic_json,
+        atomic_text as _New_atomic_text,
+        load_json as _New_load_json,
+        app_home as _New_app_home,
+        migrate_legacy_app_home as _New_migrate_legacy_app_home,
+        normalize_api_base_url as _New_normalize_api_base_url,
+        normalize_custom_route as _New_normalize_custom_route,
+        inferred_custom_route as _New_inferred_custom_route,
+        custom_protocol_for_route as _New_custom_protocol_for_route,
+        endpoint_hint_from_error as _New_endpoint_hint_from_error,
+        is_endpoint_route_error as _New_is_endpoint_route_error,
+        redact_sensitive as _New_redact_sensitive,
+        SteeringInterrupt as _New_SteeringInterrupt,
+        normalize_subagent_role as _New_normalize_subagent_role,
+        normalize_tool_name as _New_normalize_tool_name,
+        normalize_tool_arguments as _New_normalize_tool_arguments,
+        powershell_literal_path as _New_powershell_literal_path,
+        windows_shell_command as _New_windows_shell_command,
+        decode_subprocess_output as _New_decode_subprocess_output,
+        clean_native_runtime_noise as _New_clean_native_runtime_noise,
+        mcp_slug as _New_mcp_slug,
+    )
+    HOST_PATH_TYPE = _New_HOST_PATH_TYPE
+    _UI_LANGUAGE = _New__UI_LANGUAGE
+    _EN_UI_REPLACEMENTS = _New__EN_UI_REPLACEMENTS
+    ANSI = _New_ANSI
+    UI_THEMES = _New_UI_THEMES
+    DEFAULT_CONFIG = _New_DEFAULT_CONFIG
+    set_ui_language = _New_set_ui_language
+    localize_ui_text = _New_localize_ui_text
+    _raw_ansi = _New__raw_ansi
+    ui_palette = _New_ui_palette
+    atomic_json = _New_atomic_json
+    atomic_text = _New_atomic_text
+    load_json = _New_load_json
+    app_home = _New_app_home
+    migrate_legacy_app_home = _New_migrate_legacy_app_home
+    normalize_api_base_url = _New_normalize_api_base_url
+    normalize_custom_route = _New_normalize_custom_route
+    inferred_custom_route = _New_inferred_custom_route
+    custom_protocol_for_route = _New_custom_protocol_for_route
+    endpoint_hint_from_error = _New_endpoint_hint_from_error
+    is_endpoint_route_error = _New_is_endpoint_route_error
+    redact_sensitive = _New_redact_sensitive
+    SteeringInterrupt = _New_SteeringInterrupt
+    normalize_subagent_role = _New_normalize_subagent_role
+    normalize_tool_name = _New_normalize_tool_name
+    normalize_tool_arguments = _New_normalize_tool_arguments
+    powershell_literal_path = _New_powershell_literal_path
+    windows_shell_command = _New_windows_shell_command
+    decode_subprocess_output = _New_decode_subprocess_output
+    clean_native_runtime_noise = _New_clean_native_runtime_noise
+    mcp_slug = _New_mcp_slug
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_config ---
+try:
+    from forgecode_config import (
+        APP_NAME as _New_APP_NAME,
+        PROVIDERS as _New_PROVIDERS,
+        PROFILE_FIELDS as _New_PROFILE_FIELDS,
+        CONNECTION_STATE_FIELDS as _New_CONNECTION_STATE_FIELDS,
+        Config as _New_Config,
+        connection_state as _New_connection_state,
+        apply_connection_state as _New_apply_connection_state,
+        backup_connection_for as _New_backup_connection_for,
+        make_backup_config as _New_make_backup_config,
+        is_limit_or_quota_error as _New_is_limit_or_quota_error,
+        masked_secret as _New_masked_secret,
+        backup_status as _New_backup_status,
+        profile_name as _New_profile_name,
+        save_connection_profile as _New_save_connection_profile,
+        use_connection_profile as _New_use_connection_profile,
+        delete_connection_profile as _New_delete_connection_profile,
+    )
+    APP_NAME = _New_APP_NAME
+    PROVIDERS = _New_PROVIDERS
+    PROFILE_FIELDS = _New_PROFILE_FIELDS
+    CONNECTION_STATE_FIELDS = _New_CONNECTION_STATE_FIELDS
+    Config = _New_Config
+    connection_state = _New_connection_state
+    apply_connection_state = _New_apply_connection_state
+    backup_connection_for = _New_backup_connection_for
+    make_backup_config = _New_make_backup_config
+    is_limit_or_quota_error = _New_is_limit_or_quota_error
+    masked_secret = _New_masked_secret
+    backup_status = _New_backup_status
+    profile_name = _New_profile_name
+    save_connection_profile = _New_save_connection_profile
+    use_connection_profile = _New_use_connection_profile
+    delete_connection_profile = _New_delete_connection_profile
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_sandbox ---
+try:
+    from forgecode_sandbox import (
+        IGNORE_DIRS as _New_IGNORE_DIRS,
+        BINARY_ARTIFACT_SUFFIXES as _New_BINARY_ARTIFACT_SUFFIXES,
+        SANDBOX_SECRET_NAMES as _New_SANDBOX_SECRET_NAMES,
+        SANDBOX_SECRET_SUFFIXES as _New_SANDBOX_SECRET_SUFFIXES,
+        SandboxTransferResult as _New_SandboxTransferResult,
+        NativeSandboxProcess as _New_NativeSandboxProcess,
+        WindowsAppContainerRunner as _New_WindowsAppContainerRunner,
+        ForceSandboxManager as _New_ForceSandboxManager,
+        hard_operation_risk as _New_hard_operation_risk,
+        parse_file_view_command as _New_parse_file_view_command,
+        is_known_safe_read_command as _New_is_known_safe_read_command,
+    )
+    IGNORE_DIRS = _New_IGNORE_DIRS
+    BINARY_ARTIFACT_SUFFIXES = _New_BINARY_ARTIFACT_SUFFIXES
+    SANDBOX_SECRET_NAMES = _New_SANDBOX_SECRET_NAMES
+    SANDBOX_SECRET_SUFFIXES = _New_SANDBOX_SECRET_SUFFIXES
+    SandboxTransferResult = _New_SandboxTransferResult
+    NativeSandboxProcess = _New_NativeSandboxProcess
+    WindowsAppContainerRunner = _New_WindowsAppContainerRunner
+    ForceSandboxManager = _New_ForceSandboxManager
+    hard_operation_risk = _New_hard_operation_risk
+    parse_file_view_command = _New_parse_file_view_command
+    is_known_safe_read_command = _New_is_known_safe_read_command
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_mcp ---
+try:
+    from forgecode_mcp import (
+        FORCEGRAPH_REPOSITORY as _New_FORCEGRAPH_REPOSITORY,
+        FORCEGRAPH_MIN_VERSION as _New_FORCEGRAPH_MIN_VERSION,
+        FORCEGRAPH_MIN_VERSION_TEXT as _New_FORCEGRAPH_MIN_VERSION_TEXT,
+        FORCEGRAPH_AUTO_LOCK as _New_FORCEGRAPH_AUTO_LOCK,
+        ForceGraphBridge as _New_ForceGraphBridge,
+        mcp_safe_environment as _New_mcp_safe_environment,
+        MCPStdioClient as _New_MCPStdioClient,
+        MCPHttpClient as _New_MCPHttpClient,
+        MCPManager as _New_MCPManager,
+    )
+    FORCEGRAPH_REPOSITORY = _New_FORCEGRAPH_REPOSITORY
+    FORCEGRAPH_MIN_VERSION = _New_FORCEGRAPH_MIN_VERSION
+    FORCEGRAPH_MIN_VERSION_TEXT = _New_FORCEGRAPH_MIN_VERSION_TEXT
+    FORCEGRAPH_AUTO_LOCK = _New_FORCEGRAPH_AUTO_LOCK
+    ForceGraphBridge = _New_ForceGraphBridge
+    mcp_safe_environment = _New_mcp_safe_environment
+    MCPStdioClient = _New_MCPStdioClient
+    MCPHttpClient = _New_MCPHttpClient
+    MCPManager = _New_MCPManager
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_skills ---
+try:
+    from forgecode_skills import (
+        BUILTIN_SKILLS as _New_BUILTIN_SKILLS,
+        StaticWebAudit as _New_StaticWebAudit,
+        WebQualityReport as _New_WebQualityReport,
+        SkillDefinition as _New_SkillDefinition,
+        SkillSecurityReport as _New_SkillSecurityReport,
+        SkillsShHTMLToMarkdown as _New_SkillsShHTMLToMarkdown,
+        skill_slug as _New_skill_slug,
+        _skill_list_value as _New__skill_list_value,
+        parse_skill_document as _New_parse_skill_document,
+        SkillManager as _New_SkillManager,
+    )
+    BUILTIN_SKILLS = _New_BUILTIN_SKILLS
+    StaticWebAudit = _New_StaticWebAudit
+    WebQualityReport = _New_WebQualityReport
+    SkillDefinition = _New_SkillDefinition
+    SkillSecurityReport = _New_SkillSecurityReport
+    SkillsShHTMLToMarkdown = _New_SkillsShHTMLToMarkdown
+    skill_slug = _New_skill_slug
+    _skill_list_value = _New__skill_list_value
+    parse_skill_document = _New_parse_skill_document
+    SkillManager = _New_SkillManager
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_context ---
+try:
+    from forgecode_context import (
+        FLOW_FINAL_STATES as _New_FLOW_FINAL_STATES,
+        FLOW_ACTIVE_STATES as _New_FLOW_ACTIVE_STATES,
+        _PROJECT_CONTEXT_CACHE as _New__PROJECT_CONTEXT_CACHE,
+        _THINKING_MARKERS as _New__THINKING_MARKERS,
+        _THINKING_STRIP_RE as _New__THINKING_STRIP_RE,
+        _GENERIC_THINKING_LINE_RE as _New__GENERIC_THINKING_LINE_RE,
+        _ACTION_INTENT_RE as _New__ACTION_INTENT_RE,
+        FORCE_CONTEXT_LAYERS as _New_FORCE_CONTEXT_LAYERS,
+        FORCE_CONTEXT_SCHEMA as _New_FORCE_CONTEXT_SCHEMA,
+        AI_EDITABLE_SETTINGS as _New_AI_EDITABLE_SETTINGS,
+        GoalStore as _New_GoalStore,
+        GoalRunResult as _New_GoalRunResult,
+        goal_answer_is_incomplete as _New_goal_answer_is_incomplete,
+        run_goal_until_complete as _New_run_goal_until_complete,
+        TaskQueueStore as _New_TaskQueueStore,
+        VibeSessionStore as _New_VibeSessionStore,
+        ForceFlowTaskResult as _New_ForceFlowTaskResult,
+        ForceFlowRunResult as _New_ForceFlowRunResult,
+        VibeReview as _New_VibeReview,
+        VibeRunResult as _New_VibeRunResult,
+        parse_forceflow_plan as _New_parse_forceflow_plan,
+        create_forceflow_plan as _New_create_forceflow_plan,
+        _forceflow_artifact_check as _New__forceflow_artifact_check,
+        forceflow_framework_project as _New_forceflow_framework_project,
+        forceflow_web_policy as _New_forceflow_web_policy,
+        run_forceflow_task as _New_run_forceflow_task,
+        run_forceflow_queue as _New_run_forceflow_queue,
+        _diff_label as _New__diff_label,
+        project_context as _New_project_context,
+        _is_thinking_trace_only as _New__is_thinking_trace_only,
+        _strip_thinking_prefix as _New__strip_thinking_prefix,
+        _has_unfulfilled_action_intent as _New__has_unfulfilled_action_intent,
+        LegacyForceContext as _New_LegacyForceContext,
+        ForceContext as _New_ForceContext,
+        PlanStep as _New_PlanStep,
+        ExecutionPlan as _New_ExecutionPlan,
+        DebugFinding as _New_DebugFinding,
+        ExecutionState as _New_ExecutionState,
+        is_simple_conversation as _New_is_simple_conversation,
+        TokenBudgetEngine as _New_TokenBudgetEngine,
+        PlanningEngine as _New_PlanningEngine,
+        DebuggingEngine as _New_DebuggingEngine,
+        VerificationEngine as _New_VerificationEngine,
+        ExecutionKernel as _New_ExecutionKernel,
+        TeamBoard as _New_TeamBoard,
+        TerminalFleet as _New_TerminalFleet,
+        ChromeController as _New_ChromeController,
+        YouTubeMusicPlayer as _New_YouTubeMusicPlayer,
+        explicit_fleet_request as _New_explicit_fleet_request,
+    )
+    FLOW_FINAL_STATES = _New_FLOW_FINAL_STATES
+    FLOW_ACTIVE_STATES = _New_FLOW_ACTIVE_STATES
+    _PROJECT_CONTEXT_CACHE = _New__PROJECT_CONTEXT_CACHE
+    _THINKING_MARKERS = _New__THINKING_MARKERS
+    _THINKING_STRIP_RE = _New__THINKING_STRIP_RE
+    _GENERIC_THINKING_LINE_RE = _New__GENERIC_THINKING_LINE_RE
+    _ACTION_INTENT_RE = _New__ACTION_INTENT_RE
+    FORCE_CONTEXT_LAYERS = _New_FORCE_CONTEXT_LAYERS
+    FORCE_CONTEXT_SCHEMA = _New_FORCE_CONTEXT_SCHEMA
+    AI_EDITABLE_SETTINGS = _New_AI_EDITABLE_SETTINGS
+    GoalStore = _New_GoalStore
+    GoalRunResult = _New_GoalRunResult
+    goal_answer_is_incomplete = _New_goal_answer_is_incomplete
+    run_goal_until_complete = _New_run_goal_until_complete
+    TaskQueueStore = _New_TaskQueueStore
+    VibeSessionStore = _New_VibeSessionStore
+    ForceFlowTaskResult = _New_ForceFlowTaskResult
+    ForceFlowRunResult = _New_ForceFlowRunResult
+    VibeReview = _New_VibeReview
+    VibeRunResult = _New_VibeRunResult
+    parse_forceflow_plan = _New_parse_forceflow_plan
+    create_forceflow_plan = _New_create_forceflow_plan
+    _forceflow_artifact_check = _New__forceflow_artifact_check
+    forceflow_framework_project = _New_forceflow_framework_project
+    forceflow_web_policy = _New_forceflow_web_policy
+    run_forceflow_task = _New_run_forceflow_task
+    run_forceflow_queue = _New_run_forceflow_queue
+    _diff_label = _New__diff_label
+    project_context = _New_project_context
+    _is_thinking_trace_only = _New__is_thinking_trace_only
+    _strip_thinking_prefix = _New__strip_thinking_prefix
+    _has_unfulfilled_action_intent = _New__has_unfulfilled_action_intent
+    LegacyForceContext = _New_LegacyForceContext
+    ForceContext = _New_ForceContext
+    PlanStep = _New_PlanStep
+    ExecutionPlan = _New_ExecutionPlan
+    DebugFinding = _New_DebugFinding
+    ExecutionState = _New_ExecutionState
+    is_simple_conversation = _New_is_simple_conversation
+    TokenBudgetEngine = _New_TokenBudgetEngine
+    PlanningEngine = _New_PlanningEngine
+    DebuggingEngine = _New_DebuggingEngine
+    VerificationEngine = _New_VerificationEngine
+    ExecutionKernel = _New_ExecutionKernel
+    TeamBoard = _New_TeamBoard
+    TerminalFleet = _New_TerminalFleet
+    ChromeController = _New_ChromeController
+    YouTubeMusicPlayer = _New_YouTubeMusicPlayer
+    explicit_fleet_request = _New_explicit_fleet_request
+except ModuleNotFoundError:
+    pass
+
+
+# --- cerrahi auto-wire: forgecode_workspace ---
+try:
+    from forgecode_workspace import (
+        TOOL_NAME_MAP as _New_TOOL_NAME_MAP,
+        InteractiveProcess as _New_InteractiveProcess,
+        WorkspaceTools as _New_WorkspaceTools,
+    )
+    TOOL_NAME_MAP = _New_TOOL_NAME_MAP
+    InteractiveProcess = _New_InteractiveProcess
+    WorkspaceTools = _New_WorkspaceTools
+except ModuleNotFoundError:
+    pass
+# --- final kimlik esitleme: split modullerdeki sinif referanslarini host finalleriyle esitle ---
+# Neden: birden fazla kesik ayni sembolu farkli modulden tasiyip host'u sirayla bagladi.
+# `except X` / `raise X` / `isinstance` ancak tek kimlikle calisir. Class disindakiler
+# (fonksiyon/deger kopyalari) davranissal ayni oldugundan dokunulmaz; ANSI proxy korunur.
+try:
+    import sys as _sys_final
+
+    _host_final = _sys_final.modules[__name__]
+    _modnames_final = (
+        "forgecode_stores",
+        "forgecode_providers",
+        "forgecode_config",
+        "forgecode_queues",
+        "forgecode_mcp",
+        "forgecode_sandbox",
+        "forgecode_context",
+        "forgecode_workspace",
+        "forgecode_base",
+        "forgecode_skills",
+    )
+    for _mn_final in _modnames_final:
+        try:
+            _mod_final = _sys_final.modules.get(_mn_final)
+            if _mod_final is None:
+                _mod_final = __import__(_mn_final)
+        except Exception:
+            continue
+        try:
+            for _k_final in dir(_host_final):
+                if _k_final.startswith("__") or _k_final == "ANSI":
+                    continue
+                try:
+                    _hv_final = getattr(_host_final, _k_final)
+                except Exception:
+                    continue
+                if isinstance(_hv_final, type) and getattr(_hv_final, "__module__", "") != "forgecode":
+                    try:
+                        _mv_final = _mod_final.__dict__.get(_k_final, None)
+                    except Exception:
+                        continue
+                    if isinstance(_mv_final, type) and _mv_final is not _hv_final:
+                        try:
+                            setattr(_mod_final, _k_final, _hv_final)
+                        except Exception:
+                            pass
+                elif _k_final not in _mod_final.__dict__:
+                    try:
+                        setattr(_mod_final, _k_final, _hv_final)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    del _sys_final, _host_final, _modnames_final, _mn_final, _mod_final, _k_final
+    try:
+        del _hv_final
+    except NameError:
+        pass
+    try:
+        del _mv_final
+    except NameError:
+        pass
+except Exception:
+    pass

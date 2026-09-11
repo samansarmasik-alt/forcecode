@@ -6,15 +6,17 @@ $bin = Join-Path $root "bin"
 $launcher = Join-Path $bin "Force.cmd"
 $sourceBat = Join-Path $PSScriptRoot "forgecode.bat"
 $sourcePython = Join-Path $PSScriptRoot "forgecode.py"
+$sourceMission = Join-Path $PSScriptRoot "_forgecode_mission.py"
 
-if (-not (Test-Path -LiteralPath $sourceBat) -or -not (Test-Path -LiteralPath $sourcePython)) {
-    throw "forgecode.bat veya forgecode.py kurulum dosyası bulunamadı."
+if (-not (Test-Path -LiteralPath $sourceBat) -or -not (Test-Path -LiteralPath $sourcePython) -or -not (Test-Path -LiteralPath $sourceMission)) {
+    throw "ForgeCode kurulum dosyaları bulunamadı."
 }
 
 New-Item -ItemType Directory -Path $app -Force | Out-Null
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 Copy-Item -LiteralPath $sourceBat -Destination (Join-Path $app "forgecode.bat") -Force
 Copy-Item -LiteralPath $sourcePython -Destination (Join-Path $app "forgecode.py") -Force
+Copy-Item -LiteralPath $sourceMission -Destination (Join-Path $app "_forgecode_mission.py") -Force
 $installedBat = Join-Path $app "forgecode.bat"
 $content = "@echo off`r`ncall `"$installedBat`" `"%CD%`" %*`r`n"
 [System.IO.File]::WriteAllText($launcher, $content, [System.Text.UTF8Encoding]::new($false))

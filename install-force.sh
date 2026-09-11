@@ -5,10 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_PY="$SCRIPT_DIR/forgecode.py"
+SOURCE_MISSION="$SCRIPT_DIR/_forgecode_mission.py"
 SOURCE_SH="$SCRIPT_DIR/forgecode.sh"
 
-if [ ! -f "$SOURCE_PY" ]; then
-  echo "HATA: forgecode.py bulunamadı ($SCRIPT_DIR)" >&2
+if [ ! -f "$SOURCE_PY" ] || [ ! -f "$SOURCE_MISSION" ]; then
+  echo "HATA: ForgeCode çalışma dosyaları bulunamadı ($SCRIPT_DIR)" >&2
   exit 1
 fi
 
@@ -29,6 +30,7 @@ BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 mkdir -p "$APP_DIR" "$BIN_DIR"
 
 cp -f "$SOURCE_PY" "$APP_DIR/forgecode.py"
+cp -f "$SOURCE_MISSION" "$APP_DIR/_forgecode_mission.py"
 if [ -f "$SOURCE_SH" ]; then
   cp -f "$SOURCE_SH" "$APP_DIR/forgecode.sh"
   chmod +x "$APP_DIR/forgecode.sh"

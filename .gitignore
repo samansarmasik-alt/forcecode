@@ -36,6 +36,7 @@ out/
 graphify-out/
 .claude/
 .codex/
+.vi3ecode/
 .mcp.json
 
 # Local reproduction and cost-analysis artifacts
