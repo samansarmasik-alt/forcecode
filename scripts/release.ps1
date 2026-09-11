@@ -43,10 +43,10 @@ Info "Proje kok: $Root"
 
 # 1) Versiyon
 if (-not $Version) {
-    $pyLine = Select-String -Path "forgecode.py" -Pattern '^VERSION = "([^"]+)"' | Select-Object -First 1
-    if (-not $pyLine) { Fail "forgecode.py icinde VERSION bulunamadi" }
+    $pyLine = Select-String -Path "forcecode.py" -Pattern '^VERSION = "([^"]+)"' | Select-Object -First 1
+    if (-not $pyLine) { Fail "forcecode.py icinde VERSION bulunamadi" }
     $Version = $pyLine.Matches[0].Groups[1].Value
-    Info "Versiyon forgecode.py'den alindi: $Version"
+    Info "Versiyon forcecode.py'den alindi: $Version"
 }
 $Tag = "v$Version"
 # Branch otomatik tespit: parametre boşsa mevcut branch'i kullan (master/main uyumu)
@@ -58,25 +58,25 @@ if (-not $Branch -or $Branch -eq "") {
 }
 Info "Tag: $Tag  Branch: $Branch (mevcut: $CurrentBranch)"
 
-# 2) forgecode.py <-> pyproject.toml eşitle
+# 2) forcecode.py <-> pyproject.toml eşitle
 $tomlMatch = Select-String -Path "pyproject.toml" -Pattern '^version = "([^"]+)"' | Select-Object -First 1
-$pyMatch   = Select-String -Path "forgecode.py" -Pattern '^VERSION = "([^"]+)"' | Select-Object -First 1
+$pyMatch   = Select-String -Path "forcecode.py" -Pattern '^VERSION = "([^"]+)"' | Select-Object -First 1
 $tomlVer = $tomlMatch.Matches[0].Groups[1].Value
 $pyVer   = $pyMatch.Matches[0].Groups[1].Value
 if ($pyVer -ne $tomlVer) {
-    Info "Versiyon uyusmazligi: forgecode.py=$pyVer  pyproject.toml=$tomlVer -> pyproject.toml guncelleniyor..."
+    Info "Versiyon uyusmazligi: forcecode.py=$pyVer  pyproject.toml=$tomlVer -> pyproject.toml guncelleniyor..."
     (Get-Content pyproject.toml -Raw) -replace 'version = "[^"]+"', "version = `"$Version`"" | Set-Content pyproject.toml -NoNewline -Encoding utf8
     Ok "pyproject.toml $Version olarak guncellendi"
 }
 if ($pyVer -ne $Version) {
-    Info "forgecode.py VERSION $pyVer -> $Version olarak guncelleniyor..."
-    (Get-Content forgecode.py -Raw) -replace 'VERSION = "[^"]+"', "VERSION = `"$Version`"" | Set-Content forgecode.py -NoNewline -Encoding utf8
-    Ok "forgecode.py $Version olarak guncellendi"
+    Info "forcecode.py VERSION $pyVer -> $Version olarak guncelleniyor..."
+    (Get-Content forcecode.py -Raw) -replace 'VERSION = "[^"]+"', "VERSION = `"$Version`"" | Set-Content forcecode.py -NoNewline -Encoding utf8
+    Ok "forcecode.py $Version olarak guncellendi"
 }
 
 # 3) Gizli anahtar taraması
 Info "Gizli anahtar taramasi..."
-$hits = Select-String -Path forgecode.py,pyproject.toml -Pattern '(sk-ant-|sk-proj-|ghp_|github_pat_|AKIA)' 2>$null
+$hits = Select-String -Path forcecode.py,pyproject.toml -Pattern '(sk-ant-|sk-proj-|ghp_|github_pat_|AKIA)' 2>$null
 if ($hits) { Fail "Olasi gizli anahtar bulundu:`n$($hits | Out-String)" }
 Ok "Temiz."
 
@@ -84,10 +84,10 @@ Ok "Temiz."
 Info "Syntax kontrol..."
 $py = $null
 foreach ($c in @("py -3","python","python3")) {
-    try { Invoke-Expression "$c -m py_compile forgecode.py" 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { $py = $c; break } } catch {}
+    try { Invoke-Expression "$c -m py_compile forcecode.py" 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { $py = $c; break } } catch {}
 }
 if (-not $py) {
-    try { python -m py_compile forgecode.py; if ($LASTEXITCODE -ne 0) { Fail "py_compile basarisiz" } ; $py="python" } catch { Fail "Python bulunamadi — https://www.python.org/downloads/" }
+    try { python -m py_compile forcecode.py; if ($LASTEXITCODE -ne 0) { Fail "py_compile basarisiz" } ; $py="python" } catch { Fail "Python bulunamadi — https://www.python.org/downloads/" }
 }
 Ok "py_compile OK ($py)"
 
@@ -201,5 +201,5 @@ Write-Host "  Repo   : $repoUrl" -ForegroundColor White
 Write-Host "  Release: $releaseUrl" -ForegroundColor White
 Write-Host "  Actions: https://github.com/samansarmasik-alt/forcecode/actions" -ForegroundColor White
 Write-Host ""
-Write-Host "GitHub Actions 'Release' workflow tag'i gorunce otomatik calisir ve dist/*.whl + ForgeCode-v*.zip'i Releases'e ekler." -ForegroundColor Gray
+Write-Host "GitHub Actions 'Release' workflow tag'i gorunce otomatik calisir ve dist/*.whl + ForceCode-v*.zip'i Releases'e ekler." -ForegroundColor Gray
 Write-Host "Bitti demeden once Actions'in yesil oldugunu kontrol et." -ForegroundColor Gray

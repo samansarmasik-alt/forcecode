@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode providers — cerrahi bölünme adım 3 (provider extraction).
+"""ForceCode providers — cerrahi bölünme adım 3 (provider extraction).
 
 Canonical home for API provider leaves:
 - ApiError / RequestStallError
@@ -11,15 +11,15 @@ Canonical home for API provider leaves:
 - make_provider
 
 Tasarım notu (dairesel import yok):
-- forgecode.py transport katmanında kalır: request_endpoint,
+- forcecode.py transport katmanında kalır: request_endpoint,
   api_transport_timeout, post_json_with_retry, stream_or_json,
   consume_*_stream, custom_auth_headers, PROVIDERS, APP_NAME,
   redact_sensitive. Bu semboller SADECE request anında
-  `import forgecode` ile tembel alınır (_fc).
+  `import forcecode` ile tembel alınır (_fc).
 - Config'e tip olarak dokunulmaz (Any) — 88 edge'lik göbekten
   import zinciri kurulmaz.
-- Usage forgecode_stores'tan gelir (izole, güvenli).
-- forgecode.py bu sembolleri `try: from forgecode_providers import ...`
+- Usage forcecode_stores'tan gelir (izole, güvenli).
+- forcecode.py bu sembolleri `try: from forcecode_providers import ...`
   ile alır; dosya silinirse eski gömülü fallback çalışır.
 """
 
@@ -35,11 +35,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from forgecode_stores import Usage
+from forcecode_stores import Usage
 
 
 def _fc(name: str) -> Any:
-    import forgecode as _mod  # type: ignore
+    import forcecode as _mod  # type: ignore
 
     return getattr(_mod, name)
 
@@ -157,7 +157,7 @@ def compatible_tool_arguments_with_error(block: dict[str, Any]) -> tuple[dict[st
                 continue
             if isinstance(parsed, dict):
                 return parsed, ""
-    embedded = str(block.get("_forgecode_parse_error") or "").strip()
+    embedded = str(block.get("_forcecode_parse_error") or "").strip()
     if embedded:
         return {}, embedded
     if invalid_json:
@@ -311,7 +311,7 @@ class AnthropicProvider(Provider):
             native_block.pop("arguments", None)
             native_block.pop("parameters", None)
             native_block.pop("function", None)
-            native_block.pop("_forgecode_parse_error", None)
+            native_block.pop("_forcecode_parse_error", None)
         u = data.get("usage", {})
         if not text.strip() and not calls:
             raise ApiError("API başarılı durum döndürdü ancak görünür içerik veya araç çağrısı üretmedi")
@@ -403,7 +403,7 @@ class OpenAIChatProvider(Provider):
         if isinstance(extras, dict):
             headers.update({str(key): str(value) for key, value in extras.items()})
         if cfg["provider"] == "openrouter":
-            headers.update({"HTTP-Referer": "https://forgecode.local", "X-OpenRouter-Title": _fc("APP_NAME")})
+            headers.update({"HTTP-Referer": "https://forcecode.local", "X-OpenRouter-Title": _fc("APP_NAME")})
         endpoint = _fc("request_endpoint")(self.cfg, "/chat/completions")
         streaming = bool(cfg.get("streaming_enabled", True) and on_text)
         if streaming:
@@ -517,8 +517,8 @@ class SubscriptionCLIProvider(Provider):
         transcript = json.dumps(messages, ensure_ascii=False, default=str)
         prompt = (
             system[:12000]
-            + "\n\nFORGECODE SUBSCRIPTION BRIDGE: This is an advisory, read-only CLI call. "
-              "Do not claim that files were changed. Return concise actionable text; ForgeCode remains responsible for tools and approvals."
+            + "\n\nFORCECODE SUBSCRIPTION BRIDGE: This is an advisory, read-only CLI call. "
+              "Do not claim that files were changed. Return concise actionable text; ForceCode remains responsible for tools and approvals."
             + ("\nCurrent information may be researched using the CLI's supported web features." if web_search else "")
             + "\n\nMESSAGES:\n" + transcript[-16000:]
         )

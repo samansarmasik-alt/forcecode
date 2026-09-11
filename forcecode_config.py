@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode config — Config + connection profiles. Depends only on base."""
+"""ForceCode config — Config + connection profiles. Depends only on base."""
 
 from __future__ import annotations
 
@@ -46,18 +46,18 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from forgecode_base import (
+from forcecode_base import (
     DEFAULT_CONFIG, HOST_PATH_TYPE, app_home, atomic_json, load_json,
     migrate_legacy_app_home, normalize_api_base_url, normalize_custom_route,
     inferred_custom_route, custom_protocol_for_route, redact_sensitive, set_ui_language,
 )
 
 def _fc(name):
-    import forgecode as _m
+    import forcecode as _m
     return getattr(_m, name)
 
 
-APP_NAME = "ForgeCode"
+APP_NAME = "ForceCode"
 
 
 PROVIDERS: dict[str, dict[str, Any]] = {

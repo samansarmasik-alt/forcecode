@@ -4,7 +4,7 @@ Describe the problem and the focused change that solves it.
 
 ## Verification
 
-- [ ] `python -m py_compile forgecode.py`
+- [ ] `python -m py_compile forcecode.py`
 - [ ] `python -m unittest discover -s tests -v`
 - [ ] No API keys, private endpoints, personal paths, or local logs are included
 - [ ] Documentation or CHANGELOG was updated when behavior changed

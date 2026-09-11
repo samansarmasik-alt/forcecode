@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode sandbox — isolation leaves. Depends on base/config/stores."""
+"""ForceCode sandbox — isolation leaves. Depends on base/config/stores."""
 
 from __future__ import annotations
 
@@ -46,20 +46,20 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from forgecode_base import atomic_json, decode_subprocess_output, load_json, redact_sensitive, windows_shell_command, powershell_literal_path
-from forgecode_config import Config
+from forcecode_base import atomic_json, decode_subprocess_output, load_json, redact_sensitive, windows_shell_command, powershell_literal_path
+from forcecode_config import Config
 
 def _fc(name):
-    import forgecode as _m
+    import forcecode as _m
     return getattr(_m, name)
 
 def interactive(*a, **k):
-    import forgecode as _m
+    import forcecode as _m
     return _m.interactive(*a, **k)
 
 
 IGNORE_DIRS = {
-    ".git", ".forgecode", ".force", ".code-review-graph", "node_modules",
+    ".git", ".forcecode", ".force", ".code-review-graph", "node_modules",
     ".venv", "venv", "__pycache__", "dist", "build", ".ssh", ".aws",
     ".azure", ".gnupg", ".kube", ".forceclient-check",
 }
@@ -166,7 +166,7 @@ class NativeSandboxProcess:
             except (OSError, ValueError) as exc:
                 read_error.append(exc)
 
-        thread = threading.Thread(target=reader, name="forgecode-native-sandbox-output", daemon=True)
+        thread = threading.Thread(target=reader, name="forcecode-native-sandbox-output", daemon=True)
         thread.start()
         try:
             if input:
@@ -464,7 +464,7 @@ class WindowsAppContainerRunner:
         finally:
             self.kernel32.LocalFree(text_pointer)
         system_drive = pathlib.Path(os.environ.get("SystemDrive", "C:") + os.sep)
-        native_root = pathlib.Path(os.environ.get("FORGECODE_NATIVE_SANDBOX_ROOT", str(system_drive / "ForceCodeSandbox")))
+        native_root = pathlib.Path(os.environ.get("FORCECODE_NATIVE_SANDBOX_ROOT", str(system_drive / "ForceCodeSandbox")))
         self.execution_workspace = native_root.resolve() / self.identity
         self.execution_workspace.mkdir(parents=True, exist_ok=True)
         del keepalive
@@ -684,7 +684,7 @@ class WindowsAppContainerRunner:
             "TEMP": os.environ.get("TEMP", str(pathlib.Path(user_profile) / "AppData" / "Local" / "Temp")),
             "TMP": os.environ.get("TMP", str(pathlib.Path(user_profile) / "AppData" / "Local" / "Temp")),
             "CI": "1",
-            "FORGECODE_SANDBOX": "1",
+            "FORCECODE_SANDBOX": "1",
             "PYTHONUNBUFFERED": "1",
             "PYTHONIOENCODING": "utf-8",
         }
@@ -787,10 +787,10 @@ class WindowsAppContainerRunner:
         if self._verified:
             return True
         self.prepare()
-        process = self.spawn("Write-Output 'FORGECODE_NATIVE_SANDBOX_OK'")
+        process = self.spawn("Write-Output 'FORCECODE_NATIVE_SANDBOX_OK'")
         output, _ = process.communicate(timeout=10)
         process.close()
-        self._verified = b"FORGECODE_NATIVE_SANDBOX_OK" in output
+        self._verified = b"FORCECODE_NATIVE_SANDBOX_OK" in output
         return self._verified
 
     def _create_job(self) -> int:
@@ -1284,7 +1284,7 @@ class ForceSandboxManager:
             executable, "run", "--rm", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--pids-limit=512", "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=268435456",
             "--mount", mount, "--workdir", "/workspace",
-            "--env", "HOME=/tmp/forge-home", "--env", "CI=1", "--env", "FORGECODE_SANDBOX=1",
+            "--env", "HOME=/tmp/forge-home", "--env", "CI=1", "--env", "FORCECODE_SANDBOX=1",
         ]
         if interactive:
             arguments.append("-i")

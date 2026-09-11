@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""ForgeCode stores — cerrahi bölünme adım 1+2 (leaf extraction).
+"""ForceCode stores — cerrahi bölünme adım 1+2 (leaf extraction).
 
 Canonical home for the most isolated persistence leaves:
 - Usage / UsageStore  (home/usage.jsonl)
-- HistoryStore        (root/.forgecode/history.jsonl)
-- SessionStore + safe_session_name (root/.forgecode/sessions/*.jsonl)
+- HistoryStore        (root/.forcecode/history.jsonl)
+- SessionStore + safe_session_name (root/.forcecode/sessions/*.jsonl)
 - trim_jsonl_file     (shared bounded-append helper)
 
 Neden bunlar ilk?
@@ -12,10 +12,10 @@ Neden bunlar ilk?
   __init__ caller, 3 metod; SessionStore -> __init__/switch_session/
   build_portable_handoff/handle_command caller'ları, hepsi aynı aile.
   Hiçbir provider / WorkspaceTools bunlara doğrudan bağlı değil.
-- forgecode.py bu sembolleri `try: from forgecode_stores import ...` ile alır;
+- forcecode.py bu sembolleri `try: from forcecode_stores import ...` ile alır;
   dosya silinirse eski gömülü fallback çalışır.
 - SessionStore Config'e sadece `cfg.data.get()` ile dokunur (tip: Any),
-  redact/load/atomic helper'lar yerelde tutulur -> forgecode'ya geri
+  redact/load/atomic helper'lar yerelde tutulur -> forcecode'ya geri
   bağımlılık yok, dairesel import yok.
 """
 
@@ -113,7 +113,7 @@ class HistoryStore:
     TRIM_THRESHOLD_BYTES = 1_000_000
 
     def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "history.jsonl"
+        self.path = root / ".forcecode" / "history.jsonl"
         self.trim_max_rows = self.TRIM_MAX_ROWS
         self.trim_threshold_bytes = self.TRIM_THRESHOLD_BYTES
 
@@ -155,7 +155,7 @@ def safe_session_name(raw: str) -> str:
 
 def _local_redact(value: str) -> str:
     try:
-        from forgecode import redact_sensitive as _rs  # type: ignore
+        from forcecode import redact_sensitive as _rs  # type: ignore
 
         return str(_rs(value))
     except Exception:
@@ -183,7 +183,7 @@ class SessionStore:
         self.root = root
         self.cfg = cfg
         self.session_name = safe_session_name(session_name)
-        self.base = root / ".forgecode"
+        self.base = root / ".forcecode"
         self.session_path = self.base / "sessions" / f"{self.session_name}.jsonl"
         self.memory_path = self.base / "memory.json"
         self.event_path = self.base / "logs" / "events.jsonl"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode context/flows — goals, forceflow, execution kernel, fleet. Depends on base/config/stores/sandbox."""
+"""ForceCode context/flows — goals, forceflow, execution kernel, fleet. Depends on base/config/stores/sandbox."""
 
 from __future__ import annotations
 
@@ -46,13 +46,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from forgecode_base import SteeringInterrupt, app_home, atomic_json, atomic_text, load_json, normalize_subagent_role, redact_sensitive
-from forgecode_config import Config
-from forgecode_stores import SessionStore
-from forgecode_sandbox import ForceSandboxManager
+from forcecode_base import SteeringInterrupt, app_home, atomic_json, atomic_text, load_json, normalize_subagent_role, redact_sensitive
+from forcecode_config import Config
+from forcecode_stores import SessionStore
+from forcecode_sandbox import ForceSandboxManager
 
 def _fc(name):
-    import forgecode as _m
+    import forcecode as _m
     return getattr(_m, name)
 
 
@@ -114,7 +114,7 @@ AI_EDITABLE_SETTINGS = {
 
 class GoalStore:
     def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "goals.json"
+        self.path = root / ".forcecode" / "goals.json"
         self.goals: list[dict[str, Any]] = load_json(self.path, [])
 
     def save(self) -> None:
@@ -217,7 +217,7 @@ class TaskQueueStore:
             if os.name == "nt":
                 # Never use os.kill(pid, 0) on Windows: CPython maps most
                 # signals to TerminateProcess, so a liveness probe can kill
-                # the very ForgeCode process it is checking.
+                # the very ForceCode process it is checking.
                 process_query_limited_information = 0x1000
                 still_active = 259
                 handle = ctypes.windll.kernel32.OpenProcess(
@@ -240,7 +240,7 @@ class TaskQueueStore:
     MAX_FINISHED_TASKS = 150
 
     def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "tasks.json"
+        self.path = root / ".forcecode" / "tasks.json"
         self.max_finished_tasks = self.MAX_FINISHED_TASKS
         raw = load_json(self.path, {"version": 2, "tasks": []})
         source = raw if isinstance(raw, list) else raw.get("tasks", []) if isinstance(raw, dict) else []
@@ -260,7 +260,7 @@ class TaskQueueStore:
                 task["status"] = "pending"
             if task["status"] == "running" and not self._pid_alive(task.get("owner_pid")):
                 task["status"] = "paused"
-                task["error"] = "ForgeCode kapandı veya görev kesildi; güvenli biçimde duraklatıldı."
+                task["error"] = "ForceCode kapandı veya görev kesildi; güvenli biçimde duraklatıldı."
                 task["owner_pid"] = 0
                 recovered = True
             task.setdefault("flow_id", "manual")
@@ -448,7 +448,7 @@ class VibeSessionStore:
 
     def __init__(self, root: pathlib.Path):
         self.root = root.resolve()
-        self.path = self.root / ".forgecode" / "vibe-session.json"
+        self.path = self.root / ".forcecode" / "vibe-session.json"
         raw = load_json(self.path, {})
         self.state: dict[str, Any] = raw if isinstance(raw, dict) else {}
         if (
@@ -459,7 +459,7 @@ class VibeSessionStore:
                 "status": "paused",
                 "owner_pid": 0,
                 "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
-                "last_error": "ForgeCode stopped unexpectedly; the latest checkpoint is ready for /vibe resume.",
+                "last_error": "ForceCode stopped unexpectedly; the latest checkpoint is ready for /vibe resume.",
             })
             self.save()
 
@@ -1055,7 +1055,7 @@ def project_context(root: pathlib.Path, efficiency: str = "off", sandboxed: bool
     if efficiency != "off":
         # verim=max: yalnızca diff + essentials; tüm ağaç tarama yok
         if efficiency == "max" and baseline is not None and changed_only is not None:
-            essentials = {"AGENTS.md", "pyproject.toml", "package.json", "forgecode.py"}
+            essentials = {"AGENTS.md", "pyproject.toml", "package.json", "forcecode.py"}
             merged = sorted(set(changed_only) | {p for p in essentials if (root / p).exists()})
             # cap to keep tokens minimal
             merged = merged[:40]
@@ -1352,13 +1352,13 @@ class ForceContext:
         if not readme.exists():
             atomic_text(readme, (
                 "# ForceContext\n\nForceCode's local, user-controlled context store. Project/session memory stays "
-                "in this folder and user preferences stay in the local ForgeCode app-data folder. No memory database is "
+                "in this folder and user preferences stay in the local ForceCode app-data folder. No memory database is "
                 "uploaded, but snippets selected for a request are sent to the configured AI provider. Use `/context "
                 "preview`, `/memory list`, `/memory disable`, `/memory export`, or `/memory wipe`. Do not commit `.force`.\n"
             ))
             created.append(".force/README.md")
         marker = self.base / ".legacy-memory-imported"
-        legacy_path = self.root / ".forgecode" / "memory.json"
+        legacy_path = self.root / ".forcecode" / "memory.json"
         if not marker.exists():
             legacy_rows = load_json(legacy_path, []) if legacy_path.exists() else []
             if isinstance(legacy_rows, list):
@@ -1366,7 +1366,7 @@ class ForceContext:
                     text = str(row.get("text", "")).strip() if isinstance(row, dict) else ""
                     if text:
                         self.update("project", "legacy-" + str(row.get("id", uuid.uuid4().hex[:6])), text,
-                                    ["legacy", "project-note"], source=".forgecode/memory.json",
+                                    ["legacy", "project-note"], source=".forcecode/memory.json",
                                     status="confirmed", confidence=0.9, memory_type="note")
             atomic_text(marker, dt.datetime.now().isoformat(timespec="seconds"))
         return created
@@ -1868,7 +1868,7 @@ class DebuggingEngine:
             ("tool-contract", ("unexpected keyword", "required", "unknown tool", "bilinmeyen", "kullanılamaz"), "Use only a supplied tool and its exact schema; do not retry the same arguments.", False),
             ("authentication", ("401", "403", "api key", "unauthorized", "forbidden"), "Stop blind retries; verify provider, endpoint, protocol, and authentication mode.", False),
             ("rate-limit", ("429", "rate limit", "quota"), "Use configured backoff or backup provider; do not multiply parallel retries.", True),
-            ("interactive-input", ("kullanıcı girdisi", "stdin alanına", "waiting for input"), "Use scripted stdin or start_process/process_input so the program cannot block ForgeCode's terminal.", False),
+            ("interactive-input", ("kullanıcı girdisi", "stdin alanına", "waiting for input"), "Use scripted stdin or start_process/process_input so the program cannot block ForceCode's terminal.", False),
             ("timeout", ("timed out", "timeout", "zaman aşımı", "takılan bağlantı", "ilk veriyi göndermedi", "ilerleme göndermedi"), "Reduce request/tool scope or continue streaming; retry once only when the operation is idempotent.", True),
             ("encoding", ("unicode", "codec", "decode", "encoding"), "Read command output as bytes and decode with UTF-8 replacement fallback.", False),
             ("syntax", ("syntax", "parse", "unexpected token", "exit_code="), "Inspect the exact command or file and correct syntax before rerunning.", False),
@@ -1971,7 +1971,7 @@ class ExecutionKernel:
                        "available": (self.root / ".code-review-graph").is_dir(),
                        "consulted": "graph_context" in state.successful_tools,
                    }}
-        atomic_json(self.root / ".forgecode" / "last-run.json", report)
+        atomic_json(self.root / ".forcecode" / "last-run.json", report)
         return report
 
 
@@ -1981,7 +1981,7 @@ class TeamBoard:
     MAX_AGENTS = 4  # one manager + at most three workers
 
     def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "team-state.json"
+        self.path = root / ".forcecode" / "team-state.json"
         self._thread_lock = threading.RLock()
 
     @contextlib.contextmanager
@@ -2075,7 +2075,7 @@ class TerminalFleet:
 
     def __init__(self, root: pathlib.Path, cfg: Config):
         self.root, self.cfg = root.resolve(), cfg
-        self.path = self.root / ".forgecode" / "terminal-fleet.json"
+        self.path = self.root / ".forcecode" / "terminal-fleet.json"
         self._thread_lock = threading.RLock()
 
     @contextlib.contextmanager
@@ -2485,7 +2485,7 @@ class YouTubeMusicPlayer:
     def _page(self, state: dict[str, Any]) -> None:
         ids = [item["id"] for item in state.get("queue", [])]
         payload = json.dumps(ids)
-        html = f'''<!doctype html><html><head><meta charset="utf-8"><title>ForgeCode Music</title><style>body{{margin:0;background:#0b1020;color:#eef;font:16px system-ui;display:grid;place-items:center;min-height:100vh}}main{{width:min(900px,92vw);background:#151c33;padding:24px;border-radius:24px;box-shadow:0 20px 70px #0008}}#player{{width:100%;aspect-ratio:16/9}}h1{{color:#78e6c8}}</style></head><body><main><h1>ForgeCode · YouTube Queue</h1><div id="player"></div><p>Streaming through the official YouTube player. No media is downloaded.</p></main><script src="https://www.youtube.com/iframe_api"></script><script>const queue={payload};let player;function onYouTubeIframeAPIReady(){{player=new YT.Player('player',{{videoId:queue[0]||'',playerVars:{{autoplay:1}},events:{{onReady:e=>queue.length&&e.target.loadPlaylist(queue)}}}})}}window.fcPlay=()=>player?.playVideo();window.fcPause=()=>player?.pauseVideo();window.fcNext=()=>player?.nextVideo();window.fcPrev=()=>player?.previousVideo();window.fcStatus=()=>({{title:player?.getVideoData()?.title||'',state:player?.getPlayerState(),index:player?.getPlaylistIndex()}});</script></body></html>'''
+        html = f'''<!doctype html><html><head><meta charset="utf-8"><title>ForceCode Music</title><style>body{{margin:0;background:#0b1020;color:#eef;font:16px system-ui;display:grid;place-items:center;min-height:100vh}}main{{width:min(900px,92vw);background:#151c33;padding:24px;border-radius:24px;box-shadow:0 20px 70px #0008}}#player{{width:100%;aspect-ratio:16/9}}h1{{color:#78e6c8}}</style></head><body><main><h1>ForceCode · YouTube Queue</h1><div id="player"></div><p>Streaming through the official YouTube player. No media is downloaded.</p></main><script src="https://www.youtube.com/iframe_api"></script><script>const queue={payload};let player;function onYouTubeIframeAPIReady(){{player=new YT.Player('player',{{videoId:queue[0]||'',playerVars:{{autoplay:1}},events:{{onReady:e=>queue.length&&e.target.loadPlaylist(queue)}}}})}}window.fcPlay=()=>player?.playVideo();window.fcPause=()=>player?.pauseVideo();window.fcNext=()=>player?.nextVideo();window.fcPrev=()=>player?.previousVideo();window.fcStatus=()=>({{title:player?.getVideoData()?.title||'',state:player?.getPlayerState(),index:player?.getPlaylistIndex()}});</script></body></html>'''
         atomic_text(self.page_path, html)
 
     def control(self, action: str, url: str = "", title: str = "") -> str:
@@ -2534,7 +2534,7 @@ def explicit_fleet_request(prompt: str) -> bool:
 
 # Re-export for legacy adim-8 block (context+skills combined interface)
 try:
-    from forgecode_skills import SkillManager  # type: ignore
-    from forgecode_skills import SkillDefinition as _SkillDefinition_reexport  # type: ignore
+    from forcecode_skills import SkillManager  # type: ignore
+    from forcecode_skills import SkillDefinition as _SkillDefinition_reexport  # type: ignore
 except ModuleNotFoundError:
     pass

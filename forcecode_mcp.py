@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode mcp + graph bridge. Depends on base/config."""
+"""ForceCode mcp + graph bridge. Depends on base/config."""
 
 from __future__ import annotations
 
@@ -46,13 +46,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from forgecode_base import decode_subprocess_output, load_json, redact_sensitive
-from forgecode_config import Config
+from forcecode_base import decode_subprocess_output, load_json, redact_sensitive
+from forcecode_config import Config
 
 VERSION = "8.0.0a2"
 
 def _fc(name):
-    import forgecode as _m
+    import forcecode as _m
     return getattr(_m, name)
 
 
@@ -89,7 +89,7 @@ class ForceGraphBridge:
         self.runtime_auto = False
 
     def command(self) -> list[str] | None:
-        # Prefer the package in ForgeCode's own interpreter. /graph install and
+        # Prefer the package in ForceCode's own interpreter. /graph install and
         # automatic upgrades target this exact environment, avoiding a stale
         # executable from another Python installation on Windows.
         try:
@@ -111,7 +111,7 @@ class ForceGraphBridge:
         return self.root / ".code-review-graph"
 
     def state_path(self) -> pathlib.Path:
-        return self.root / ".forgecode" / "forcegraph-state.json"
+        return self.root / ".forcecode" / "forcegraph-state.json"
 
     def state(self) -> dict[str, Any]:
         value = load_json(self.state_path(), {})
@@ -160,7 +160,7 @@ class ForceGraphBridge:
             state["persistence_error"] = redact_sensitive(str(exc))[:500]
         if self.data_dir().is_dir():
             try:
-                atomic_json(self.data_dir() / "forgecode-auto-receipt.json", {
+                atomic_json(self.data_dir() / "forcecode-auto-receipt.json", {
                     "schema_version": 1,
                     "status": state.get("status", "unknown"),
                     "mode": "native-auto-sync",
@@ -263,14 +263,14 @@ class ForceGraphBridge:
                 return previous or {"status": "ready", "version": installed_version, "source_signature": signature}
 
             if result.startswith("ERROR:"):
-                notify("ForceGraph kullanılamadı · normal ForgeCode akışı devam ediyor")
+                notify("ForceGraph kullanılamadı · normal ForceCode akışı devam ediyor")
                 return self._save_auto_state(
                     status="degraded", last_action=action, error=result[:2000],
                     error_time=time.time(), version=installed_version,
                     source_signature=previous.get("source_signature", ""),
                 )
             if action.startswith("build") and not self.ready(verify_graph=True):
-                notify("ForceGraph grafiği doğrulanamadı · normal ForgeCode akışı devam ediyor")
+                notify("ForceGraph grafiği doğrulanamadı · normal ForceCode akışı devam ediyor")
                 return self._save_auto_state(
                     status="degraded", last_action="build-verify",
                     error="Build başarı bildirdi ancak yerel grafik veritabanı bulunamadı.",
@@ -468,8 +468,8 @@ class MCPStdioClient:
             )
         except OSError as exc:
             raise RuntimeError(f"MCP sunucusu başlatılamadı: {exc}") from exc
-        threading.Thread(target=self._read_stdout, daemon=True, name="forgecode-mcp-out").start()
-        threading.Thread(target=self._read_stderr, daemon=True, name="forgecode-mcp-err").start()
+        threading.Thread(target=self._read_stdout, daemon=True, name="forcecode-mcp-out").start()
+        threading.Thread(target=self._read_stderr, daemon=True, name="forcecode-mcp-err").start()
         initialized = self.request("initialize", {
             "protocolVersion": "2025-03-26",
             "capabilities": {},

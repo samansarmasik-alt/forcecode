@@ -1,5 +1,5 @@
-# ForgeCode local state and secrets
-.forgecode/
+# ForceCode local state and secrets
+.forcecode/
 .force/
 .code-review-graph/
 force-memory-export.json
@@ -54,4 +54,4 @@ Thumbs.db
 Desktop.ini
 
 # Local packaging artifacts
-ForgeCode-v*.zip
+ForceCode-v*.zip

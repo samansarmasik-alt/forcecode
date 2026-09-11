@@ -1,4 +1,4 @@
-"""Read-only Mission Control projections for ForgeCode's persistent task queue."""
+"""Read-only Mission Control projections for ForceCode's persistent task queue."""
 
 from __future__ import annotations
 

@@ -63,7 +63,7 @@ class TaskQueueStore:
             if os.name == "nt":
                 # Never use os.kill(pid, 0) on Windows: CPython maps most
                 # signals to TerminateProcess, so a liveness probe can kill
-                # the very ForgeCode process it is checking.
+                # the very ForceCode process it is checking.
                 process_query_limited_information = 0x1000
                 still_active = 259
                 handle = ctypes.windll.kernel32.OpenProcess(
@@ -86,7 +86,7 @@ class TaskQueueStore:
     MAX_FINISHED_TASKS = 150
 
     def __init__(self, root: pathlib.Path):
-        self.path = root / ".forgecode" / "tasks.json"
+        self.path = root / ".forcecode" / "tasks.json"
         self.max_finished_tasks = self.MAX_FINISHED_TASKS
         raw = load_json(self.path, {"version": 2, "tasks": []})
         source = raw if isinstance(raw, list) else raw.get("tasks", []) if isinstance(raw, dict) else []
@@ -106,7 +106,7 @@ class TaskQueueStore:
                 task["status"] = "pending"
             if task["status"] == "running" and not self._pid_alive(task.get("owner_pid")):
                 task["status"] = "paused"
-                task["error"] = "ForgeCode kapandı veya görev kesildi; güvenli biçimde duraklatıldı."
+                task["error"] = "ForceCode kapandı veya görev kesildi; güvenli biçimde duraklatıldı."
                 task["owner_pid"] = 0
                 recovered = True
             task.setdefault("flow_id", "manual")
@@ -294,7 +294,7 @@ class VibeSessionStore:
 
     def __init__(self, root: pathlib.Path):
         self.root = root.resolve()
-        self.path = self.root / ".forgecode" / "vibe-session.json"
+        self.path = self.root / ".forcecode" / "vibe-session.json"
         raw = load_json(self.path, {})
         self.state: dict[str, Any] = raw if isinstance(raw, dict) else {}
         if (
@@ -305,7 +305,7 @@ class VibeSessionStore:
                 "status": "paused",
                 "owner_pid": 0,
                 "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
-                "last_error": "ForgeCode stopped unexpectedly; the latest checkpoint is ready for /vibe resume.",
+                "last_error": "ForceCode stopped unexpectedly; the latest checkpoint is ready for /vibe resume.",
             })
             self.save()
 

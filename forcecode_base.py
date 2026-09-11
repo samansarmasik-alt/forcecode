@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode base — leaf utils, no internal deps. Canonical home for tiny helpers + constants."""
+"""ForceCode base — leaf utils, no internal deps. Canonical home for tiny helpers + constants."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ _UI_LANGUAGE = "tr"
 
 
 _EN_UI_REPLACEMENTS = (
-    ("ForgeCode ilk kurulum", "ForgeCode first-time setup"),
+    ("ForceCode ilk kurulum", "ForceCode first-time setup"),
     ("Önce kullanacağınız yapay zekâ sağlayıcısını seçin.", "First choose the AI provider you want to use."),
     ("Desteklenen sağlayıcılar", "Supported providers"),
     ("SAĞLAYICI    HIZ (ilk yanıt · toplam)", "PROVIDER    SPEED (first response · total)"),
@@ -338,20 +338,20 @@ def load_json(path: pathlib.Path, default: Any) -> Any:
 
 
 def app_home() -> pathlib.Path:
-    custom = os.environ.get("FORGECODE_HOME")
+    custom = os.environ.get("FORCECODE_HOME")
     if custom:
         return HOST_PATH_TYPE(custom).expanduser()
     local_app_data = os.environ.get("LOCALAPPDATA")
     if os.name == "nt" and local_app_data:
-        return HOST_PATH_TYPE(local_app_data) / "ForgeCode"
-    return HOST_PATH_TYPE.home() / ".forgecode"
+        return HOST_PATH_TYPE(local_app_data) / "ForceCode"
+    return HOST_PATH_TYPE.home() / ".forcecode"
 
 
 def migrate_legacy_app_home(destination: pathlib.Path) -> None:
     """Copy legacy Windows user state into AppData without deleting the source."""
-    if os.name != "nt" or os.environ.get("FORGECODE_HOME"):
+    if os.name != "nt" or os.environ.get("FORCECODE_HOME"):
         return
-    legacy = pathlib.Path.home() / ".forgecode"
+    legacy = pathlib.Path.home() / ".forcecode"
     if destination.resolve() == legacy.resolve() or (destination / "config.json").exists():
         return
     for name in ("config.json", "usage.jsonl", "crash.log"):
@@ -636,7 +636,7 @@ def normalize_tool_arguments(name: str, args: Any) -> dict[str, Any]:
         return {"process_id": str(source.get("process_id") or source.get("id") or "")}
     if name == "get_diagnostics":
         return {}
-    if name == "set_forgecode_setting":
+    if name == "set_forcecode_setting":
         return {
             "name": str(source.get("name") or source.get("setting") or ""),
             "value": str(source.get("value", "")),

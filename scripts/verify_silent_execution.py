@@ -5,7 +5,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).parents[1]
-TARGET = ROOT / "forgecode.py"
+TARGET = ROOT / "forcecode.py"
 
 
 def main() -> int:

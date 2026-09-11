@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ForgeCode — macOS / Linux uninstaller
+# ForceCode — macOS / Linux uninstaller
 set -euo pipefail
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-APP_HOME="${FORGECODE_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/forgecode}"
+APP_HOME="${FORCECODE_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/forcecode}"
 LAUNCHER="$BIN_DIR/force"
 
 if [ -f "$LAUNCHER" ]; then rm -f "$LAUNCHER"; echo "Kaldırıldı: $LAUNCHER"; fi
@@ -11,7 +11,7 @@ if [ -d "$APP_HOME/app" ]; then rm -rf "$APP_HOME/app"; echo "Kaldırıldı: $AP
 if [ -d "$APP_HOME" ]; then
   echo "Ayarlar korundu: $APP_HOME (silmek için: rm -rf \"$APP_HOME\")"
 fi
-if [ -d "$HOME/.forgecode" ]; then
-  echo "Eski ayarlar: $HOME/.forgecode korundu."
+if [ -d "$HOME/.forcecode" ]; then
+  echo "Eski ayarlar: $HOME/.forcecode korundu."
 fi
 echo "Force komutu kaldırıldı."

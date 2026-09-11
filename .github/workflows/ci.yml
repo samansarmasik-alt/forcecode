@@ -1,4 +1,4 @@
-name: ForgeCode CI
+name: ForceCode CI
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: forgecode-ci-${{ github.event.pull_request.number || github.ref }}
+  group: forcecode-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,16 +27,16 @@ jobs:
           python-version: "3.10"
 
       - name: Check syntax
-        run: python -m py_compile forgecode.py
+        run: python -m py_compile forcecode.py
 
-      - name: Benchmark efficiency vs Claude Code baseline (ForgeCode verim=max must win)
+      - name: Benchmark efficiency vs Claude Code baseline (ForceCode verim=max must win)
         run: python scripts/benchmark_efficiency.py
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
       - name: Check CLI entry point
-        run: python forgecode.py --version
+        run: python forcecode.py --version
 
   build-windows:
     runs-on: windows-latest
@@ -55,9 +55,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Check syntax
-        run: python -m py_compile forgecode.py
+        run: python -m py_compile forcecode.py
 
-      - name: Benchmark efficiency vs Claude Code baseline (ForgeCode verim=max must win)
+      - name: Benchmark efficiency vs Claude Code baseline (ForceCode verim=max must win)
         run: python scripts/benchmark_efficiency.py
 
       - name: Run unit tests
@@ -65,4 +65,4 @@ jobs:
 
       - name: Check Windows launcher
         shell: cmd
-        run: forgecode.bat --version
+        run: forcecode.bat --version

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ForgeCode workspace — 1642-line toolbelt. Depends on base/config/sandbox/mcp/skills/context."""
+"""ForceCode workspace — 1642-line toolbelt. Depends on base/config/sandbox/mcp/skills/context."""
 
 from __future__ import annotations
 
@@ -46,24 +46,24 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from forgecode_base import clean_native_runtime_noise, decode_subprocess_output, mcp_slug, normalize_tool_arguments, normalize_tool_name
-from forgecode_config import Config
-from forgecode_stores import SessionStore
-from forgecode_sandbox import ForceSandboxManager, hard_operation_risk, parse_file_view_command, is_known_safe_read_command
-from forgecode_mcp import ForceGraphBridge, MCPManager
-from forgecode_skills import SkillManager, StaticWebAudit, WebQualityReport
-from forgecode_context import ChromeController, TeamBoard, TerminalFleet, YouTubeMusicPlayer
+from forcecode_base import clean_native_runtime_noise, decode_subprocess_output, mcp_slug, normalize_tool_arguments, normalize_tool_name
+from forcecode_config import Config
+from forcecode_stores import SessionStore
+from forcecode_sandbox import ForceSandboxManager, hard_operation_risk, parse_file_view_command, is_known_safe_read_command
+from forcecode_mcp import ForceGraphBridge, MCPManager
+from forcecode_skills import SkillManager, StaticWebAudit, WebQualityReport
+from forcecode_context import ChromeController, TeamBoard, TerminalFleet, YouTubeMusicPlayer
 
 def _fc(name):
-    import forgecode as _m
+    import forcecode as _m
     return getattr(_m, name)
 
 def confirm(*a, **k):
-    import forgecode as _m
+    import forcecode as _m
     return _m.confirm(*a, **k)
 
 def interactive(*a, **k):
-    import forgecode as _m
+    import forcecode as _m
     return _m.interactive(*a, **k)
 
 
@@ -87,7 +87,7 @@ TOOL_NAME_MAP = {
     "processstatus": "process_status",
     "stopprocess": "stop_process",
     "getdiagnostics": "get_diagnostics",
-    "setforgecodesetting": "set_forgecode_setting",
+    "setforcecodesetting": "set_forcecode_setting",
     "listskills": "list_skills",
     "manageskill": "manage_skill",
     "skill": "manage_skill",
@@ -258,7 +258,7 @@ class WorkspaceTools:
         """Atomically write verified UTF-8 chunks without a BOM."""
         clean_content = str(content).lstrip("\ufeff")
         payload = clean_content.encode("utf-8")
-        temporary = file.with_name(f".{file.name}.forgecode-{uuid.uuid4().hex}.tmp")
+        temporary = file.with_name(f".{file.name}.forcecode-{uuid.uuid4().hex}.tmp")
         try:
             with temporary.open("wb") as stream:
                 for offset in range(0, len(payload), 64 * 1024):
@@ -346,7 +346,7 @@ class WorkspaceTools:
         if not self.cfg.data.get("_runtime_fleet_authorized", False):
             approved, rejection = self._authorize(
                 "command", f"Terminal fleet action: {action}",
-                f"command=forgecode terminal {action} {terminal or role}", False,
+                f"command=forcecode terminal {action} {terminal or role}", False,
             )
             if not approved:
                 return rejection
@@ -590,7 +590,7 @@ class WorkspaceTools:
     def _interactive_command(self, command: str) -> tuple[list[str] | str, bool]:
         if os.name == "nt":
             # Avoid PowerShell's native-output buffering for the Python runtime
-            # that launched ForgeCode.  In particular CPython 3.10 can already
+            # that launched ForceCode.  In particular CPython 3.10 can already
             # be waiting at input() while its prompt is still hidden upstream.
             escaped_executable = str(sys.executable).replace("'", "''")
             python_prefix = f"& '{escaped_executable}'"
@@ -714,7 +714,7 @@ class WorkspaceTools:
         with self._process_lock:
             self._processes[process_id] = session
         threading.Thread(target=self._read_interactive_process, args=(session,), daemon=True,
-                         name=f"forgecode-process-{process_id}").start()
+                         name=f"forcecode-process-{process_id}").start()
         # Windows CI and cold Python/PowerShell starts can take longer than a
         # fraction of a second before the child publishes its first prompt.
         # Waiting briefly here makes staged-input programs deterministic while
@@ -832,7 +832,7 @@ class WorkspaceTools:
             "cwd": self.root, "text": False, "capture_output": True, "timeout": timeout,
         }
         if stdin is None:
-            # Never inherit ForgeCode's own terminal input. Interactive child
+            # Never inherit ForceCode's own terminal input. Interactive child
             # programs must receive explicit scripted input or immediate EOF.
             run_options["stdin"] = subprocess.DEVNULL
         else:
@@ -847,7 +847,7 @@ class WorkspaceTools:
                 self._notify_progress(f"Komut sürüyor · {elapsed} sn: {activity_label}")
 
         self._notify_progress(f"Komut başladı: {activity_label}")
-        heartbeat = threading.Thread(target=command_heartbeat, name="forgecode-command-progress", daemon=True)
+        heartbeat = threading.Thread(target=command_heartbeat, name="forcecode-command-progress", daemon=True)
         heartbeat.start()
         try:
             if self.sandbox is not None and self.sandbox.active():
@@ -1263,7 +1263,7 @@ int main(int argc, char** argv) {{
 #include <iostream>
 
 int main() {{
-    if (app::greeting(\"ForgeCode\") != \"Hello, ForgeCode!\") {{
+    if (app::greeting(\"ForceCode\") != \"Hello, ForceCode!\") {{
         std::cerr << \"greeting test failed\\n\";
         return 1;
     }}
@@ -1641,7 +1641,7 @@ commands:
         if self.diagnostic_provider:
             return self.diagnostic_provider()
         safe = {name: self.cfg.data.get(name) for name in sorted(AI_EDITABLE_SETTINGS)}
-        return "ForgeCode ayarları:\n" + json.dumps(safe, ensure_ascii=False, indent=2)
+        return "ForceCode ayarları:\n" + json.dumps(safe, ensure_ascii=False, indent=2)
 
     def tool_list_skills(self, query: str = "") -> str:
         if self.skill_manager is None:
@@ -1734,7 +1734,7 @@ commands:
             return self.force_graph.review(base)
         raise ValueError("ForceGraph action status, impact veya review olmalı")
 
-    def tool_set_forgecode_setting(self, name: str, value: str, reason: str) -> str:
+    def tool_set_forcecode_setting(self, name: str, value: str, reason: str) -> str:
         selected = str(name).strip()
         if selected not in AI_EDITABLE_SETTINGS:
             raise ValueError(
@@ -1766,4 +1766,4 @@ commands:
         self.cfg.set_value(selected, str(value))
         after = self.cfg.data.get(selected)
         safe_reason = redact_sensitive(reason).strip()[:500]
-        return f"OK: ForgeCode ayarı güncellendi: {selected} = {after!r} (önce: {before!r}). Gerekçe: {safe_reason or 'belirtilmedi'}"
+        return f"OK: ForceCode ayarı güncellendi: {selected} = {after!r} (önce: {before!r}). Gerekçe: {safe_reason or 'belirtilmedi'}"

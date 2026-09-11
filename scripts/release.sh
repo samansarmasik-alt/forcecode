@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ForgeCode — macOS / Linux release script (POSIX)
+# ForceCode — macOS / Linux release script (POSIX)
 # Windows'taki scripts/release.ps1 ile aynı işi yapar.
 set -e
 set -o pipefail
@@ -28,9 +28,9 @@ echo "Proje kok: $ROOT"
 
 # 1) Versiyon
 if [[ -z "$VERSION" ]]; then
-  VERSION="$(grep -E '^VERSION = ' forgecode.py | sed -E 's/.*"([^"]+)".*/\1/')"
-  if [[ -z "$VERSION" ]]; then echo "HATA: forgecode.py icinde VERSION bulunamadi" >&2; exit 1; fi
-  echo "Versiyon forgecode.py'den alindi: $VERSION"
+  VERSION="$(grep -E '^VERSION = ' forcecode.py | sed -E 's/.*"([^"]+)".*/\1/')"
+  if [[ -z "$VERSION" ]]; then echo "HATA: forcecode.py icinde VERSION bulunamadi" >&2; exit 1; fi
+  echo "Versiyon forcecode.py'den alindi: $VERSION"
 fi
 TAG="v$VERSION"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
@@ -39,11 +39,11 @@ if [[ -z "$BRANCH" ]]; then
 fi
 echo "Tag: $TAG  Branch: $BRANCH (mevcut: $CURRENT_BRANCH)"
 
-# 2) forgecode.py <-> pyproject.toml eşitle
+# 2) forcecode.py <-> pyproject.toml eşitle
 TOML_VER="$(grep -E '^version = ' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-PY_VER="$(grep -E '^VERSION = ' forgecode.py | sed -E 's/.*"([^"]+)".*/\1/')"
+PY_VER="$(grep -E '^VERSION = ' forcecode.py | sed -E 's/.*"([^"]+)".*/\1/')"
 if [[ "$PY_VER" != "$TOML_VER" ]]; then
-  echo "Versiyon uyusmazligi: forgecode.py=$PY_VER pyproject.toml=$TOML_VER -> pyproject.toml guncelleniyor..."
+  echo "Versiyon uyusmazligi: forcecode.py=$PY_VER pyproject.toml=$TOML_VER -> pyproject.toml guncelleniyor..."
   # macOS sed farki için
   if sed --version >/dev/null 2>&1; then
     sed -i "s/version = \"[^\"]*\"/version = \"$VERSION\"/" pyproject.toml
@@ -53,18 +53,18 @@ if [[ "$PY_VER" != "$TOML_VER" ]]; then
   echo "pyproject.toml $VERSION olarak guncellendi"
 fi
 if [[ "$PY_VER" != "$VERSION" ]]; then
-  echo "forgecode.py VERSION $PY_VER -> $VERSION olarak guncelleniyor..."
+  echo "forcecode.py VERSION $PY_VER -> $VERSION olarak guncelleniyor..."
   if sed --version >/dev/null 2>&1; then
-    sed -i "s/VERSION = \"[^\"]*\"/VERSION = \"$VERSION\"/" forgecode.py
+    sed -i "s/VERSION = \"[^\"]*\"/VERSION = \"$VERSION\"/" forcecode.py
   else
-    sed -i '' "s/VERSION = \"[^\"]*\"/VERSION = \"$VERSION\"/" forgecode.py
+    sed -i '' "s/VERSION = \"[^\"]*\"/VERSION = \"$VERSION\"/" forcecode.py
   fi
-  echo "forgecode.py $VERSION olarak guncellendi"
+  echo "forcecode.py $VERSION olarak guncellendi"
 fi
 
 # 3) Gizli anahtar taraması
 echo "Gizli anahtar taramasi..."
-if grep -R --include="*.py" --include="*.toml" -E "(sk-ant-|sk-proj-|ghp_|github_pat_|AKIA)" forgecode.py pyproject.toml 2>/dev/null | grep -v "test_forgecode" ; then
+if grep -R --include="*.py" --include="*.toml" -E "(sk-ant-|sk-proj-|ghp_|github_pat_|AKIA)" forcecode.py pyproject.toml 2>/dev/null | grep -v "test_forcecode" ; then
   echo "HATA: Olasi gizli anahtar bulundu" >&2; exit 1
 fi
 echo "Temiz."
@@ -73,7 +73,7 @@ echo "Temiz."
 echo "Syntax kontrol..."
 PY=""
 for c in python3 python "py -3"; do
-  if $c -m py_compile forgecode.py 2>/dev/null; then PY="$c"; break; fi
+  if $c -m py_compile forcecode.py 2>/dev/null; then PY="$c"; break; fi
 done
 if [[ -z "$PY" ]]; then echo "HATA: Python bulunamadi" >&2; exit 1; fi
 echo "py_compile OK ($PY)"
@@ -169,5 +169,5 @@ echo "  Repo   : $REPO_URL"
 echo "  Release: $RELEASE_URL"
 echo "  Actions: https://github.com/samansarmasik-alt/forcecode/actions"
 echo ""
-echo "GitHub Actions 'Release' workflow tag'i gorunce otomatik calisir ve dist/*.whl + ForgeCode-v*.zip'i Releases'e ekler."
+echo "GitHub Actions 'Release' workflow tag'i gorunce otomatik calisir ve dist/*.whl + ForceCode-v*.zip'i Releases'e ekler."
 echo "Bitti demeden once Actions'in yesil oldugunu kontrol et."
