@@ -6437,12 +6437,61 @@ class MissionControlTests(unittest.TestCase):
             environment.pop("PYTHONPATH", None)
 
             result = forgecode.subprocess.run(
-                [sys.executable, str(portable), "--version"],
+                [sys.executable, "-S", str(portable), "--version"],
                 cwd=str(root), env=environment, capture_output=True, text=True, check=False,
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"forgecode {forgecode.VERSION}", result.stdout)
+
+    def test_critical_symbols_stay_on_canonical_companion_modules(self):
+        expected = {
+            "Config": "forgecode_config",
+            "WorkspaceTools": "forgecode_workspace",
+            "Agent": "forgecode",
+            "Provider": "forgecode_providers",
+            "make_provider": "forgecode_providers",
+            "SessionStore": "forgecode_stores",
+            "SteeringInterrupt": "forgecode_base",
+        }
+        modules = {
+            name: getattr(getattr(forgecode, name, None), "__module__", None)
+            for name in expected
+        }
+        self.assertEqual(modules, expected)
+        self.assertEqual(forgecode.SteeringInterrupt.__module__, "forgecode_base")
+        self.assertEqual(forgecode.make_provider.__module__, "forgecode_providers")
+
+    def test_single_file_fallback_exposes_critical_symbols_from_monolith(self):
+        expected = [
+            "Config", "WorkspaceTools", "Agent", "Provider",
+            "make_provider", "SessionStore", "SteeringInterrupt",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            portable = root / "forgecode.py"
+            portable.write_bytes(MODULE_PATH.read_bytes())
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+
+            probe = (
+                "import json, forgecode\n"
+                f"names = {expected!r}\n"
+                "mapped = {n: getattr(getattr(forgecode, n, None), '__module__', None) for n in names}\n"
+                "print(json.dumps(mapped))\n"
+            )
+
+            result = forgecode.subprocess.run(
+                [sys.executable, "-S", "-c", probe],
+                cwd=str(root), env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            modules = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(sorted(modules), sorted(expected))
+            missing = sorted(name for name, module in modules.items() if module is None)
+            self.assertEqual(missing, [], f"missing in fallback: {missing}")
+            self.assertEqual(set(modules.values()), {"forgecode"})
 
 
 class UIEngineUpgradeTests(unittest.TestCase):
