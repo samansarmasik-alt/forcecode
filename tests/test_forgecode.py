@@ -14,6 +14,18 @@ from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "forgecode.py"
+COMPANION_MODULES = [
+    "forgecode_base",
+    "forgecode_config",
+    "forgecode_stores",
+    "forgecode_providers",
+    "forgecode_queues",
+    "forgecode_workspace",
+    "forgecode_sandbox",
+    "forgecode_skills",
+    "forgecode_mcp",
+    "forgecode_context",
+]
 SPEC = importlib.util.spec_from_file_location("forgecode", MODULE_PATH)
 forgecode = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
@@ -6399,7 +6411,7 @@ class MissionControlTests(unittest.TestCase):
 
             self.assertEqual(forgecode.GoalStore(root).goals, [])
 
-    def test_release_metadata_and_installers_include_mission_runtime(self):
+    def test_release_metadata_and_installers_include_companion_modules(self):
         root = MODULE_PATH.parent
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         readme = (root / "README.md").read_text(encoding="utf-8")
@@ -6410,6 +6422,11 @@ class MissionControlTests(unittest.TestCase):
         self.assertIn(f"version-{forgecode.VERSION}", readme)
         self.assertIn("_forgecode_mission.py", windows_installer)
         self.assertIn("_forgecode_mission.py", unix_installer)
+
+        for module in COMPANION_MODULES:
+            self.assertIn(f'"{module}"', pyproject)
+            self.assertIn(module, windows_installer)
+            self.assertIn(module, unix_installer)
 
     def test_legacy_single_file_cli_still_starts_without_mission_module(self):
         with tempfile.TemporaryDirectory() as tmp:

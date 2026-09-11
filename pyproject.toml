@@ -23,7 +23,20 @@ classifiers = [
 forgecode = "forgecode:main"
 
 [tool.setuptools]
-py-modules = ["forgecode", "_forgecode_mission"]
+py-modules = [
+  "forgecode",
+  "_forgecode_mission",
+  "forgecode_base",
+  "forgecode_config",
+  "forgecode_stores",
+  "forgecode_providers",
+  "forgecode_queues",
+  "forgecode_workspace",
+  "forgecode_sandbox",
+  "forgecode_skills",
+  "forgecode_mcp",
+  "forgecode_context",
+]
 
 [tool.unittest]
 start-directory = "tests"

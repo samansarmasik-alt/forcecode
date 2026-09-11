@@ -223,6 +223,11 @@ cd forcecode
 .\forgecode.bat .
 ```
 
+`forgecode.py` is the entry point; the runtime is split across `_forgecode_mission.py` and
+ten `forgecode_*.py` companion modules (`base`, `config`, `stores`, `providers`, `queues`,
+`workspace`, `sandbox`, `skills`, `mcp`, `context`). Keep all of them in the same directory as
+`forgecode.py` — the global installers copy them automatically.
+
 On first launch, choose a language and provider, then run:
 
 ```text
@@ -502,7 +507,18 @@ python forgecode.py --version
 ├── .github/                 Issue and pull-request templates
 ├── docs/                    Technical documentation and artwork
 ├── tests/                   Unit and integration-style tests
-├── forgecode.py             Application and CLI entry point
+├── forgecode.py             Application, CLI entry point, and runtime orchestration
+├── forgecode_base.py        Shared primitives and host bindings
+├── forgecode_config.py      Configuration and persisted settings
+├── forgecode_stores.py      Usage, history, session, and goal stores
+├── forgecode_providers.py   Provider transports and request handling
+├── forgecode_queues.py      Queue and scheduler primitives
+├── forgecode_workspace.py   Workspace tools and file operations
+├── forgecode_sandbox.py     Sandboxed command execution
+├── forgecode_skills.py      Skill loading and management
+├── forgecode_mcp.py         MCP client and tool bridge
+├── forgecode_context.py     Context assembly and ForceFlow steering
+├── _forgecode_mission.py    Mission Control loop
 ├── forgecode.bat            Portable Windows launcher
 ├── install-force.ps1        Global command installer
 ├── uninstall-force.ps1      Global command uninstaller

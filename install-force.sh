@@ -7,11 +7,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_PY="$SCRIPT_DIR/forgecode.py"
 SOURCE_MISSION="$SCRIPT_DIR/_forgecode_mission.py"
 SOURCE_SH="$SCRIPT_DIR/forgecode.sh"
+SOURCE_MODULES=(
+  forgecode_base.py
+  forgecode_config.py
+  forgecode_stores.py
+  forgecode_providers.py
+  forgecode_queues.py
+  forgecode_workspace.py
+  forgecode_sandbox.py
+  forgecode_skills.py
+  forgecode_mcp.py
+  forgecode_context.py
+)
 
 if [ ! -f "$SOURCE_PY" ] || [ ! -f "$SOURCE_MISSION" ]; then
   echo "HATA: ForgeCode çalışma dosyaları bulunamadı ($SCRIPT_DIR)" >&2
   exit 1
 fi
+for module in "${SOURCE_MODULES[@]}"; do
+  if [ ! -f "$SCRIPT_DIR/$module" ]; then
+    echo "HATA: ForgeCode modülü bulunamadı: $module" >&2
+    exit 1
+  fi
+done
 
 # macOS'ta XDG yoksa ev dizini kullanılır
 if [ -n "${FORGECODE_HOME:-}" ]; then
@@ -31,6 +49,9 @@ mkdir -p "$APP_DIR" "$BIN_DIR"
 
 cp -f "$SOURCE_PY" "$APP_DIR/forgecode.py"
 cp -f "$SOURCE_MISSION" "$APP_DIR/_forgecode_mission.py"
+for module in "${SOURCE_MODULES[@]}"; do
+  cp -f "$SCRIPT_DIR/$module" "$APP_DIR/$module"
+done
 if [ -f "$SOURCE_SH" ]; then
   cp -f "$SOURCE_SH" "$APP_DIR/forgecode.sh"
   chmod +x "$APP_DIR/forgecode.sh"
