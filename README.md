@@ -180,7 +180,7 @@ For gateways where protocol inference rewrites or rejects a valid custom URL, di
 /test
 ```
 
-`/protocol off` keeps the current payload format; append `openai` or `anthropic` to choose it explicitly. In this mode ForgeCode does not infer a protocol from the model or route, append `/v1/messages` or `/chat/completions`, or replace the route after a 404. Authentication remains independently configurable through `custom_auth_mode`.
+`/protocol off` keeps the current payload format; append `openai` or `anthropic` to choose it explicitly. In this mode ForceCode does not infer a protocol from the model or route, append `/v1/messages` or `/chat/completions`, or replace the route after a 404. Authentication remains independently configurable through `custom_auth_mode`.
 
 > Use only endpoints you are authorized to access. ForceCode does not bypass provider restrictions or access controls.
 
@@ -220,13 +220,13 @@ Read [SECURITY.md](SECURITY.md) for the vulnerability-reporting and supported-ve
 ```powershell
 git clone https://github.com/samansarmasik-alt/forcecode.git
 cd forcecode
-.\forgecode.bat .
+.\forcecode.bat .
 ```
 
-`forgecode.py` is the entry point; the runtime is split across `_forgecode_mission.py` and
-ten `forgecode_*.py` companion modules (`base`, `config`, `stores`, `providers`, `queues`,
+`forcecode.py` is the entry point; the runtime is split across `_forcecode_mission.py` and
+ten `forcecode_*.py` companion modules (`base`, `config`, `stores`, `providers`, `queues`,
 `workspace`, `sandbox`, `skills`, `mcp`, `context`). Keep all of them in the same directory as
-`forgecode.py` — the global installers copy them automatically.
+`forcecode.py` — the global installers copy them automatically.
 
 On first launch, choose a language and provider, then run:
 
@@ -261,7 +261,7 @@ Force --team "Inspect the API failures, fix the root cause, and run the relevant
 Force --team-status
 ```
 
-The same `.forgecode/team-state.json` board is visible from another terminal with `--team-status`. In interactive mode use `/team <task>` and `/team status`.
+The same `.forcecode/team-state.json` board is visible from another terminal with `--team-status`. In interactive mode use `/team <task>` and `/team status`.
 
 For a persistent visible fleet, terminal 1 is always the manager/design director and up to three worker terminals can be added or removed while ForceCode is running:
 
@@ -290,7 +290,7 @@ The streaming music queue uses the official YouTube iframe player and never down
 
 `/music on` enables startup playback when a queue exists. ForceCode does not block or bypass YouTube ads; an ad-free session requires the user's own YouTube Premium account.
 
-Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. Run `/subscriptions setup <provider>` to start the provider's official sign-in flow: Claude uses `claude auth login`, Codex uses `codex login`, and Cline uses `cline auth`. Claude subscription mode deliberately ignores only conflicting Anthropic API environment variables in its child process, so it uses the signed-in subscription rather than a metered API key; your environment is never changed. Cline runs in safe plan mode with `--json` output; ForgeCode extracts its visible `say.text` responses instead of exposing JSON events. On Windows, common official CLI install locations are also detected when the terminal has an outdated PATH. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only.
+Existing subscriptions can be bridged through an already signed-in official vendor CLI with `/subscriptions` and `/subscriptions use <claude|codex|cline|gemini>`. Run `/subscriptions setup <provider>` to start the provider's official sign-in flow: Claude uses `claude auth login`, Codex uses `codex login`, and Cline uses `cline auth`. Claude subscription mode deliberately ignores only conflicting Anthropic API environment variables in its child process, so it uses the signed-in subscription rather than a metered API key; your environment is never changed. Cline runs in safe plan mode with `--json` output; ForceCode extracts its visible `say.text` responses instead of exposing JSON events. On Windows, common official CLI install locations are also detected when the terminal has an outdated PATH. ForceCode does not copy browser cookies, OAuth tokens, or subscription credentials. These adapters are deliberately advisory/read-only.
 
 For subscription-backed model selection, `/model` now offers Claude's `default`, `sonnet`, `opus`, and `haiku` aliases and passes the chosen alias to the official Claude CLI for that request. Cline and Codex keep the model selected by their own setup unless you explicitly set a valid model ID with `/model <model-id>`; the ID is then passed to the official CLI for that request.
 
@@ -477,16 +477,16 @@ Run `/help` inside ForceCode for the full command reference.
 
 | Data | Default location |
 | --- | --- |
-| Configuration and saved keys | `%LOCALAPPDATA%\ForgeCode\config.json` |
-| Usage history | `%LOCALAPPDATA%\ForgeCode\usage.jsonl` |
-| Crash log | `%LOCALAPPDATA%\ForgeCode\crash.log` |
-| Installed runtime | `%LOCALAPPDATA%\ForgeCode\app` |
-| Global launcher | `%LOCALAPPDATA%\ForgeCode\bin\Force.cmd` |
-| User memory | `%LOCALAPPDATA%\ForgeCode\memory\user.json` |
-| Sandboxes and snapshots | `%LOCALAPPDATA%\ForgeCode\sandboxes\<project-id>` |
-| User skills | `%LOCALAPPDATA%\ForgeCode\skills` |
+| Configuration and saved keys | `%LOCALAPPDATA%\ForceCode\config.json` |
+| Usage history | `%LOCALAPPDATA%\ForceCode\usage.jsonl` |
+| Crash log | `%LOCALAPPDATA%\ForceCode\crash.log` |
+| Installed runtime | `%LOCALAPPDATA%\ForceCode\app` |
+| Global launcher | `%LOCALAPPDATA%\ForceCode\bin\Force.cmd` |
+| User memory | `%LOCALAPPDATA%\ForceCode\memory\user.json` |
+| Sandboxes and snapshots | `%LOCALAPPDATA%\ForceCode\sandboxes\<project-id>` |
+| User skills | `%LOCALAPPDATA%\ForceCode\skills` |
 
-Project operational state stays in `.forgecode`, ForceContext data stays in `.force`, and optional ForceGraph indexes stay in `.code-review-graph`. These locations should not be committed.
+Project operational state stays in `.forcecode`, ForceContext data stays in `.force`, and optional ForceGraph indexes stay in `.code-review-graph`. These locations should not be committed.
 
 The provider you configure receives the prompts and selected context required to answer the request. Use Ollama or LM Studio when model inference must remain local.
 
@@ -498,8 +498,8 @@ ForceCode intentionally has no third-party runtime package dependencies.
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m py_compile forgecode.py
-python forgecode.py --version
+python -m py_compile forcecode.py
+python forcecode.py --version
 ```
 
 ```text
@@ -507,19 +507,19 @@ python forgecode.py --version
 ├── .github/                 Issue and pull-request templates
 ├── docs/                    Technical documentation and artwork
 ├── tests/                   Unit and integration-style tests
-├── forgecode.py             Application, CLI entry point, and runtime orchestration
-├── forgecode_base.py        Shared primitives and host bindings
-├── forgecode_config.py      Configuration and persisted settings
-├── forgecode_stores.py      Usage, history, session, and goal stores
-├── forgecode_providers.py   Provider transports and request handling
-├── forgecode_queues.py      Queue and scheduler primitives
-├── forgecode_workspace.py   Workspace tools and file operations
-├── forgecode_sandbox.py     Sandboxed command execution
-├── forgecode_skills.py      Skill loading and management
-├── forgecode_mcp.py         MCP client and tool bridge
-├── forgecode_context.py     Context assembly and ForceFlow steering
-├── _forgecode_mission.py    Mission Control loop
-├── forgecode.bat            Portable Windows launcher
+├── forcecode.py             Application, CLI entry point, and runtime orchestration
+├── forcecode_base.py        Shared primitives and host bindings
+├── forcecode_config.py      Configuration and persisted settings
+├── forcecode_stores.py      Usage, history, session, and goal stores
+├── forcecode_providers.py   Provider transports and request handling
+├── forcecode_queues.py      Queue and scheduler primitives
+├── forcecode_workspace.py   Workspace tools and file operations
+├── forcecode_sandbox.py     Sandboxed command execution
+├── forcecode_skills.py      Skill loading and management
+├── forcecode_mcp.py         MCP client and tool bridge
+├── forcecode_context.py     Context assembly and ForceFlow steering
+├── _forcecode_mission.py    Mission Control loop
+├── forcecode.bat            Portable Windows launcher
 ├── install-force.ps1        Global command installer
 ├── uninstall-force.ps1      Global command uninstaller
 ├── config.example.json      Sanitized configuration reference

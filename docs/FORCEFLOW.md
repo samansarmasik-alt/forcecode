@@ -5,7 +5,7 @@ ForceFlow is ForceCode's persistent sequential execution engine. It converts a l
 ## Lifecycle
 
 1. A normal cohesive project request becomes one local task immediately. Explicit sequences, multi-domain requests, structured lists, and very large objectives ask the selected AI for a compact JSON plan. Simple chat and explicit Plan mode bypass ForceFlow.
-2. Tasks are stored in `.forgecode/tasks.json` with an ID, the root objective, acceptance criterion, status, attempts, repair attempts, changed files, confidence, and missing evidence.
+2. Tasks are stored in `.forcecode/tasks.json` with an ID, the root objective, acceptance criterion, status, attempts, repair attempts, changed files, confidence, and missing evidence.
 3. The active item runs through the normal Agent and Execution Kernel. Later items are included only as queue state, never as permission to start early.
 4. ForceFlow verifies changed paths as non-empty UTF-8 artifacts and records compact hashes. When the only missing evidence is a focused check, it invokes project test auto-detection.
 5. A verified item becomes `completed`. Missing evidence starts bounded root-cause-driven repair rounds; only an exhausted repair budget becomes `failed` and blocks the chain.

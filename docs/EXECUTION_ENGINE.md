@@ -1,6 +1,6 @@
-# ForgeCode Execution Kernel
+# ForceCode Execution Kernel
 
-ForgeCode 7 replaces its ad-hoc “ask until the model stops” behavior with an evidence-oriented execution kernel. The kernel does not expose or store private chain-of-thought. It records only public plans, tool evidence, classified errors, and verification results.
+ForceCode 7 replaces its ad-hoc “ask until the model stops” behavior with an evidence-oriented execution kernel. The kernel does not expose or store private chain-of-thought. It records only public plans, tool evidence, classified errors, and verification results.
 
 ## Processing Flow
 
@@ -38,7 +38,7 @@ Each `PlanStep` pairs an objective with required evidence. Models can confidentl
 
 ### Append-only observations, compact persistence
 
-Execution state collects tool successes, mutations, checks, and error findings during one run. Only the compact result is saved to `.forgecode/last-run.json`; prompts, secrets, and hidden reasoning are excluded. This gives `/debug` useful evidence without creating an invasive telemetry system. Numeric confidence scoring was removed: pass/fail evidence from the verification gate is the contract, not an opinionated percentage.
+Execution state collects tool successes, mutations, checks, and error findings during one run. Only the compact result is saved to `.forcecode/last-run.json`; prompts, secrets, and hidden reasoning are excluded. This gives `/debug` useful evidence without creating an invasive telemetry system. Numeric confidence scoring was removed: pass/fail evidence from the verification gate is the contract, not an opinionated percentage.
 
 ### Existing provider transports remain outside the kernel
 
@@ -50,4 +50,4 @@ The kernel coordinates work but does not implement OpenAI, Anthropic, or custom 
 - `/debug` shows classified failures and recovery guidance.
 - `/engine` explains the active pipeline.
 
-The run receipt is local and covered by the existing `.forgecode/` Git ignore rule.
+The run receipt is local and covered by the existing `.forcecode/` Git ignore rule.

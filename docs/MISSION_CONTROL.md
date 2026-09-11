@@ -17,9 +17,9 @@ Mission Control, ForceCode 8'in hedef odaklı çalışma yüzeyidir. Yeni bir pl
 
 Mission kimliği, `TaskQueueStore` içindeki mevcut `flow_id` değeridir. Görev, kanıt ve ilerleme bilgisi başka bir dosyaya kopyalanmaz:
 
-- Üst hedef ve mission bağlantısı: `.forgecode/goals.json`
-- Sıralı görevler, durumlar ve verification kanıtları: `.forgecode/tasks.json`
-- Uzun çalışma checkpoint'i: `.forgecode/vibe-session.json`
+- Üst hedef ve mission bağlantısı: `.forcecode/goals.json`
+- Sıralı görevler, durumlar ve verification kanıtları: `.forcecode/tasks.json`
+- Uzun çalışma checkpoint'i: `.forcecode/vibe-session.json`
 
 Görünür durum görevlerden türetilir: `failed` → `blocked`, `running` → `running`, `paused` → `paused`, `pending` → `queued`; bütün görevler doğrulanmışsa `completed`, tamamı terminal durumda fakat en az biri atlanmışsa `stopped` olur.
 
@@ -31,4 +31,4 @@ Planlama görevler diske yazılmadan önce kesilirse mission bağlantısı hedef
 
 Mission görünümü değişen dosyaları ve eksik verification kapılarını mevcut task receipt'lerinden okur. Yeni bir başarı skoru üretmez ve doğrulanmamış işi tamamlanmış göstermez. Kalıcı yazımlar mevcut atomik store yardımcılarından geçer; prompt, API anahtarı veya gizli reasoning için yeni bir kayıt alanı açılmaz.
 
-`_forgecode_mission.MissionView` immutable ve boyutları sınırlı bir read-model'dir. `to_dict()` çıktısı bugün terminal görünümünü, ileride ise native Studio gibi yerel istemcileri aynı execution state'i çoğaltmadan besleyebilir.
+`_forcecode_mission.MissionView` immutable ve boyutları sınırlı bir read-model'dir. `to_dict()` çıktısı bugün terminal görünümünü, ileride ise native Studio gibi yerel istemcileri aynı execution state'i çoğaltmadan besleyebilir.

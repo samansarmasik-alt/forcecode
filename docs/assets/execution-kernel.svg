@@ -33,5 +33,5 @@
   <path d="M1110 336V380H628V414" fill="none" stroke="#8c78ea" stroke-width="2.5" marker-end="url(#arrow)"/>
   <path d="M413 414V382H641V342" fill="none" stroke="#8c78ea" stroke-width="2.5" marker-end="url(#arrow)"/>
   <path d="M1120 336V414" fill="none" stroke="#5edb9f" stroke-width="2.5" marker-end="url(#arrow)"/>
-  <text x="750" y="626" text-anchor="middle" class="m" font-size="16" fill="#8f9bb8">.forgecode/tasks.json + .forgecode/last-run.json · compact state, no private chain-of-thought</text>
+  <text x="750" y="626" text-anchor="middle" class="m" font-size="16" fill="#8f9bb8">.forcecode/tasks.json + .forcecode/last-run.json · compact state, no private chain-of-thought</text>
 </svg>

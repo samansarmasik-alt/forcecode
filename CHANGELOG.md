@@ -1,13 +1,13 @@
 # Changelog
 
-All notable changes to ForgeCode are documented here. The project follows semantic versioning where practical.
+All notable changes to ForceCode are documented here. The project follows semantic versioning where practical.
 
 ## [8.0.0a2] - 2026-09-11
 
 ### Changed
 
-- Internal refactor: core runtime split into dedicated modules (`forgecode_stores`, `forgecode_providers`, `forgecode_config`, `forgecode_queues`, `forgecode_mcp`, `forgecode_sandbox`, `forgecode_context`, `forgecode_workspace`, `forgecode_base`, `forgecode_skills`). Behavior is unchanged.
-- Release metadata (`pyproject.toml`, README badge and status line) aligned to the runtime `forgecode.VERSION`.
+- Internal refactor: core runtime split into dedicated modules (`forcecode_stores`, `forcecode_providers`, `forcecode_config`, `forcecode_queues`, `forcecode_mcp`, `forcecode_sandbox`, `forcecode_context`, `forcecode_workspace`, `forcecode_base`, `forcecode_skills`). Behavior is unchanged.
+- Release metadata (`pyproject.toml`, README badge and status line) aligned to the runtime `forcecode.VERSION`.
 
 ## [8.0.0a1] - 2026-09-04
 
@@ -15,12 +15,12 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 - Mission Control: `/mission <hedef>` starts a verified ForceFlow under a stable mission id; `/mission long <hedef>` routes long autonomous work through the existing VibeCode checkpoint engine.
 - `/mission`, `/mission list`, `/mission show <id>`, and `/mission resume <id>` expose an ordered task graph, progress, changed-file evidence, missing verification gates, and flow-specific resume without duplicating queue state.
-- A dependency-free `_forgecode_mission` read-model module provides immutable, bounded mission projections suitable for the terminal today and a Studio client later.
+- A dependency-free `_forcecode_mission` read-model module provides immutable, bounded mission projections suitable for the terminal today and a Studio client later.
 
 ### Changed
 
 - ForceFlow queue execution can be scoped to one `flow_id`, preventing a resumed mission from consuming unresolved tasks owned by another flow.
-- Windows and macOS/Linux installers now deploy the Mission Control runtime module with `forgecode.py`.
+- Windows and macOS/Linux installers now deploy the Mission Control runtime module with `forcecode.py`.
 
 ## [7.17.1] - 2026-08-23
 
@@ -60,7 +60,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Changed
 
 - `/help` now ends with a grouped command index so 90+ commands are discoverable by category.
-- Removed the confidence-score system: the per-turn `Güven skoru` line, the `ConfidenceEngine` scorer, and the `/confidence` command are gone. The verification gate (`missing_evidence`, `verification_passed` in `.forgecode/last-run.json`) remains the single pass/fail contract.
+- Removed the confidence-score system: the per-turn `Güven skoru` line, the `ConfidenceEngine` scorer, and the `/confidence` command are gone. The verification gate (`missing_evidence`, `verification_passed` in `.forcecode/last-run.json`) remains the single pass/fail contract.
 
 ### Fixed
 
@@ -79,7 +79,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Fixed
 
 - Bounded every append-only log: `history.jsonl`, `sessions/*.jsonl`, and `usage.jsonl` are now trimmed to their newest rows when they grow past a size threshold, matching the existing event-log rotation.
-- Added pruning of oldest completed/skipped tasks in `.forgecode/tasks.json` so long-running projects no longer accumulate finished task records forever.
+- Added pruning of oldest completed/skipped tasks in `.forcecode/tasks.json` so long-running projects no longer accumulate finished task records forever.
 - Added the `session_log_max_lines` setting (default 2000) to control the durable per-session turn log cap via `/set`.
 - Quota/limit errors now hand off to a configured backup connection immediately instead of first consuming same-provider transient retries.
 
@@ -239,7 +239,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 - Every automatic candidate now combines independent skills.sh audit-provider verdicts with deterministic local checks for prompt injection, credential collection/exfiltration, sandbox or approval bypass, destructive host commands, elevated privileges, and unsafe network execution.
 - Automatic installation requires a security score strictly above 80/100 and project contribution of at least 60/100. Any critical or partner-failed audit blocks the skill regardless of score.
-- Skill Scout installs only standalone UTF-8 `SKILL.md` text into the current project's `.forgecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are not imported or executed.
+- Skill Scout installs only standalone UTF-8 `SKILL.md` text into the current project's `.forcecode/skills`; scripts, binaries, hooks, assets, references, and dependencies are not imported or executed.
 - Catalog identity mismatches, collisions with existing skills, and skills that depend on unsupported companion files are rejected.
 
 ### Efficiency
@@ -261,7 +261,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 - Added VibeCode, an opt-in overnight autonomy mode driven by one broad product objective through `/vibe <goal>` or an armed next prompt with `/vibe on`.
 - Added architecture-first task planning, task-by-task persistent checkpoints, transcript compaction between tasks, deterministic project-wide gates, and an independent read-only final acceptance review.
-- Added crash-safe `.forgecode/vibe-session.json` state, `/vibe status|resume|stop|hours`, and a human-readable `.forgecode/vibe-report.md` receipt.
+- Added crash-safe `.forcecode/vibe-session.json` state, `/vibe status|resume|stop|hours`, and a human-readable `.forcecode/vibe-report.md` receipt.
 
 ### Reliability
 
@@ -294,7 +294,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Added
 
 - Added a dependency-free, local-first Agent Skills engine compatible with the portable `SKILL.md` directory format and YAML frontmatter.
-- Added progressive disclosure: ForgeCode scores enabled skills against each user request and injects only the one to three most relevant instruction bodies according to the efficiency mode.
+- Added progressive disclosure: ForceCode scores enabled skills against each user request and injects only the one to three most relevant instruction bodies according to the efficiency mode.
 - Added four built-in skills for root-cause debugging, frontend quality, evidence-driven project audits, and release readiness.
 - Added `/skills` plus `/skill show|discover|install|update|enable|disable|remove`, along with `list_skills` and guarded `manage_skill` AI tools.
 - Added safe GitHub installation from repository, tree/blob, raw `SKILL.md`, and `owner/repo` sources. Imports accept only bounded UTF-8 instructions; scripts and binaries are never downloaded or executed.
@@ -341,7 +341,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 - Added ForceFlow, a persistent ordered task engine that automatically detects real project work, lets the selected AI create the task plan, and advances only after the current task passes artifact and Execution Kernel verification.
 - Normal prompts now invoke ForceFlow automatically when task decomposition adds value; one-step work remains one task and simple conversation avoids the planner entirely.
-- Added crash-safe task states in `.forgecode/tasks.json`; interrupted work resumes as paused instead of being lost or falsely marked complete.
+- Added crash-safe task states in `.forcecode/tasks.json`; interrupted work resumes as paused instead of being lost or falsely marked complete.
 - Added the `apply_edits` model tool for validated multi-file exact replacements with rollback on write failure.
 - Added the `verify_artifacts` model tool for compact non-empty UTF-8, required-text, line-count, size, and SHA-256 evidence.
 - Added evidence-guided autonomous repair rounds. ForceFlow now carries the root objective, failures, and missing verification into a different recovery approach without waiting for another user prompt.
@@ -353,7 +353,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 - The dashboard and `/status` now expose open, completed, and failed sequential task counts.
 - ForceFlow automatically runs the project's focused test command when a changed task is otherwise missing only post-change check evidence.
 - Every generated subtask now retains the original user objective, preventing website quality requirements from disappearing during task decomposition.
-- Failed final website audits automatically create a bounded internal repair task and are rechecked before ForgeCode can report completion.
+- Failed final website audits automatically create a bounded internal repair task and are rechecked before ForceCode can report completion.
 
 ### Security
 
@@ -384,7 +384,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Added
 
 - Added FreeModel as a first-class provider using its documented `https://api.freemodel.dev/v1` OpenAI-compatible API, `auto` model router, Bearer authentication, and `FREEMODEL_API_KEY` environment variable.
-- Existing keys saved against a FreeModel custom host are reused locally when switching to the new provider, without exposing or duplicating the secret outside ForgeCode settings.
+- Existing keys saved against a FreeModel custom host are reused locally when switching to the new provider, without exposing or duplicating the secret outside ForceCode settings.
 
 ### Fixed
 
@@ -426,7 +426,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 ### Added
 
-- Added default-on ForceSandbox workspaces under ForgeCode's AppData directory. AI file tools now operate on a private, secret-filtered project copy rather than the real project.
+- Added default-on ForceSandbox workspaces under ForceCode's AppData directory. AI file tools now operate on a private, secret-filtered project copy rather than the real project.
 - Added Docker/Podman command isolation with a project-only mount, ephemeral read-only container filesystem, optional network blocking, dropped Linux capabilities, and no inherited API keys or host environment.
 - Added verified transfer gates, concurrent-edit conflict detection, per-task path scoping, pre-transfer snapshots, integrity checks, rollback, pending-change retention, and redacted security logs.
 - Added an arrow-key `/sandbox` control menu for status, network, automatic transfer, snapshots, pending transfer, workspace, logs, engine selection, restore, and cleanup.
@@ -496,7 +496,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 - Updated the native ForceGraph compatibility floor from 2.4.0 to 2.6.0; the current upstream repository reports 2.6.1.
 - Existing 2.4/2.5 installations are now upgraded automatically before eligible graph-backed coding work.
-- Updated documentation to distinguish ForgeCode's native CLI bridge from ForceGraph 2.6's optional compact MCP gateway and shared-agent memory.
+- Updated documentation to distinguish ForceCode's native CLI bridge from ForceGraph 2.6's optional compact MCP gateway and shared-agent memory.
 
 ## [7.4.1] - 2026-07-21
 
@@ -518,7 +518,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 ### Added
 
-- Local `.forgecode/forcegraph-state.json` and `.code-review-graph/forgecode-auto-receipt.json` receipts with version, source signature, action, status, and errors.
+- Local `.forcecode/forcegraph-state.json` and `.code-review-graph/forcecode-auto-receipt.json` receipts with version, source signature, action, status, and errors.
 - `/graph auto on|off` for explicit user control and `/graph repair` for forced recovery.
 - Automatic ForceGraph status in `/doctor` and `/dashboard`.
 
@@ -532,7 +532,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 
 ### Added
 
-- Optional native integration with [ForceGraph](https://github.com/samansarmasik-alt/code-review-graph), while keeping the core ForgeCode runtime dependency-free.
+- Optional native integration with [ForceGraph](https://github.com/samansarmasik-alt/code-review-graph), while keeping the core ForceCode runtime dependency-free.
 - `/graph status|install|build|update|open`, `/impact [base]`, and `/review [base]` commands.
 - A read-only `graph_context` model tool for structural impact, test-gap, and review evidence in main, plan, and subagent modes.
 - ForceGraph consultation metadata in Execution Kernel run receipts.
@@ -540,7 +540,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Security and performance
 
 - ForceGraph subprocesses use argument arrays with `shell=False`, project-scoped working directories, bounded timeouts, UTF-8-safe output, and validated Git base references.
-- `.code-review-graph` databases are excluded from ForgeCode/ForceContext scans and Git by default.
+- `.code-review-graph` databases are excluded from ForceCode/ForceContext scans and Git by default.
 
 ## [7.2.1] - 2026-07-19
 
@@ -555,7 +555,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 ### Added
 
 - Project-aware `test_project` verification with automatic detection for Python, Node.js, Go, Rust, .NET, Maven, Gradle, and static HTML projects.
-- Persistent interactive process tools that let the model see prompts, provide staged input, inspect output, and stop programs without taking over ForgeCode's own input line.
+- Persistent interactive process tools that let the model see prompts, provide staged input, inspect output, and stop programs without taking over ForceCode's own input line.
 - Live program and command progress in the terminal activity area, including prompts that do not end with a newline.
 - Static web auditing for missing local assets, duplicate element IDs, missing image alternatives, and incomplete form controls.
 
@@ -596,7 +596,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 - Every request now receives a local evidence-oriented execution plan and phase-specific token budget without an extra planning API call.
 - Tool and API failures are classified by a Debugging Engine with stable signatures, retry guidance, and repeated-failure detection.
 - Completion is evaluated by deterministic verification gates rather than model confidence alone.
-- Each run receives an evidence-based confidence score and a local `.forgecode/last-run.json` receipt containing no private chain-of-thought.
+- Each run receives an evidence-based confidence score and a local `.forcecode/last-run.json` receipt containing no private chain-of-thought.
 
 ### Added
 
@@ -631,7 +631,7 @@ All notable changes to ForgeCode are documented here. The project follows semant
 - Preserve existing targets when a write is interrupted.
 - Safely adapt spaced paths and Bash-style command chains for Windows PowerShell.
 - Treat non-zero command exits as tool failures so the model can correct them.
-- Store Windows user configuration under `%LOCALAPPDATA%\ForgeCode` and copy legacy settings without deleting them.
+- Store Windows user configuration under `%LOCALAPPDATA%\ForceCode` and copy legacy settings without deleting them.
 - Make the global launcher independent of the source checkout location.
 
 ## [6.4.0] - 2026-07-14

@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$root = Join-Path $env:LOCALAPPDATA "ForgeCode"
+$root = Join-Path $env:LOCALAPPDATA "ForceCode"
 $app = Join-Path $root "app"
 $bin = Join-Path $root "bin"
 $launcher = Join-Path $bin "Force.cmd"

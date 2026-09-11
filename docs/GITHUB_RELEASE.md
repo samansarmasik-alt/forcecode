@@ -4,7 +4,7 @@ Bu proje `https://github.com/samansarmasik-alt/forcecode` adresine **release** o
 
 ## Benden istersen ne yaparım?
 
-> "ForgeCode'u GitHub'a release olarak pushla" dediğinde:
+> "ForceCode'u GitHub'a release olarak pushla" dediğinde:
 
 1. **Git'i bağlarım** — `git remote` yoksa eklerim:
    ```
@@ -12,11 +12,11 @@ Bu proje `https://github.com/samansarmasik-alt/forcecode` adresine **release** o
    ```
    Varsa doğrulayıp mevcut branch'e (main/master) ayarlarım.
 
-2. **Versiyonu kilitlerim** — `forgecode.py` içindeki `VERSION` ile `pyproject.toml` içindeki `version` aynı olmalı (şu an `7.12.10`). Farklıysa eşitlerim.
+2. **Versiyonu kilitlerim** — `forcecode.py` içindeki `VERSION` ile `pyproject.toml` içindeki `version` aynı olmalı (şu an `7.12.10`). Farklıysa eşitlerim.
 
 3. **Gizli anahtar taraması** yaparım — repo içinde `sk-`, `ghp_`, `AKIA` gibi anahtar kalmış mı kontrol ederim. Varsa push'u durdurur, temizlemeni isterim.
 
-4. **Test + derleme** — `python -m py_compile forgecode.py` ve `python -m unittest discover -s tests -v` çalıştırırım. Başarısızsa düzeltirim.
+4. **Test + derleme** — `python -m py_compile forcecode.py` ve `python -m unittest discover -s tests -v` çalıştırırım. Başarısızsa düzeltirim.
 
 5. **Commit + Tag + Push:**
    ```
@@ -26,7 +26,7 @@ Bu proje `https://github.com/samansarmasik-alt/forcecode` adresine **release** o
    git push -u origin main
    git push origin v7.12.10
    ```
-   Tag push'ı otomatik olarak GitHub Actions'taki `release.yml` workflow'unu tetikler — testleri tekrar koşar, `dist/*.whl`, `dist/*.tar.gz` ve `ForgeCode-v*.zip` üretir, `SHA256SUMS.txt` ile birlikte GitHub Releases'e ekler.
+   Tag push'ı otomatik olarak GitHub Actions'taki `release.yml` workflow'unu tetikler — testleri tekrar koşar, `dist/*.whl`, `dist/*.tar.gz` ve `ForceCode-v*.zip` üretir, `SHA256SUMS.txt` ile birlikte GitHub Releases'e ekler.
 
 6. **Doğrulama** — `git ls-remote --tags origin` ile tag'in remote'da göründüğünü teyit ederim.
 
@@ -103,16 +103,16 @@ Eski sürümde `git ls-remote` PowerShell'de `ls` alias'ı yüzünden `Get-Child
 GitHub token'ı (`ghp_`/`github_pat_`) veya `gh auth` onayı. Kodun kendisini zaten biliyorum — senden sadece GitHub'a yazma izni istiyorum.
 
 **Versiyonu nasıl değiştiririm?**
-`forgecode.py` satır 58 ve `pyproject.toml` satır 7 aynı olmalı. Birini değiştirirsem diğerini de değiştiririm ve `CHANGELOG.md`'ye not eklerim.
+`forcecode.py` satır 58 ve `pyproject.toml` satır 7 aynı olmalı. Birini değiştirirsem diğerini de değiştiririm ve `CHANGELOG.md`'ye not eklerim.
 
 **Gizli anahtar yanlışlıkla commit'e girdi mi?**
-Push öncesi tararım. `.env`, `.forgecode/`, `force-memory-export.json` zaten `.gitignore`'da. Yine de bulursam push'u durdururum.
+Push öncesi tararım. `.env`, `.forcecode/`, `force-memory-export.json` zaten `.gitignore`'da. Yine de bulursam push'u durdururum.
 
 **Release sonrası nasıl doğrularım?**
 `https://github.com/samansarmasik-alt/forcecode/releases/tag/v7.12.10` adresinde `dist` dosyaları ve `SHA256SUMS.txt` görünmeli. Script sonunda indirme linkini ve checksum'ı gösteririm. Ayrıca `git ls-remote --tags origin` ile tag'i görebilirsin.
 
 **Open source mi?**
-Evet — MIT lisansı (`LICENSE`) ile public repository. Release workflow `contents: write` izniyle tag'i Releases'e dönüştürür ve `dist/*` + `ForgeCode-v*.zip` + `SHA256SUMS.txt` eklerini herkese açık yayımlar.
+Evet — MIT lisansı (`LICENSE`) ile public repository. Release workflow `contents: write` izniyle tag'i Releases'e dönüştürür ve `dist/*` + `ForceCode-v*.zip` + `SHA256SUMS.txt` eklerini herkese açık yayımlar.
 
 ---
 *Bu dosya release altyapısının parçasıdır. Push'u tetiklemek için sohbette "githuba release pushla" demen yeterli — gerisini ben hallederim.*

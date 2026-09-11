@@ -2,15 +2,15 @@
 
 ## Project Structure & Module Organization
 
-ForgeCode deliberately keeps its runtime in `forgecode.py`, a dependency-free Python module containing providers, configuration, terminal UI, the Execution Kernel, workspace tools, and ForceContext. Windows launch and installation scripts live at the repository root. Tests are in `tests/test_forgecode.py`. User documentation and release notes are maintained in `README.md`, `CHANGELOG.md`, `SECURITY.md`, and `CONTRIBUTING.md`; architecture notes belong under `docs/`.
+ForceCode deliberately keeps its runtime in `forcecode.py`, a dependency-free Python module containing providers, configuration, terminal UI, the Execution Kernel, workspace tools, and ForceContext. Windows launch and installation scripts live at the repository root. Tests are in `tests/test_forcecode.py`. User documentation and release notes are maintained in `README.md`, `CHANGELOG.md`, `SECURITY.md`, and `CONTRIBUTING.md`; architecture notes belong under `docs/`.
 
 ## Build, Test, and Development Commands
 
 ```powershell
-py -3 forgecode.py --version
-py -3 -m py_compile forgecode.py
+py -3 forcecode.py --version
+py -3 -m py_compile forcecode.py
 py -3 -m unittest discover -s tests -v
-.\forgecode.bat .
+.\forcecode.bat .
 ```
 
 The first command checks the CLI entry point. Compilation catches syntax errors quickly. Run the complete `unittest` suite before submitting changes. The BAT command starts an interactive development session in the current repository.
@@ -29,7 +29,7 @@ Use concise, imperative commits such as `fix: preserve streamed tool output` or 
 
 ## Security & Agent Instructions
 
-Never commit API keys, `.forgecode/`, `.force/`, logs, or `force-memory-export.json`. Keep changes scoped, preserve existing Python/BAT behavior, and update documentation plus tests whenever commands or configuration change.
+Never commit API keys, `.forcecode/`, `.force/`, logs, or `force-memory-export.json`. Keep changes scoped, preserve existing Python/BAT behavior, and update documentation plus tests whenever commands or configuration change.
 
 <!-- vi3ecode:plugin:graphify:guidance:begin -->
 ## Graphify code intelligence (active)
