@@ -1,5 +1,6 @@
 # ForceCode local state and secrets
 .forcecode/
+.forgecode/
 .force/
 .code-review-graph/
 force-memory-export.json
